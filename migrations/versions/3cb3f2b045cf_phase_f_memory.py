@@ -1,8 +1,8 @@
-"""phase_cde_state_identity_authority
+"""phase_f_memory
 
-Revision ID: 83ad925f3231
+Revision ID: 3cb3f2b045cf
 Revises: 
-Create Date: 2026-09-12 22:04:03.254703+00:00
+Create Date: 2026-09-12 22:08:10.561867+00:00
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '83ad925f3231'
+revision: str = '3cb3f2b045cf'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -49,13 +49,35 @@ def upgrade() -> None:
     op.create_table('roles',
     sa.Column('name', sa.String(length=64), nullable=False),
     sa.Column('description', sa.String(length=512), nullable=True),
-    sa.Column('permissions', sa.JSON(), nullable=False),
+    sa.Column('permissions', sa.JSON(), server_default='[]', nullable=False),
     sa.Column('id', sa.String(length=26), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name', name='uq_roles_name')
     )
+    op.create_table('memory_records',
+    sa.Column('principal_id', sa.String(length=26), nullable=False),
+    sa.Column('kind', sa.String(length=32), nullable=False),
+    sa.Column('status', sa.String(length=32), nullable=False),
+    sa.Column('content', sa.JSON(), nullable=False),
+    sa.Column('provenance', sa.String(length=64), nullable=False),
+    sa.Column('source_execution_id', sa.String(length=26), nullable=True),
+    sa.Column('confidence', sa.Float(), nullable=True),
+    sa.Column('superseded_by', sa.String(length=26), nullable=True),
+    sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('sensitivity', sa.Integer(), server_default='0', nullable=False),
+    sa.Column('summary', sa.Text(), nullable=True),
+    sa.Column('id', sa.String(length=26), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['principal_id'], ['principals.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_memory_principal_kind', 'memory_records', ['principal_id', 'kind'], unique=False)
+    op.create_index('ix_memory_principal_status', 'memory_records', ['principal_id', 'status'], unique=False)
+    op.create_index(op.f('ix_memory_records_principal_id'), 'memory_records', ['principal_id'], unique=False)
+    op.create_index('ix_memory_superseded_by', 'memory_records', ['superseded_by'], unique=False)
     op.create_table('principal_credentials',
     sa.Column('principal_id', sa.String(length=26), nullable=False),
     sa.Column('kind', sa.String(length=64), nullable=False),
@@ -93,6 +115,11 @@ def downgrade() -> None:
     op.drop_table('principal_roles')
     op.drop_index(op.f('ix_principal_credentials_principal_id'), table_name='principal_credentials')
     op.drop_table('principal_credentials')
+    op.drop_index('ix_memory_superseded_by', table_name='memory_records')
+    op.drop_index(op.f('ix_memory_records_principal_id'), table_name='memory_records')
+    op.drop_index('ix_memory_principal_status', table_name='memory_records')
+    op.drop_index('ix_memory_principal_kind', table_name='memory_records')
+    op.drop_table('memory_records')
     op.drop_table('roles')
     op.drop_table('principals')
     op.drop_index('ix_audit_events_principal', table_name='audit_events')
