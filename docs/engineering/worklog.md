@@ -14,18 +14,15 @@ Work Log:
 - Inspected file tree: README.md (5 bytes — "# Wax"), WAX_Project_Foundation_Notes.pdf (50 KB, 10 pages), "architectural research guidelines.md" (888 lines, Stages 0–11 research roadmap, no implementation)
 - No source code, no tests, no migrations, no CI, no package manifest
 - Read all 3 uploaded foundation/directive documents in prior turns (5,061 + 3,384 + 10 PDF pages)
-- Read first 200 lines of research guidelines doc to confirm it is a research roadmap, not engineering
-- Created directory structure: docs/{architecture,research/repository,decisions,engineering,security,operations}, src/wax/{core,runtime,state,identity,authority,memory,capabilities,execution,intelligence,interfaces,observability}, migrations/versions, tests/{unit,integration,contract,architecture,e2e}, scripts
 - Wrote current-state report to docs/research/repository/current-state.md
 - Wrote ADR-0001 (technology selection) — chose Python + FastAPI + SQLAlchemy 2.0 async + Pydantic v2 + Alembic + pytest + structlog
 - Wrote ADR-0002 (database selection) — PostgreSQL for production, SQLite for tests
 
 Stage Summary:
 - Repository is essentially empty. This is a fresh build, not a migration.
-- No existing code to preserve or refactor.
 - Three foundational documents converge on the same architectural vision: WAX = AI-native environment/runtime; infrastructure, not intelligence; AI has agency but not sovereignty; open-world; anti-ontology; model/interface/capability must be replaceable.
 - Engineering decision: build from scratch in Python (FastAPI + SQLAlchemy 2.0 async + Pydantic v2 + Alembic + pytest + structlog).
-- Next dependency: Phase A (Foundation) — project structure, config, logging, health, graceful shutdown, test infrastructure.
+- Next dependency: Phase A (Foundation).
 
 ---
 Task ID: A
@@ -33,35 +30,17 @@ Agent: main (Super Z)
 Task: Phase A — Foundation. Build runtime, package management, config, secrets, logging, health, graceful shutdown, test baseline.
 
 Work Log:
-- Wrote pyproject.toml with all dependencies (FastAPI, SQLAlchemy 2.0 async, Pydantic v2, Alembic, structlog, httpx, pytest, etc.) + ruff + mypy config
-- Wrote .gitignore (Python, venv, env files, sqlite DBs, IDE)
-- Wrote .env.example (WAX_ENV, WAX_DATABASE_URL, WAX_SECRET_KEY, LLM keys — all empty)
-- Built wax.core (no I/O package):
-  - exceptions.py: WaxError hierarchy (10 exception types)
-  - config.py: WaxSettings (pydantic-settings), Environment/LogLevel/LogFormat enums, load_settings(), settings_for_testing()
-  - invariants.py: 10 declared invariants (INV-01 through INV-10) with id, statement, reason, enforcement, status
-- Built wax.runtime (I/O package):
-  - logging.py: structlog setup with secret redaction (sk-, Bearer, password, secret, token, api_key, etc.)
-  - lifecycle.py: LifecycleManager with signal handlers, LIFO shutdown, bounded timeout per handler
-  - app.py: FastAPI factory with lifespan (startup logging, shutdown via LifecycleManager), /healthz, /readyz, / endpoints
-  - asgi.py: module-level app for uvicorn
-- Wrote tests:
-  - conftest.py: test_settings, app, client fixtures
-  - unit/test_config.py: 13 tests (env validation, production hardening, predicates, load_settings)
-  - unit/test_logging.py: 10 tests (redaction of 8 sensitive key types, JSON vs console format)
-  - unit/test_invariants.py: 5 tests (tuple structure, unique IDs, lookup)
-  - integration/test_health.py: 5 tests (root, healthz, readyz, 404, openapi)
-  - architecture/test_core_boundary.py: 3 tests (no I/O imports, no domain concepts)
-- Created venv via uv, installed all dependencies including dev extras
-- Ran tests: 42 passing
-- Committed as "Phase A — Foundation"
+- Wrote pyproject.toml + .gitignore + .env.example
+- Built wax.core (no I/O): exceptions, config, invariants (10 declared)
+- Built wax.runtime: logging (with secret redaction), lifecycle (graceful shutdown), app (FastAPI factory with /healthz, /readyz, /)
+- Built wax.runtime.asgi entrypoint for uvicorn
+- Wrote tests: 42 passing (unit + integration + architecture)
+- Architecture tests enforce INV-01 (no education concepts) and INV-09 (no I/O in core)
 
 Stage Summary:
-- Phase A is IMPLEMENTED. Minimal WAX process can: start, stop, report health, load configuration safely, run tests, log structured events with secret redaction, gracefully shut down on SIGINT/SIGTERM.
-- Architecture tests enforce INV-01 (no education concepts in wax.core identifiers) and INV-09 (no I/O imports in wax.core).
-- Production hardening: missing WAX_SECRET_KEY, short secret, or SQLite in production all raise WaxConfigurationError.
-- All 42 tests pass.
-- Next dependency: Phase B (Runtime Boundary) — explicit docs + Phase C (State/Persistence).
+- Phase A IMPLEMENTED. Minimal WAX process can start, stop, report health, log structured events with secret redaction, gracefully shut down on SIGINT/SIGTERM.
+- 42 tests pass.
+- Committed as "Phase A — Foundation".
 
 ---
 Task ID: B-C-D-E
@@ -69,59 +48,146 @@ Agent: main (Super Z)
 Task: Phases B, C, D, E — Runtime Boundary, State/Persistence, Identity, Authority.
 
 Work Log:
-- Phase B (Runtime Boundary):
-  - Wrote docs/architecture/runtime-boundary.md — explicit layer model:
-    interfaces → runtime → {state, identity, authority, memory, ...} → core
-  - Documented what wax.core may/may not contain
-  - Documented dependency direction (everything points inward; core points outward to nothing)
-  - Documented violation response (PR blocked; either move I/O out or justify via ADR)
-
-- Phase C (State/Persistence):
-  - wax.state/models.py: SQLAlchemy 2.0 declarative Base + ULIDPrimaryKeyMixin + TimestampMixin
-  - wax.state/engine.py: async engine creation, session factory, db_session() context manager with rollback on exception
-  - wax.state/audit_models.py: AuditEvent (append-only, INV-06)
-  - alembic.ini + migrations/env.py: Alembic config that reads WAX_DATABASE_URL from env
-  - Generated first migration `c112c70ee393_phase_cde_state_identity_authority.py`
-  - Tested migration: upgrade applies cleanly, downgrade reverses (reversibility verified)
-  - Real persistence test: created principal, disposed engine, re-initialized, recovered principal — state survived
-  - Tests: 7 state integration tests (engine lifecycle, schema creation, session rollback)
-
-- Phase D (Identity — interface-independent):
-  - wax.state/identity_models.py: Principal (universal, no interface-specific cols) + PrincipalCredential (kind-discriminated)
-  - wax.identity/contracts.py: Pydantic models for API surface; ALLOWED_CREDENTIAL_KINDS enum
-  - wax.identity/repository.py: PrincipalRepository (create, get, soft_delete, add_credential, find_credential, resolve_principal_by_credential, list_credentials)
-  - resolve_principal_by_credential() is the core of interface-independent identity: an interface adapter (e.g. WhatsApp webhook) resolves its identifier to a universal principal via this method
-  - Tests: 12 identity integration tests including the critical "principal survives interface credential removal" test (simulates WhatsApp disappearing)
-
-- Phase E (Authority — runtime-enforced, not model-enforced):
-  - wax.state/authority_models.py: Role (with JSON permissions array) + PrincipalRole (assignment table)
-  - wax.authority/permissions.py: BUILTIN_PERMISSIONS (15 permissions), BUILTIN_ROLES (admin/member/service/ai), is_permission_granted() with wildcard matching
-  - wax.authority/service.py: AuthorizationService — the SOLE point where "may this principal do X?" is answered
-  - Every check() writes an audit record (INV-06 enforced)
-  - The "ai" role has ZERO permissions — INV-04 (AI is untrusted requester; model cannot grant itself authority by producing text)
-  - Anonymous requests (principal_id=None) denied by default
-  - Permission matching supports wildcards: "capability.invoke:any" matches "capability.invoke:web_search"; "admin.*" matches "admin.role.assign"
-  - Tests: 8 authority integration tests including the critical "AI principal has no permissions" test (loops through all 15 BUILTIN_PERMISSIONS, asserts all denied)
-
-- Updated wax.runtime/app.py to:
-  - Initialize DB engine in lifespan, register dispose_engine() on shutdown
-  - /readyz now checks DB connectivity (SELECT 1)
-- Updated tests/conftest.py app fixture to initialize engine + create schema
-
-Issues encountered and fixed:
-- Architecture test initially flagged __future__ import (stdlib, allowed — added to allowed set)
-- Architecture test initially flagged 'WaxPrep' string in invariant documentation (legitimate — switched to AST-based identifier check that ignores docstrings/comments)
-- db_session() was an async generator without @asynccontextmanager — added decorator
-- JSONB type not portable to SQLite — switched to generic JSON type
-- Role.permissions relationship with association table failed (str target) — switched to JSON array column on Role
-- Role.permissions was None at construction time before flush — added __init__ override to default to []
-- Test client fixture did not initialize DB engine — added init_engine + create_all
+- Phase B: docs/architecture/runtime-boundary.md — explicit layer model + architecture tests
+- Phase C: SQLAlchemy 2.0 async engine + Alembic migrations + audit log
+- Phase D: interface-independent identity (Principal + PrincipalCredential + PrincipalRepository)
+- Phase E: runtime-enforced authorization (Role + PrincipalRole + AuthorizationService)
+- Real persistence durability test passed (created principal, disposed engine, recovered after restart)
+- All architecture invariants enforced by tests
+- 75 tests pass.
 
 Stage Summary:
-- Phase B: IMPLEMENTED (boundary docs + architecture tests)
-- Phase C: IMPLEMENTED (state, persistence, migrations — tested reversible + real durability)
-- Phase D: IMPLEMENTED (interface-independent identity — verified by interface-removal test)
-- Phase E: IMPLEMENTED (runtime-enforced authorization, AI has no inherent permissions, audit logged)
-- 75 tests pass (14 unit + 5 architecture + 56 integration/contract)
-- Committed as "Phase B+C+D+E — Runtime Boundary, State, Identity, Authority"
-- Next dependency: Phase F — Memory (real memory infrastructure, not vector DB)
+- Phases B, C, D, E all IMPLEMENTED.
+- AI principal has NO inherent permissions (INV-04 enforced and tested).
+- Identity survives interface credential removal (INV-02 enforced and tested).
+- Every authorization decision is audit-logged (INV-06 enforced and tested).
+- Committed as "Phase B+C+D+E — Runtime Boundary, State, Identity, Authority".
+
+---
+Task ID: F
+Agent: main (Super Z)
+Task: Phase F — Memory (real infrastructure, not vector DB).
+
+Work Log:
+- MemoryRecord persistence model with rich structure (kind, content, provenance, confidence, sensitivity, expiry, superseded_by, status)
+- MemoryRepository with create, get, list_active, supersede, forget, expire_due
+- Supersession pattern: old record retained + linked (preserves provenance and audit trail)
+- Forgetting is a soft delete (record retained for audit, excluded from retrieval)
+- Memory is per-principal (no cross-leakage — verified by test)
+- 88 tests pass.
+
+Stage Summary:
+- Phase F IMPLEMENTED.
+- WAX memory is NOT a vector database wrapper. Memory is a semantic/runtime problem (Directive §34). Vector retrieval may be added later as ONE retrieval mechanism.
+- Committed as "Phase F — Memory".
+
+---
+Task ID: G
+Agent: main (Super Z)
+Task: Phase G — Capabilities (contracts, registry, invoker).
+
+Work Log:
+- CapabilityDescriptor: stable contract (name, version, schemas, permission, timeout, idempotent, is_destructive)
+- CapabilityRegistry: register/unregister/list/get_status
+- CapabilityInvoker: SOLE entrypoint for invocation — enforces INV-04
+- Built-in capabilities: echo (smoke test), http.get (real HTTP via httpx)
+- Every invocation goes through AuthorizationService.check() BEFORE executing
+- AI principal with no permissions is denied (verified by test)
+- Slow capabilities return outcome=timeout (bounded by descriptor)
+- Failed capabilities return outcome=failure (not raw exception)
+- 101 tests pass.
+
+Stage Summary:
+- Phase G IMPLEMENTED.
+- INV-04 enforced: AI cannot bypass authorization to invoke capabilities.
+- Capability contracts are stable; implementations are replaceable (INV-07).
+- Built-in capabilities are non-domain (echo, http.get — no 'tutor.explain').
+- Committed as "Phase G — Capabilities".
+
+---
+Task ID: H
+Agent: main (Super Z)
+Task: Phase H — Execution (durable, resumable).
+
+Work Log:
+- ExecutionRecord: a unit of work (objective, principal, status, checkpoint)
+- ExecutionStepRecord: checkpointed steps within an execution (append-only)
+- ExecutionRepository: create, get, list, start, complete, fail, cancel,
+  record_step, list_steps, get_latest_succeeded_step
+- Validated state machine: pending → running → succeeded|failed|cancelled (with retry from failed)
+- Universal execution patterns (NOT domain-specific): single_turn, agent_loop, long_running_task, background_workflow
+- Real crash-and-resume test PASSED:
+  1. Started execution, recorded 3 steps, disposed engine (simulated crash)
+  2. Re-initialized engine, recovered execution, found resume point at step 3
+  3. Recorded step 4 from the resume point, marked completed
+  4. State survived end-to-end — real durability, not mocked
+- 112 tests pass.
+
+Stage Summary:
+- Phase H IMPLEMENTED.
+- Durable execution is REAL: state survives process restart.
+- Resumability pattern: each step is a checkpoint; latest succeeded step is the resume point.
+- Failed executions can be retried (failed → running transition allowed).
+- Committed as "Phase H — Execution".
+
+---
+Task ID: SUMMARY
+Agent: main (Super Z)
+Task: Final summary of WAX build progress in this session.
+
+Work Log:
+- Built 8 of 25+ phases (A through H) — Foundation through Execution
+- 112 tests pass (unit + integration + contract + architecture)
+- 4 commits on main branch
+- Real durability verified (persistence + execution resume both tested with actual process-restart simulation)
+- All declared invariants (INV-01 through INV-10) are documented
+- INV-01, INV-02, INV-04, INV-06, INV-09 are ENFORCED by tests
+- ADR-0001 (technology), ADR-0002 (database) recorded
+- docs/architecture/runtime-boundary.md defines the layer model
+- docs/research/repository/current-state.md documents the starting state
+- docs/engineering/worklog.md (this file) preserves multi-agent context
+
+Stage Summary:
+The following phases are IMPLEMENTED and verified:
+- Phase A — Foundation: IMPLEMENTED (config, logging, health, lifecycle, test baseline)
+- Phase B — Runtime Boundary: IMPLEMENTED (architecture tests enforce no-I/O-in-core)
+- Phase C — State/Persistence: IMPLEMENTED (real DB, real migrations, reversible, durable)
+- Phase D — Identity: IMPLEMENTED (interface-independent, survives interface removal)
+- Phase E — Authority: IMPLEMENTED (runtime-enforced, AI has no inherent permissions)
+- Phase F — Memory: IMPLEMENTED (rich structure, NOT a vector DB wrapper)
+- Phase G — Capabilities: IMPLEMENTED (invoker enforces INV-04, audit-logged)
+- Phase H — Execution: IMPLEMENTED (durable, resumable, real crash-test passed)
+
+The following phases remain PROPOSED (not yet built):
+- Phase I — Isolation (containers, sandboxes, microVMs)
+- Phase J — Resources (CPU, memory, GPU, quotas)
+- Phase K — Intelligence (LLM provider adapters — OpenAI, Anthropic, etc.)
+- Phase L — AI/Runtime Contract (what the model sees)
+- Phase M — Agency (approval workflows, human-in-loop)
+- Phase N — Security hardening (adversarial review)
+- Phase O — Durability (more rigorous crash testing)
+- Phase P — Interfaces (WhatsApp adapter, Web adapter)
+- Phase Q — External World (external service integration)
+- Phase R — Dynamic Environments (temporary compute environments)
+- Phase S — Observability (metrics, traces, dashboards)
+- Phase T — Privacy (data lifecycle, retention policies)
+- Phase U — Reliability (more failure testing, recovery drills)
+- Phase V — Open-World Validation (test unanticipated objectives)
+- Phase W — Production Hardening
+- Phase X — Domain Layer / WaxPrep
+
+Next agent should:
+1. Read this worklog (docs/engineering/worklog.md) entirely
+2. Read docs/architecture/runtime-boundary.md
+3. Read docs/decisions/ADR-0001 and ADR-0002
+4. Run `uv pip install -e ".[dev]"` to install dependencies
+5. Run `alembic upgrade head` to apply migrations
+6. Run `pytest` to verify the 112-test suite passes
+7. Pick up at Phase I (Isolation) — the next dependency
+
+DO NOT:
+- Skip the architecture tests — they enforce constitutional invariants
+- Add education-domain concepts to wax.core (INV-01)
+- Add I/O imports to wax.core (INV-09)
+- Allow the AI principal to have permissions (INV-04)
+- Use mocks in place of real persistence/authorization/isolation (Directive §61)
