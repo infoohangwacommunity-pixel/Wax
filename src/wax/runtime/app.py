@@ -54,7 +54,12 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
 
         lifecycle.install_signal_handlers()
 
-        # TODO Phase C: initialize DB engine + connection pool here
+        # Initialize database engine (Phase C)
+        from wax.state.engine import dispose_engine, init_engine
+
+        init_engine(settings)
+        lifecycle.on_shutdown("state.engine", dispose_engine())
+
         # TODO Phase O: initialize LLM provider adapters here
         # TODO Phase G: initialize capability registry here
 
@@ -92,15 +97,21 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
 
     @app.get("/readyz", tags=["health"])
     async def readyz() -> JSONResponse:
-        """Readiness probe. Returns 200 only if all dependencies are ready.
-
-        For Phase A, "ready" just means "alive" — no DB, no LLM, no external
-        dependencies have been wired yet. As phases are added, this endpoint
-        must be extended to check them.
-        """
+        """Readiness probe. Returns 200 only if all dependencies are ready."""
         checks: dict[str, str] = {}
 
-        # TODO Phase C: check DB connectivity
+        # Phase C: check DB connectivity
+        try:
+            from sqlalchemy import text
+
+            from wax.state.engine import db_session
+
+            async with db_session() as session:
+                await session.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        except Exception as e:
+            checks["database"] = f"fail: {type(e).__name__}"
+
         # TODO Phase O: check at least one LLM provider is configured
         # TODO Phase G: check capability registry is populated
 
@@ -110,7 +121,7 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             status_code=status_code,
             content={
                 "status": "ok" if all_ok else "not_ready",
-                "checks": checks or {"phase_a": "ok"},
+                "checks": checks,
                 "version": __version__,
             },
         )

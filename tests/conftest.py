@@ -27,8 +27,24 @@ def test_settings() -> Any:
 
 @pytest.fixture
 async def app(test_settings: Any) -> Any:
-    """Build a FastAPI app with test settings."""
-    return create_app(settings=test_settings)
+    """Build a FastAPI app with test settings and initialized DB."""
+    # Override DB URL to in-memory SQLite for hermetic tests.
+    test_settings.__dict__["database_url"] = "sqlite+aiosqlite:///:memory:"
+    app = create_app(settings=test_settings)
+
+    # Initialize the DB engine and create schema (migrations are tested
+    # separately; for unit/integration tests we just create_all).
+    from wax.state.engine import dispose_engine, init_engine
+    from wax.state.models import Base
+
+    init_engine(test_settings)
+    engine = init_engine.__globals__["_engine"]
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    yield app
+
+    await dispose_engine()
 
 
 @pytest.fixture
