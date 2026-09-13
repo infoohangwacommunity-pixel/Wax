@@ -40,6 +40,9 @@ dependencies = [
 # adapters degrade to the documented estimator when this is absent, and
 # the degradation is observable through the adapter's token_counter.
 exact-tokens = ["tiktoken>=0.8.0"]
+# Real document text extraction (PDF text layer). Self-gating: without
+# it the document extractor reports document_extraction_not_configured.
+media-docs = ["pypdf>=5.0.0"]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",

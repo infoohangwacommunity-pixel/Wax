@@ -272,3 +272,24 @@ class TestMaintenanceLoop:
         assert await _ledger_count() == 0
 
 
+class TestPruneStatsAccounting:
+    async def test_ledger_total_after_is_never_negative(self, fresh_db):
+        """Regression: the live probe surfaced ledger_total_after=-5.
+        `total` is measured AFTER retention deletes; subtracting the
+        retention count again double-counted and reported a negative
+        ledger."""
+        from datetime import datetime, timedelta, timezone as tz
+
+        for i in range(7):
+            await _emit(f"acc.test.{i}", age_seconds=40 * 86400)
+        await _emit("acc.fresh", age_seconds=0)
+
+        async with db_session() as session:
+            stats = await SignalRepository(session).prune(
+                retention_seconds=30 * 86400.0,
+                max_rows=10_000,
+            )
+            await session.commit()
+        assert stats["retention_deleted"] == 7
+        assert stats["ledger_total_after"] == 1
+        assert stats["ledger_total_after"] >= 0

@@ -117,12 +117,16 @@ class NamespaceBoundary(SubprocessBoundary):
         if unshare is None or os.name != "posix":
             return False
         try:
-            proc = os.system(  # noqa: S605 — fixed argv below, no user input
-                f"{unshare} {' '.join(_UNSHARE_FLAGS)} true >/dev/null 2>&1"
+            import subprocess
+
+            result = subprocess.run(
+                [unshare, *_UNSHARE_FLAGS, "true"],
+                capture_output=True,
+                timeout=10,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             return False
-        return proc == 0
+        return result.returncode == 0
 
     async def execute(self, request: IsolationRequest) -> ExecutionResult:
         if not self.available():

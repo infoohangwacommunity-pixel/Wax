@@ -162,6 +162,9 @@ def register_code_run_capability(registry: CapabilityRegistry, services: Runtime
                 language=language,
                 timeout_seconds=timeout_seconds,
                 working_dir=working_dir,
+                memory_limit_mb=int(services.settings.isolation_memory_limit_mb),
+                max_processes=int(services.settings.isolation_max_processes),
+                max_file_bytes=int(services.settings.isolation_max_file_bytes),
             )
         )
         services.metrics.code_executed(isolation=isolation_kind)

@@ -103,7 +103,33 @@ class TestClassifyMimeType:
 
 
 class TestMediaPipelineDefaults:
-    async def test_default_pipeline_uses_stub_image_extractor(self) -> None:
+    async def test_default_pipeline_uses_real_image_extractor(self) -> None:
+        """The default image extractor is REAL (tesseract, self-gating).
+        On hosts with tesseract, garbage bytes fail honestly with
+        ocr_failed; on hosts without it, image_ocr_not_configured."""
+        import shutil as _shutil
+
+        pipeline = MediaPipeline()
+        result = await pipeline.extract(
+            MediaSource(
+                media_id="m1",
+                mime_type="image/jpeg",
+                kind=MediaKind.IMAGE,
+                bytes_data=b"fake-image-bytes",
+            )
+        )
+        assert result.success is False
+        assert result.extractor_name == "tesseract_ocr"
+        if _shutil.which("tesseract"):
+            assert result.error == "ocr_failed"
+        else:
+            assert result.error == "image_ocr_not_configured"
+
+    async def test_default_pipeline_self_gates_without_tesseract(self, monkeypatch) -> None:
+        """No tesseract on host → the honest not-configured result."""
+        import shutil as _shutil
+
+        monkeypatch.setattr(_shutil, "which", lambda name: None)
         pipeline = MediaPipeline()
         result = await pipeline.extract(
             MediaSource(
@@ -115,7 +141,6 @@ class TestMediaPipelineDefaults:
         )
         assert result.success is False
         assert result.error == "image_ocr_not_configured"
-        assert result.extractor_name == "stub_image_ocr"
 
     async def test_default_pipeline_uses_stub_audio_extractor(self) -> None:
         pipeline = MediaPipeline()
@@ -130,7 +155,9 @@ class TestMediaPipelineDefaults:
         assert result.success is False
         assert result.error == "audio_transcription_not_configured"
 
-    async def test_default_pipeline_uses_stub_document_extractor(self) -> None:
+    async def test_default_pipeline_uses_real_document_extractor(self) -> None:
+        """The default document extractor is REAL (pypdf); garbage bytes
+        fail honestly as a parse failure."""
         pipeline = MediaPipeline()
         result = await pipeline.extract(
             MediaSource(
@@ -141,7 +168,8 @@ class TestMediaPipelineDefaults:
             )
         )
         assert result.success is False
-        assert result.error == "document_extraction_not_configured"
+        assert result.extractor_name == "pypdf_text"
+        assert result.error in ("document_parse_failed", "document_extraction_not_configured")
 
     async def test_unknown_kind_returns_no_extractor_error(self) -> None:
         pipeline = MediaPipeline()

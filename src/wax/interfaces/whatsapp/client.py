@@ -325,31 +325,12 @@ class WhatsAppClient:
         response.raise_for_status()
         return response.json() if response.content else {}
 
-    async def send_typing_indicator(
-        self, message_id: str, typing: bool = True
-    ) -> dict[str, Any]:
-        """Send a typing indicator (shows "typing..." in WhatsApp UI).
-
-        Requires the message_id of the user's message that triggered this.
-        """
-        url = f"/{self._phone_number_id}/messages"
-        response = await self._client.post(
-            url,
-            json={
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": "",  # not needed; typing uses message_id context
-                "type": "reaction",  # placeholder; real typing uses a different endpoint
-                "context": {"message_id": message_id},
-                "typing": typing,
-            },
-        )
-        # This is a placeholder for the real typing indicator API; Meta
-        # may require a separate endpoint or webhook-based approach.
-        if response.status_code >= 400:
-            log.warning("whatsapp.typing_indicator_failed", status=response.status_code)
-        return response.json() if response.content else {}
-
+    # NOTE (reconciliation-5): a previous send_typing_indicator method
+    # was REMOVED here. It was dead code (no caller) that posted a
+    # fabricated payload ("type": "reaction" + "typing" field) and
+    # commented itself as a placeholder. WAX does not ship fake
+    # implementations; if typing indicators are wanted, implement and
+    # live-verify against the real Meta Cloud API contract first.
     # -------------------------------------------------------------------
     # Media lifecycle (Phase S)
     # -------------------------------------------------------------------

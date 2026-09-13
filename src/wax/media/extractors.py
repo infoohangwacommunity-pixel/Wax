@@ -1,19 +1,19 @@
-"""Stub extractors for Phase T.
+"""Media extractors — honest defaults for every kind.
 
-These are WORKING PLACEHOLDERS that:
-- Return clear "extraction not yet configured" messages
-- Do NOT pretend to extract real text
-- Document the contract real extractors will satisfy
+DEFAULT_EXTRACTORS wires the REAL extractors where the runtime can
+provide them:
 
-Real extractor implementations:
-- ImageOCRExtractor: Tesseract (open source) or AWS Textract / Google
-  Vision / Azure Computer Vision (cloud)
-- AudioTranscriptionExtractor: OpenAI Whisper (local) or
-  AWS Transcribe / Google Speech-to-Text / Azure Speech (cloud)
-- DocumentTextExtractor: pypdf for PDF, python-docx for DOCX
+- IMAGE: TesseractImageExtractor (system tesseract; self-gating — on
+  hosts without the binary it reports image_ocr_not_configured,
+  identical to the previous stub behavior, so this is a strict upgrade)
+- DOCUMENT: PdfDocumentExtractor (pypdf text layer; self-gating;
+  scanned PDFs honestly report no_text_layer)
+- AUDIO: StubAudioExtractor — HONEST stub. Offline transcription needs
+  a large model download (a deployment decision); the stub reports
+  audio_transcription_not_configured and never fakes text.
 
-These will be implemented when the founder provides API credentials or
-when we wire local libraries (Tesseract, Whisper local model).
+Stub classes are retained for explicit deployments/tests that want to
+pin the not-configured behavior.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from wax.media.contracts import (
     MediaKind,
     MediaSource,
 )
+from wax.media.real_extractors import PdfDocumentExtractor, TesseractImageExtractor
 
 
 class StubImageExtractor(MediaExtractor):
@@ -110,9 +111,13 @@ class StubDocumentExtractor(MediaExtractor):
         )
 
 
-# Registry of default extractors
+# Registry of default extractors. IMAGE and DOCUMENT are REAL
+# (self-gating) extractors; AUDIO stays an honest stub.
 DEFAULT_EXTRACTORS: dict[MediaKind, MediaExtractor] = {
-    MediaKind.IMAGE: StubImageExtractor(),
+    MediaKind.IMAGE: TesseractImageExtractor(),
     MediaKind.AUDIO: StubAudioExtractor(),
-    MediaKind.DOCUMENT: StubDocumentExtractor(),
+    MediaKind.DOCUMENT: PdfDocumentExtractor(),
 }
+
+# Real extractors live in real_extractors.py (imported here so the
+# default registry above is the single wiring point).

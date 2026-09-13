@@ -10,11 +10,13 @@ untrusted bytes to a model without first sanitizing them.
 Architecture:
 - MediaPipeline: orchestrates extraction
 - MediaExtractor: abstract contract for a media-type-specific extractor
-- extractors/image_ocr: extracts text from images (Phase T placeholder —
-  wires to Tesseract or cloud OCR when available)
-- extractors/audio_transcription: extracts text from audio (placeholder —
-  wires to Whisper or cloud transcription when available)
-- extractors/document_text: extracts text from documents (PDF, DOCX, etc.)
+- extractors.TesseractImageExtractor: REAL image OCR via the system
+  tesseract binary (self-gating: hosts without it get an honest
+  image_ocr_not_configured result, never a faked success)
+- extractors.PdfDocumentExtractor: REAL PDF text-layer extraction via
+  pypdf (optional extra; scanned PDFs honestly report no_text_layer)
+- extractors.StubAudioExtractor: HONEST stub — offline transcription
+  requires a large model download (deployment decision)
 
 INVARIANT: The runtime extracts. The AI interprets. The AI never receives
 raw media bytes — only the extracted text/structure.

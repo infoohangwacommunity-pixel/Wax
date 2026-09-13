@@ -102,6 +102,11 @@ class WaxSettings(BaseSettings):
     # the host supports unprivileged user namespaces, else subprocess —
     # LOUD fallback), "namespace" (require it), "subprocess" (legacy).
     isolation_backend: str = "auto"
+    # Resource-governance rlimits for sandboxed code (anti-bomb budgets,
+    # NOT the security boundary — that is the namespace itself).
+    isolation_memory_limit_mb: int = 512
+    isolation_max_processes: int = 64
+    isolation_max_file_bytes: int = 16_000_000
 
     # --- Runtime mechanisms ---
     # Poll interval for the in-process background work runner (Phase V).

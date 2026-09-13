@@ -234,5 +234,9 @@ class SignalRepository:
                 )
             stats["bound_deleted"] = len(ids)
             stats["ledger_total"] = total
-        stats["ledger_total_after"] = total - stats["retention_deleted"] - stats["bound_deleted"]
+        # `total` was counted AFTER the retention deletes committed in
+        # this session, so it already excludes retention_deleted —
+        # subtracting it again would report a negative ledger (a defect
+        # the live probe surfaced: ledger_total_after=-5).
+        stats["ledger_total_after"] = total - stats["bound_deleted"]
         return stats
