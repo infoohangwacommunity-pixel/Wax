@@ -408,12 +408,14 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             raise ValueError("max_attempts must be between 1 and 10")
 
         if descriptor.is_destructive:
-            # Honest constraint: scheduled destructive work would hit the
-            # agency gate at wake time and could never run.
-            raise ValueError(
-                "Destructive capabilities cannot be scheduled: no "
-                "human-approval workflow exists yet"
-            )
+            # Destructive work is schedulable: at wake time the agency gate
+            # routes it into the human-approval primitive (a pending
+            # approval is created honestly, the attempt fails without
+            # consuming anything, and the human's approval authorizes the
+            # retry/requeue exactly once). The authority boundary moved
+            # from "refuse to schedule" to "refuse to run without an
+            # explicit human YES" — the stronger, generic guarantee.
+            pass
 
         expires_at = _parse_optional_deadline(inputs)
 
