@@ -93,7 +93,6 @@ async def maintenance_loop(settings: Any, interval_seconds: float = 300.0) -> No
     """Periodic maintenance sweep. Runs as a lifespan task."""
     import asyncio
 
-    from wax.state.engine import db_session
 
     log.info("runtime.maintenance_started", interval_s=interval_seconds)
     while True:

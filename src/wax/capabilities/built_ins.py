@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
-
 from wax.capabilities.contracts import (
     CapabilityDescriptor,
     InvocationContext,

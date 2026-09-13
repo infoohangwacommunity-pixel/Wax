@@ -35,36 +35,54 @@ class PermissionNamespace(StrEnum):
     ADMIN = "admin"
 
 
-# Built-in permissions. New permissions are added as capabilities are
-# introduced. Adding a permission is a deliberate architectural act.
-BUILTIN_PERMISSIONS: frozenset[str] = frozenset(
-    {
-        # Memory (Phase F)
-        "memory.read",
-        "memory.write",
-        # Capabilities (Phase G)
-        "capability.invoke:any",
-        "capability.invoke:built_in",  # built-in tools (http.get, http.post)
-        "capability.invoke:web_search",  # future
-        "capability.invoke:code_run",  # future
-        # Execution (Phase H)
-        "execution.start",
-        "execution.cancel",
-        "execution.read",
-        # Identity (Phase D)
-        "identity.read",
-        "identity.create",
-        "identity.delete",
-        # Authority (Phase E)
-        "authority.role.assign",
-        "authority.role.revoke",
-        "authority.role.create",
-        # Audit (Phase C)
-        "audit.read",
-        # Admin
-        "admin.*",
-    }
+# Built-in permissions. The MANIFEST below is the single source of
+# truth; PermissionNamespace groups it and BUILTIN_PERMISSIONS derives
+# from it, so an enum member and a permission string cannot drift apart.
+# New permissions are added as capabilities are introduced. Adding a
+# permission is a deliberate architectural act.
+_PERMISSION_MANIFEST: tuple[str, ...] = (
+    # Memory (Phase F)
+    "memory.read",
+    "memory.write",
+    # Capabilities (Phase G)
+    "capability.invoke:any",
+    "capability.invoke:built_in",  # built-in tools (http.get, http.post)
+    "capability.invoke:web_search",
+    "capability.invoke:code_run",
+    # Execution (Phase H)
+    "execution.start",
+    "execution.cancel",
+    "execution.read",
+    # Identity (Phase D)
+    "identity.read",
+    "identity.create",
+    "identity.delete",
+    # Authority (Phase E)
+    "authority.role.assign",
+    "authority.role.revoke",
+    "authority.role.create",
+    # Audit (Phase C)
+    "audit.read",
+    # Admin
+    "admin.*",
 )
+
+BUILTIN_PERMISSIONS: frozenset[str] = frozenset(_PERMISSION_MANIFEST)
+
+
+def _assert_manifest_namespaces() -> None:
+    """Import-time consistency: every manifest permission's namespace
+    must be a declared PermissionNamespace (drift fails fast)."""
+    declared = {ns.value for ns in PermissionNamespace}
+    for permission in _PERMISSION_MANIFEST:
+        namespace = permission.split(".", 1)[0]
+        assert namespace in declared, (
+            f"permission {permission!r} uses undeclared namespace "
+            f"{namespace!r} (add it to PermissionNamespace)"
+        )
+
+
+_assert_manifest_namespaces()
 
 
 # Built-in roles

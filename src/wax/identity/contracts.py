@@ -25,12 +25,6 @@ ALLOWED_CREDENTIAL_KINDS: frozenset[str] = frozenset(
 )
 
 
-class PrincipalCreate(BaseModel):
-    """Payload to create a new principal."""
-
-    display_name: str | None = Field(default=None, max_length=255)
-
-
 class PrincipalRead(BaseModel):
     """A principal as returned from the API."""
 
@@ -52,22 +46,6 @@ class PrincipalRead(BaseModel):
             is_active=principal.is_active,  # type: ignore[attr-defined]
         )
 
-
-class PrincipalCredentialCreate(BaseModel):
-    """Payload to attach a credential to a principal."""
-
-    kind: str = Field(..., description="Credential kind (e.g. 'whatsapp_phone')")
-    value: str = Field(..., min_length=1, max_length=512)
-    is_verified: bool = False
-
-    @field_validator("kind")
-    @classmethod
-    def _validate_kind(cls, v: str) -> str:
-        if v not in ALLOWED_CREDENTIAL_KINDS:
-            raise ValueError(
-                f"Unknown credential kind: {v!r}. Allowed: {sorted(ALLOWED_CREDENTIAL_KINDS)}"
-            )
-        return v
 
 
 class PrincipalCredentialRead(BaseModel):

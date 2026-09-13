@@ -222,3 +222,21 @@ class TestBuiltinRoles:
     def test_service_role_can_read_audit(self) -> None:
         service = BUILTIN_ROLES["service"]
         assert "audit.read" in service
+
+    def test_every_role_permission_is_a_builtin_permission(self) -> None:
+        """Consistency invariant: a role can never grant a permission the
+        runtime does not declare (drift between roles and the manifest
+        would silently authorize nothing — or worse, bypass intent)."""
+        for role, permissions in BUILTIN_ROLES.items():
+            unknown = permissions - BUILTIN_PERMISSIONS
+            assert not unknown, (
+                f"role {role!r} grants undeclared permissions: {sorted(unknown)}"
+            )
+
+    def test_manifest_namespaces_are_declared(self) -> None:
+        """PermissionNamespace and the manifest cannot drift: the module
+        asserts at import time; this pins the grouping explicitly."""
+        from wax.authority.permissions import PermissionNamespace
+
+        declared = {ns.value for ns in PermissionNamespace}
+        assert {"memory", "capability", "execution", "authority", "audit"} <= declared

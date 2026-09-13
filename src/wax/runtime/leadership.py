@@ -66,7 +66,7 @@ class MaintenanceLeadership:
         self._cm: Any | None = None  # held db_session context manager, if any
 
     @classmethod
-    async def acquire(cls, settings: Any) -> "MaintenanceLeadership":
+    async def acquire(cls, settings: Any) -> MaintenanceLeadership:
         """Try to become the leader for one maintenance pass."""
         from wax.state.engine import db_session
 

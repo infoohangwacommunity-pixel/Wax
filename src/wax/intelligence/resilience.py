@@ -117,7 +117,7 @@ class ResilientProvider:
         async def _attempt() -> LLMResponse:
             try:
                 return await self._inner.complete(request)
-            except Exception as e:  # noqa: BLE001 — classified below
+            except Exception as e:
                 raise classify_llm_error(e) from e
 
         def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:

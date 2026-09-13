@@ -24,10 +24,6 @@ log = get_logger(__name__)
 SenderFn = Callable[[str, str], Awaitable[dict[str, Any]]]
 
 
-class SendResult(dict[str, Any]):
-    """Type alias stand-in; kept trivial on purpose."""
-
-
 class DeliveryRouter:
     """Registry of interface senders + the runtime's outbound send API."""
 

@@ -321,7 +321,8 @@ class MemoryRepository:
         needed. On Postgres with the ADR-0019 schema, callers with
         `use_postgres_fts=True` get the GIN-indexed path instead.
         """
-        from sqlalchemy import or_, cast, String as SAString
+        from sqlalchemy import String as SAString
+        from sqlalchemy import cast, or_
 
         base = [
             MemoryRecord.principal_id == principal_id,

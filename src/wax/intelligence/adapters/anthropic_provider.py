@@ -24,7 +24,6 @@ from collections.abc import AsyncIterator
 import httpx
 
 from wax.intelligence.contracts import (
-    LLMMessage,
     LLMRequest,
     LLMResponse,
     LLMStreamChunk,

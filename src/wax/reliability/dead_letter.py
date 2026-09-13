@@ -111,7 +111,7 @@ class DeadLetterRepository:
 
         stmt = (
             select(DeadLetterEntry)
-            .where(DeadLetterEntry.reprocessed == False)  # noqa: E712
+            .where(DeadLetterEntry.reprocessed == False)
             .order_by(DeadLetterEntry.created_at.desc())
             .limit(limit)
         )
