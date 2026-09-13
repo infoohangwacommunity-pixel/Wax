@@ -101,3 +101,19 @@ Audit source: WAX_Current_Repository_Reality_Report.pdf (41-page forensic audit)
   runner wakes → message.send delivers. A reminder exists as a
   MECHANISM COMPOSITION; there is no ReminderService/TimerService.
 - 340 → 352 tests.
+
+## Task 5 — Phase S: Dynamic provisioning (commit 5)
+
+- New table `provisioned_resources` (migration c3a95f1e8b21, chain
+  verified): kind / status / principal_id / execution_id / uri / expires_at
+  / limits / metadata.
+- ProvisioningService: provision_scratch_dir (per-principal active limit,
+  TTL cap 24h, path under provisioning_root, audit event),
+  release (owner-only), expire_due (TTL reaper; audit row survives),
+  promote (the ONLY path to permanence — clears TTL with audit).
+- Path containment: destroy() refuses paths outside provisioning_root, so
+  a tampered row can never point the reaper at arbitrary paths.
+- scratch.workspace capability: the AI can request an ephemeral scratch
+  directory; honest refusal on invalid TTL / limit exhaustion.
+- Lifespan: maintenance reaper task (60s interval) with clean shutdown.
+- 352 -> 360 tests (test_provisioning.py).

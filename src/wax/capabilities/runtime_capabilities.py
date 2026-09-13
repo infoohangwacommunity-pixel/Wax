@@ -171,6 +171,32 @@ MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
 )
 
 
+SCRATCH_WORKSPACE_DESCRIPTOR = CapabilityDescriptor(
+    name="scratch.workspace",
+    description=(
+        "Provision a temporary scratch directory for the requesting "
+        "principal. Ephemeral: it is destroyed automatically at TTL expiry. "
+        "Use for intermediate files during multi-step work."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "ttl_seconds": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 86400,
+                "default": 900,
+            },
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+
 def register_runtime_capabilities(registry: CapabilityRegistry, services: RuntimeServices) -> None:
     """Register the runtime-mechanism capabilities bound to THIS container."""
 
@@ -362,8 +388,46 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "recipient_id": recipient_id,
         }
 
+    # --- scratch.workspace (Phase S) ----------------------------------
+
+    async def scratch_workspace_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
+        from wax.runtime.provisioning import (
+            ProvisioningError,
+            ProvisioningService,
+        )
+
+        ttl_seconds = inputs.get("ttl_seconds", 900)
+        try:
+            ttl_seconds = int(ttl_seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError("ttl_seconds must be an integer") from e
+
+        provisioning = ProvisioningService(services.settings)
+        try:
+            async with db_session() as session:
+                record = await provisioning.provision_scratch_dir(
+                    session,
+                    principal_id=ctx.principal_id,
+                    ttl_seconds=ttl_seconds,
+                    execution_id=ctx.execution_id,
+                )
+                await session.commit()
+        except ProvisioningError as e:
+            raise ValueError(str(e)) from e
+
+        services.metrics.resource_provisioned("scratch_dir")
+        return {
+            "resource_id": record.id,
+            "kind": "scratch_dir",
+            "path": record.uri,
+            "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+        }
+
     registry.register(WORK_SCHEDULE_DESCRIPTOR, work_schedule_impl)
     registry.register(WORK_CANCEL_DESCRIPTOR, work_cancel_impl)
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
-    log.info("capability.runtime_registered", count=4)
+    registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
+    log.info("capability.runtime_registered", count=5)

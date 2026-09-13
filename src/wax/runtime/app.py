@@ -137,6 +137,18 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         work_runner.start()
         lifecycle.on_shutdown("work_runner", work_runner.stop())
 
+        # Phase S: the provisioning TTL reaper (resources never outlive
+        # their TTL unless intentionally promoted).
+        import asyncio
+
+        from wax.runtime.provisioning import maintenance_loop, stop_maintenance
+
+        provisioning_task = asyncio.create_task(
+            maintenance_loop(settings, interval_seconds=60.0),
+            name="wax-provisioning-reaper",
+        )
+        lifecycle.on_shutdown("provisioning_reaper", stop_maintenance(provisioning_task))
+
         try:
             yield
         finally:
