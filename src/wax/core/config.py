@@ -81,10 +81,16 @@ class WaxSettings(BaseSettings):
     # --- Secrets ---
     secret_key: str = Field(default="", description="WAX master secret. MUST be set in production.")
 
-    # --- LLM providers (Phase O) ---
+    # --- LLM providers (Phase O — Intelligence) ---
     llm_default_provider: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+
+    # --- WhatsApp (Phase Q — Interface) ---
+    whatsapp_access_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_app_secret: str = ""
+    whatsapp_verify_token: str = "wax-default-verify-token"
 
     # --- Convenience predicates -------------------------------------------
 

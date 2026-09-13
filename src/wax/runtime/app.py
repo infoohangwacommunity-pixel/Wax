@@ -60,7 +60,36 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         init_engine(settings)
         lifecycle.on_shutdown("state.engine", dispose_engine())
 
-        # TODO Phase O: initialize LLM provider adapters here
+        # Initialize IntelligenceService (Phase K)
+        from wax.intelligence.service import IntelligenceService
+
+        intel = IntelligenceService.from_settings(settings)
+        app.state.intelligence = intel
+        lifecycle.on_shutdown("intelligence.close", intel.close())
+
+        # Initialize RuntimeBridge (Phase R)
+        from wax.runtime.bridge.service import RuntimeBridge
+
+        bridge = RuntimeBridge(intelligence=intel)
+        app.state.runtime_bridge = bridge
+
+        # Initialize WhatsApp client if credentials are present (Phase Q)
+        if settings.whatsapp_access_token and settings.whatsapp_phone_number_id:
+            from wax.interfaces.whatsapp.client import WhatsAppClient
+
+            wa_client = WhatsAppClient(
+                access_token=settings.whatsapp_access_token,
+                phone_number_id=settings.whatsapp_phone_number_id,
+                app_secret=settings.whatsapp_app_secret or "unset",
+                verify_token=settings.whatsapp_verify_token,
+            )
+            app.state.whatsapp_client = wa_client
+            lifecycle.on_shutdown("whatsapp.close", wa_client.close())
+            log.info("whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id)
+        else:
+            app.state.whatsapp_client = None
+            log.warning("whatsapp.client.not_configured")
+
         # TODO Phase G: initialize capability registry here
 
         try:
@@ -188,19 +217,53 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         adapter = WhatsAppAdapter(client=whatsapp_client)
 
         async def _runtime_callback(message):  # type: ignore[no-untyped-def]
-            """Called for each incoming WhatsApp message.
+            """Convert the WhatsApp message → RuntimeRequest → process via bridge.
 
-            For now, just log. Phase R (Runtime Composition) will wire this
-            to Objective + Intelligence + Execution.
+            This is the SOLE place where WhatsApp shapes become RuntimeRequest.
             """
-            log.info(
-                "whatsapp.runtime_callback.invoked",
-                from_phone=message.from_phone,
-                message_type=message.type.value,
-                text=message.effective_text[:200],
+            from datetime import datetime, timezone
+
+            from wax.runtime.bridge.contracts import (
+                InterfaceKind,
+                RuntimeRequest,
             )
-            # Placeholder: echo back what we received
-            return f"WAX received your {message.type.value} message. (Runtime composition pending Phase R.)"
+            from wax.state.engine import db_session
+
+            bridge = getattr(app.state, "runtime_bridge", None)
+            if bridge is None:
+                log.error("whatsapp.bridge_not_configured")
+                return None
+
+            request = RuntimeRequest(
+                interface_message_id=message.message_id,
+                interface_kind=InterfaceKind.WHATSAPP,
+                sender_interface_id=message.from_phone,
+                sender_display_name=message.from_name,
+                text=message.effective_text,
+                received_at=message.timestamp or datetime.now(timezone.utc),
+            )
+
+            async with db_session() as session:
+                response = await bridge.process(session, request)
+
+            # Send the response back via WhatsApp (if successful and not duplicate)
+            if response.status.value == "success" and response.text:
+                try:
+                    await whatsapp_client.send_text(message.from_phone, response.text)
+                except Exception as e:
+                    log.error(
+                        "whatsapp.response.send_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        to=message.from_phone,
+                    )
+            elif response.status.value == "duplicate":
+                log.info(
+                    "whatsapp.duplicate_message.skipped",
+                    message_id=message.message_id,
+                )
+            # On error, do NOT send anything back (avoid noise during outages)
+            return None  # bridge handles sending; callback returns None
 
         return await adapter.handle_webhook(
             raw_body=request_body,

@@ -1,8 +1,8 @@
-"""phase_l_objective
+"""phase_r_bridge
 
-Revision ID: cc6d11f2da45
+Revision ID: bb7848c831d0
 Revises: 
-Create Date: 2026-09-13 07:58:10.076599+00:00
+Create Date: 2026-09-13 08:21:51.409834+00:00
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'cc6d11f2da45'
+revision: str = 'bb7848c831d0'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -46,6 +46,26 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_table('processed_messages',
+    sa.Column('interface_kind', sa.String(length=32), nullable=False),
+    sa.Column('interface_message_id', sa.String(length=256), nullable=False),
+    sa.Column('principal_id', sa.String(length=26), nullable=True),
+    sa.Column('execution_id', sa.String(length=26), nullable=True),
+    sa.Column('objective_id', sa.String(length=26), nullable=True),
+    sa.Column('outcome', sa.String(length=32), nullable=False),
+    sa.Column('request_text', sa.String(length=2000), nullable=True),
+    sa.Column('response_text', sa.String(length=5000), nullable=True),
+    sa.Column('received_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('metadata_json', sa.JSON(), nullable=True),
+    sa.Column('id', sa.String(length=26), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('interface_kind', 'interface_message_id', name='uq_processed_messages_interface_id')
+    )
+    op.create_index('ix_processed_messages_execution', 'processed_messages', ['execution_id'], unique=False)
+    op.create_index('ix_processed_messages_principal', 'processed_messages', ['principal_id'], unique=False)
     op.create_table('roles',
     sa.Column('name', sa.String(length=64), nullable=False),
     sa.Column('description', sa.String(length=512), nullable=True),
@@ -184,6 +204,9 @@ def downgrade() -> None:
     op.drop_index('ix_executions_principal', table_name='executions')
     op.drop_table('executions')
     op.drop_table('roles')
+    op.drop_index('ix_processed_messages_principal', table_name='processed_messages')
+    op.drop_index('ix_processed_messages_execution', table_name='processed_messages')
+    op.drop_table('processed_messages')
     op.drop_table('principals')
     op.drop_index('ix_audit_events_principal', table_name='audit_events')
     op.drop_index('ix_audit_events_kind', table_name='audit_events')

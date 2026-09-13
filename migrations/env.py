@@ -37,6 +37,7 @@ import wax.state.authority_models  # noqa: E402,F401  (Phase E)
 import wax.state.memory_models  # noqa: E402,F401  (Phase F)
 import wax.state.execution_models  # noqa: E402,F401  (Phase H)
 import wax.state.objective_models  # noqa: E402,F401  (Phase L)
+import wax.state.bridge_models  # noqa: E402,F401  (Phase R)
 
 config = context.config
 
