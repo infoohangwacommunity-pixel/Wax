@@ -31,9 +31,9 @@ from wax.runtime.bridge.store import ProcessedMessageRecord
 
 __all__ = [
     "InterfaceKind",
+    "ProcessedMessageRecord",
+    "RuntimeBridge",
     "RuntimeRequest",
     "RuntimeResponse",
     "RuntimeResponseStatus",
-    "RuntimeBridge",
-    "ProcessedMessageRecord",
 ]

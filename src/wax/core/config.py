@@ -85,6 +85,23 @@ class WaxSettings(BaseSettings):
     llm_default_provider: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    # Base URL for OpenAI-compatible endpoints (vLLM, Together, OpenRouter, ...).
+    # Empty string = the provider's official endpoint. Making this configurable
+    # keeps the runtime model-independent by configuration, not by code change.
+    llm_base_url: str = ""
+    # Default model override (provider-specific name).
+    llm_model: str = ""
+    # Tool-calling rounds per message. The AI may request capabilities; the
+    # runtime bounds how many request/result exchanges one message may spawn.
+    max_tool_rounds: int = 5
+
+    # --- Runtime mechanisms ---
+    # Poll interval for the in-process background work runner (Phase V).
+    work_poll_interval_seconds: float = 2.0
+    # Root directory for dynamically provisioned ephemeral resources (Phase S).
+    provisioning_root: str = "./wax-resources"
+    # Maximum active provisioned resources per principal (Phase S limit).
+    provisioning_max_active_per_principal: int = 5
 
     # --- WhatsApp (Phase Q — Interface) ---
     whatsapp_access_token: str = ""

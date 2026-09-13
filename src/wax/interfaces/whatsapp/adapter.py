@@ -20,7 +20,7 @@ adapter is the ONLY place that knows WhatsApp exists.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from wax.interfaces.whatsapp.client import WhatsAppClient
@@ -28,7 +28,6 @@ from wax.interfaces.whatsapp.contracts import (
     WhatsAppIncomingMessage,
     WhatsAppMessageStatus,
     WhatsAppMessageType,
-    WhatsAppOutgoingMessage,
 )
 from wax.runtime.logging import get_logger
 
@@ -79,14 +78,22 @@ class WhatsAppAdapter:
         raw_body: bytes,
         signature_header: str,
         runtime_callback: Any = None,
+        on_send_failure: Any = None,
     ) -> dict[str, Any]:
         """Process a webhook event.
 
         Args:
             raw_body: the raw request body (bytes — needed for HMAC verification)
             signature_header: the X-Hub-Signature-256 header value
-            runtime_callback: async function(message: WhatsAppIncomingMessage) -> str
-                              called for each incoming message
+            runtime_callback: async function(message: WhatsAppIncomingMessage) -> str | None.
+                              Returning text means "deliver this reply"; the
+                              adapter performs the send. Returning None means
+                              "nothing to deliver".
+            on_send_failure: optional async function(message, response_text, error)
+                             invoked when delivery of a reply fails, so the
+                             runtime can dead-letter the lost reply. The
+                             adapter stays interface-agnostic: it knows
+                             nothing about databases.
 
         Returns:
             {"status": "ok"} (200 response) — even if processing fails,
@@ -119,9 +126,26 @@ class WhatsAppAdapter:
                         try:
                             response_text = await runtime_callback(incoming)
                             if response_text:
-                                await self._client.send_text(
-                                    incoming.from_phone, response_text
-                                )
+                                try:
+                                    await self._client.send_text(incoming.from_phone, response_text)
+                                except Exception as send_error:
+                                    log.error(
+                                        "whatsapp.response.send_failed",
+                                        error=str(send_error),
+                                        error_type=type(send_error).__name__,
+                                        to=incoming.from_phone,
+                                    )
+                                    if on_send_failure is not None:
+                                        try:
+                                            await on_send_failure(
+                                                incoming, response_text, send_error
+                                            )
+                                        except Exception as hook_error:
+                                            log.critical(
+                                                "whatsapp.send_failure_hook_failed",
+                                                error=str(hook_error),
+                                                message_id=incoming.message_id,
+                                            )
                         except Exception as e:
                             log.error(
                                 "whatsapp.runtime_callback.error",
@@ -183,9 +207,7 @@ class WhatsAppAdapter:
             contacts_list: list[dict[str, Any]] = []
             system_kind: str | None = None
             is_forwarded = bool(msg_data.get("context", {}).get("forwarded"))
-            is_frequently_forwarded = bool(
-                msg_data.get("context", {}).get("frequently_forwarded")
-            )
+            is_frequently_forwarded = bool(msg_data.get("context", {}).get("frequently_forwarded"))
             reply_context_message_id: str | None = None
             reply_context_from: str | None = None
 
@@ -198,9 +220,7 @@ class WhatsAppAdapter:
                 media_id = type_data.get("id")
                 media_mime_type = type_data.get("mime_type")
                 media_sha256 = type_data.get("sha256")
-                if msg_type == "image":
-                    media_caption = type_data.get("caption")
-                elif msg_type == "video":
+                if msg_type == "image" or msg_type == "video":
                     media_caption = type_data.get("caption")
                 elif msg_type == "document":
                     media_caption = type_data.get("caption")
@@ -253,9 +273,7 @@ class WhatsAppAdapter:
                 message_id=msg_data.get("id", ""),
                 from_phone=msg_data.get("from", ""),
                 from_name=from_name,
-                timestamp=datetime.fromtimestamp(
-                    int(msg_data.get("timestamp", 0)), tz=timezone.utc
-                ),
+                timestamp=datetime.fromtimestamp(int(msg_data.get("timestamp", 0)), tz=UTC),
                 type=type_enum,
                 text_body=text_body,
                 media_id=media_id,

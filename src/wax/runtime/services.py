@@ -1,0 +1,108 @@
+"""RuntimeServices — the process-wide service container.
+
+The forensic audit (Section 33) located the boundary of the wired system at
+a single comment in the lifespan: "TODO Phase G: initialize capability
+registry here". Everything downstream — capabilities, authority, agency,
+resource budgets, security enforcement, metrics — existed as tested code but
+was never constructed by the running application.
+
+This container is that missing construction point. It builds the process
+singletons ONCE at startup and hands them to the bridge, the webhook layer,
+and the background worker. Per-session collaborators (AuthorizationService,
+AgencyService, CapabilityInvoker) are constructed on demand with a session.
+
+Nothing here knows about domains, education, WhatsApp, or any use case —
+these are operating-system-style mechanisms.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from wax.agency.service import AgencyService
+from wax.authority.service import AuthorizationService
+from wax.capabilities.built_ins import register_builtins
+from wax.capabilities.invoker import CapabilityInvoker
+from wax.capabilities.registry import CapabilityRegistry
+from wax.core.config import WaxSettings
+from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
+from wax.resources.accountant import ResourceAccountant
+from wax.runtime.delivery import DeliveryRouter
+from wax.runtime.logging import get_logger
+from wax.security.abuse import AbuseDetector
+from wax.security.cost_protection import CostProtector
+from wax.security.input_sanitizer import InputSanitizer
+from wax.security.rate_limiter import RateLimiter
+
+log = get_logger(__name__)
+
+
+@dataclass
+class RuntimeServices:
+    """Process-wide singletons shared by every runtime subsystem."""
+
+    settings: WaxSettings
+    metrics: RuntimeMetrics
+    rate_limiter: RateLimiter
+    cost_protector: CostProtector
+    abuse_detector: AbuseDetector
+    input_sanitizer: InputSanitizer
+    resource_accountant: ResourceAccountant
+    capability_registry: CapabilityRegistry
+    delivery: DeliveryRouter
+    # Mutable slot for the background work runner, set by the lifespan
+    # (Phase V). Typed loosely to avoid an import cycle; tests may inspect.
+    work_runner: Any | None = field(default=None)
+
+    @classmethod
+    def build(cls, settings: WaxSettings | None) -> RuntimeServices:
+        """Construct all singletons. Pure in-memory — safe to call in tests.
+
+        `settings=None` builds a container with development defaults; it is
+        used when a legacy caller (or a bare unit test) constructs a bridge
+        without an application lifespan.
+        """
+        if settings is None:
+            settings = WaxSettings.model_validate({})
+
+        registry = CapabilityRegistry()
+        register_builtins(registry)
+
+        services = cls(
+            settings=settings,
+            metrics=get_runtime_metrics(),
+            rate_limiter=RateLimiter(),
+            cost_protector=CostProtector(),
+            abuse_detector=AbuseDetector(),
+            input_sanitizer=InputSanitizer(),
+            resource_accountant=ResourceAccountant(),
+            capability_registry=registry,
+            delivery=DeliveryRouter(),
+        )
+        log.info(
+            "runtime.services.built",
+            capabilities=len(registry),
+            delivery_interfaces=services.delivery.registered_interfaces(),
+        )
+        return services
+
+    # --- Per-session collaborators ---------------------------------------
+    # These need an AsyncSession, so they are built at use time.
+
+    def authority(self, session: AsyncSession) -> AuthorizationService:
+        return AuthorizationService(session)
+
+    def agency(self, session: AsyncSession) -> AgencyService:
+        return AgencyService(session, AuthorizationService(session))
+
+    def invoker(self, session: AsyncSession) -> CapabilityInvoker:
+        """The SOLE enforcement point for AI-requested effects (INV-04)."""
+        return CapabilityInvoker(self.capability_registry, AuthorizationService(session))
+
+
+def services_from_app(app: Any) -> RuntimeServices | None:
+    """Read the container off a FastAPI app instance, if present."""
+    return getattr(app.state, "services", None)

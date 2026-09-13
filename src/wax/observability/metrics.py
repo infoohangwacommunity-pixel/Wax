@@ -14,7 +14,6 @@ metrics (without principal_id) are also tracked for system-level visibility.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
@@ -127,23 +126,31 @@ class MetricsRegistry:
     def snapshot(self) -> dict[str, Any]:
         """Return a snapshot of all metrics.
 
-        Useful for /metrics endpoint or for tests.
+        Useful for /metrics endpoint or for tests. Histogram upper bounds
+        that are +Inf are serialized as the string "+Inf" so the snapshot
+        is always JSON-compliant.
         """
+        import math
+
         with self._lock:
             return {
                 "counters": {
-                    k: {"value": c.value, "labels": c.labels}
-                    for k, c in self._counters.items()
+                    k: {"value": c.value, "labels": c.labels} for k, c in self._counters.items()
                 },
                 "gauges": {
-                    k: {"value": g.value, "labels": g.labels}
-                    for k, g in self._gauges.items()
+                    k: {"value": g.value, "labels": g.labels} for k, g in self._gauges.items()
                 },
                 "histograms": {
                     k: {
                         "count": h.count,
                         "sum": h.sum,
-                        "buckets": [(b.upper_bound, b.count) for b in h.buckets],
+                        "buckets": [
+                            (
+                                b.upper_bound if math.isfinite(b.upper_bound) else "+Inf",
+                                b.count,
+                            )
+                            for b in h.buckets
+                        ],
                         "labels": h.labels,
                     }
                     for k, h in self._histograms.items()

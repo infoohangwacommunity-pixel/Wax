@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 from uuid import uuid4
@@ -63,13 +62,25 @@ async def app(test_settings: Any) -> Any:
         await conn.run_sync(Base.metadata.create_all)
 
     # Initialize app.state.* as the lifespan would (so /readyz finds them)
+    from wax.authority.seed import seed_builtin_roles
     from wax.intelligence.service import IntelligenceService
     from wax.runtime.bridge.service import RuntimeBridge
+    from wax.runtime.services import RuntimeServices
+    from wax.state.engine import db_session as _db_session
+
+    services = RuntimeServices.build(test_settings)
+    app.state.services = services
 
     intel = IntelligenceService.from_settings(test_settings)
     app.state.intelligence = intel
-    app.state.runtime_bridge = RuntimeBridge(intelligence=intel)
+    app.state.runtime_bridge = RuntimeBridge(intelligence=intel, services=services)
     app.state.whatsapp_client = None
+
+    # Seed built-in roles so authorization has truth to enforce (same as
+    # the production lifespan does).
+    async with _db_session() as session:
+        await seed_builtin_roles(session)
+        await session.commit()
 
     yield app
 

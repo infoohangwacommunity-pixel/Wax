@@ -98,9 +98,7 @@ def configure_logging(settings: WaxSettings) -> None:
                 structlog.processors.dict_tracebacks,
                 structlog.processors.JSONRenderer(),
             ],
-            wrapper_class=structlog.make_filtering_bound_logger(
-                _level_to_int(settings.log_level)
-            ),
+            wrapper_class=structlog.make_filtering_bound_logger(_level_to_int(settings.log_level)),
             logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
             cache_logger_on_first_use=True,
         )
@@ -111,9 +109,7 @@ def configure_logging(settings: WaxSettings) -> None:
                 *shared_processors,
                 structlog.dev.ConsoleRenderer(colors=settings.is_development),
             ],
-            wrapper_class=structlog.make_filtering_bound_logger(
-                _level_to_int(settings.log_level)
-            ),
+            wrapper_class=structlog.make_filtering_bound_logger(_level_to_int(settings.log_level)),
             logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
             cache_logger_on_first_use=True,
         )

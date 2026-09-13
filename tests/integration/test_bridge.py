@@ -13,13 +13,11 @@ Tests verify:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
-from wax.core.config import settings_for_testing
 from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.intelligence.service import IntelligenceService
 from wax.runtime.bridge.contracts import (
@@ -68,16 +66,14 @@ def _make_request(
         sender_interface_id=sender_id,
         sender_display_name=sender_name,
         text=text,
-        received_at=datetime.now(timezone.utc),
+        received_at=datetime.now(UTC),
     )
 
 
 class TestBridgeIdempotency:
     """One user message → one runtime execution."""
 
-    async def test_first_message_succeeds(
-        self, fresh_db, bridge: RuntimeBridge
-    ) -> None:
+    async def test_first_message_succeeds(self, fresh_db, bridge: RuntimeBridge) -> None:
         async with db_session() as session:
             response = await bridge.process(session, _make_request())
 
@@ -131,9 +127,7 @@ class TestBridgeIdempotency:
 
 
 class TestBridgeIdentityResolution:
-    async def test_first_contact_creates_principal(
-        self, fresh_db, bridge: RuntimeBridge
-    ) -> None:
+    async def test_first_contact_creates_principal(self, fresh_db, bridge: RuntimeBridge) -> None:
         """A brand-new sender should result in a new Principal + credential."""
         async with db_session() as session:
             response = await bridge.process(
@@ -201,14 +195,12 @@ class TestBridgeResponseContract:
             response = await bridge.process(session, _make_request())
         assert response.processed_at is not None
         # Should be very recent
-        delta = datetime.now(timezone.utc) - response.processed_at
+        delta = datetime.now(UTC) - response.processed_at
         assert delta < timedelta(seconds=5)
 
 
 class TestBridgeInterfaceAgnosticism:
-    async def test_bridge_accepts_web_interface(
-        self, fresh_db, bridge: RuntimeBridge
-    ) -> None:
+    async def test_bridge_accepts_web_interface(self, fresh_db, bridge: RuntimeBridge) -> None:
         """The bridge is interface-agnostic — accepts any InterfaceKind."""
         async with db_session() as session:
             response = await bridge.process(
@@ -221,9 +213,7 @@ class TestBridgeInterfaceAgnosticism:
             )
         assert response.status == RuntimeResponseStatus.SUCCESS
 
-    async def test_bridge_accepts_api_interface(
-        self, fresh_db, bridge: RuntimeBridge
-    ) -> None:
+    async def test_bridge_accepts_api_interface(self, fresh_db, bridge: RuntimeBridge) -> None:
         async with db_session() as session:
             response = await bridge.process(
                 session,
@@ -253,18 +243,26 @@ class TestBridgeEffectiveText:
 
 
 class TestBridgeErrorHandling:
-    async def test_bridge_records_internal_error(
-        self, fresh_db
-    ) -> None:
-        """If the LLM fails, the bridge records internal_error and doesn't retry."""
-        from wax.intelligence.contracts import LLMProvider, LLMRequest, LLMResponse
+    async def test_llm_failure_marks_work_failed_and_redelivery_retries(self, fresh_db) -> None:
+        """A failed LLM call must NOT poison the message.
+
+        The forensic audit found the opposite: the idempotency record was
+        finalized as internal_error, so redelivering the same message ID
+        returned DUPLICATE forever and the user never got a reply. The new
+        semantics: the attempt is recorded (execution + objective failed),
+        the record becomes retryable (failed), and a redelivery of the SAME
+        message ID retries the work.
+        """
         from collections.abc import AsyncIterator
+
+        from wax.intelligence.contracts import LLMRequest, LLMResponse
 
         # Build a provider that always fails
         class FailingProvider:
             @property
             def kind(self):  # type: ignore[no-untyped-def]
                 from wax.intelligence.contracts import ProviderKind
+
                 return ProviderKind.MOCK
 
             async def complete(self, request: LLMRequest) -> LLMResponse:
@@ -286,7 +284,7 @@ class TestBridgeErrorHandling:
         assert response.status == RuntimeResponseStatus.INTERNAL_ERROR
         assert "RuntimeError" in (response.error or "")
 
-        # Idempotency record should be persisted with internal_error outcome
+        # The attempt is recorded as FAILED (retryable), not internal_error.
         async with db_session() as session:
             result = await session.execute(
                 select(ProcessedMessageRecord).where(
@@ -294,11 +292,45 @@ class TestBridgeErrorHandling:
                 )
             )
             record = result.scalar_one()
-        assert record.outcome == "internal_error"
+        assert record.outcome == "failed"
+        assert record.metadata_json["attempts"] == 2  # 1st attempt counted on failure
 
-    async def test_internal_error_then_replay_succeeds(
-        self, fresh_db
-    ) -> None:
+        # The execution and objective must be honestly failed — not left
+        # running/pending forever (audit Sections 8, 15).
+        from wax.state.execution_models import ExecutionRecord
+        from wax.state.objective_models import ObjectiveRecord
+
+        async with db_session() as session:
+            execution = await session.get(ExecutionRecord, record.execution_id)
+            objective = await session.get(ObjectiveRecord, record.objective_id)
+        assert execution is not None
+        assert execution.status == "failed"
+        assert "RuntimeError" in (execution.error or "")
+        assert objective is not None
+        assert objective.status == "failed"
+
+        # THE FIX: redelivering the SAME message ID retries the work and
+        # succeeds when the transient failure clears.
+        from wax.intelligence.adapters.mock_provider import MockLLMProvider
+
+        bridge_ok = RuntimeBridge(intelligence=IntelligenceService(MockLLMProvider()))
+        async with db_session() as session:
+            retry_response = await bridge_ok.process(session, _make_request())
+
+        assert retry_response.status == RuntimeResponseStatus.SUCCESS
+        assert retry_response.text is not None
+
+        async with db_session() as session:
+            result = await session.execute(
+                select(ProcessedMessageRecord).where(
+                    ProcessedMessageRecord.interface_message_id == "msg-001"
+                )
+            )
+            record_after = result.scalar_one()
+        assert record_after.outcome == "success"
+        assert record_after.id == record.id  # same message, same record
+
+    async def test_internal_error_then_replay_succeeds(self, fresh_db) -> None:
         """A failed message can be re-sent with a different message_id."""
         from collections.abc import AsyncIterator
 
@@ -328,9 +360,7 @@ class TestBridgeErrorHandling:
         bridge_fail = RuntimeBridge(intelligence=intel_fail)
 
         async with db_session() as session:
-            await bridge_fail.process(
-                session, _make_request(message_id="msg-err-1")
-            )
+            await bridge_fail.process(session, _make_request(message_id="msg-err-1"))
 
         # Second attempt with mock provider succeeds
         from wax.intelligence.adapters.mock_provider import MockLLMProvider
@@ -339,9 +369,7 @@ class TestBridgeErrorHandling:
         bridge_ok = RuntimeBridge(intelligence=intel_ok)
 
         async with db_session() as session:
-            response = await bridge_ok.process(
-                session, _make_request(message_id="msg-err-2")
-            )
+            response = await bridge_ok.process(session, _make_request(message_id="msg-err-2"))
 
         assert response.status == RuntimeResponseStatus.SUCCESS
 
@@ -357,15 +385,11 @@ class TestBridgePersistenceSurvival:
         record even across DB connection cycles.
         """
         async with db_session() as session:
-            first = await bridge.process(
-                session, _make_request(message_id="msg-survive-1")
-            )
+            first = await bridge.process(session, _make_request(message_id="msg-survive-1"))
 
         # New DB session — simulates process restart between webhooks
         async with db_session() as session:
-            second = await bridge.process(
-                session, _make_request(message_id="msg-survive-1")
-            )
+            second = await bridge.process(session, _make_request(message_id="msg-survive-1"))
 
         assert first.status == RuntimeResponseStatus.SUCCESS
         assert second.status == RuntimeResponseStatus.DUPLICATE

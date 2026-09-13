@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
 from typing import Any
 
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -67,10 +68,29 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         app.state.intelligence = intel
         lifecycle.on_shutdown("intelligence.close", intel.close())
 
-        # Initialize RuntimeBridge (Phase R)
+        # RuntimeServices container (Phase G — the TODO that marked the edge
+        # of the wired system in the forensic audit is now real wiring).
+        # Built once in create_app(); reused here.
+        services = getattr(app.state, "services", None)
+        if services is None:
+            from wax.runtime.services import RuntimeServices
+
+            services = RuntimeServices.build(settings)
+            app.state.services = services
+
+        # Seed built-in roles (idempotent) so authorization has truth to
+        # enforce from the first message onward.
+        from wax.authority.seed import seed_builtin_roles
+        from wax.state.engine import db_session
+
+        async with db_session() as session:
+            await seed_builtin_roles(session)
+            await session.commit()
+
+        # Initialize RuntimeBridge (Phase R) with the service container
         from wax.runtime.bridge.service import RuntimeBridge
 
-        bridge = RuntimeBridge(intelligence=intel)
+        bridge = RuntimeBridge(intelligence=intel, services=services)
         app.state.runtime_bridge = bridge
 
         # Initialize WhatsApp client if credentials are present (Phase Q)
@@ -85,6 +105,9 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             )
             app.state.whatsapp_client = wa_client
             lifecycle.on_shutdown("whatsapp.close", wa_client.close())
+            # Register the WhatsApp sender with the runtime's delivery router
+            # (Phase W: interfaces attach to the runtime, never own it).
+            services.delivery.register("whatsapp", wa_client.send_text)
             log.info(
                 "whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id
             )
@@ -92,7 +115,10 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             app.state.whatsapp_client = None
             log.warning("whatsapp.client.not_configured")
 
-        # TODO Phase G: initialize capability registry here
+        # (The old "TODO Phase G" comment — the audit's marker of where the
+        # wired system ended — is obsolete: RuntimeServices built the
+        # capability registry in create_app, roles are seeded above, and the
+        # registry is reachable through services.invoker(session).)
 
         try:
             yield
@@ -189,7 +215,6 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         """
         try:
             from alembic.config import Config as AlembicConfig
-            from alembic.runtime.migration import MigrationContext
             from alembic.script import ScriptDirectory
             from sqlalchemy import text
 
@@ -226,7 +251,6 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         Returns the configuration (with secrets redacted) + whether it
         passes production hardening checks.
         """
-        from wax.core.config import WaxSettings
 
         config_summary = {
             "env": settings.env.value,
@@ -330,8 +354,12 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             """Convert the WhatsApp message → RuntimeRequest → process via bridge.
 
             This is the SOLE place where WhatsApp shapes become RuntimeRequest.
+            Returns the response TEXT on success; the adapter performs the
+            actual send (its send branch is live code, as its contract
+            documents — the audit found it dead because this callback used
+            to send and return None).
             """
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from wax.runtime.bridge.contracts import (
                 InterfaceKind,
@@ -350,35 +378,65 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
                 sender_interface_id=message.from_phone,
                 sender_display_name=message.from_name,
                 text=message.effective_text,
-                received_at=message.timestamp or datetime.now(timezone.utc),
+                received_at=message.timestamp or datetime.now(UTC),
             )
 
             async with db_session() as session:
                 response = await bridge.process(session, request)
 
-            # Send the response back via WhatsApp (if successful and not duplicate)
             if response.status.value == "success" and response.text:
-                try:
-                    await whatsapp_client.send_text(message.from_phone, response.text)
-                except Exception as e:
-                    log.error(
-                        "whatsapp.response.send_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        to=message.from_phone,
-                    )
-            elif response.status.value == "duplicate":
+                return response.text
+            if response.status.value == "duplicate":
                 log.info(
                     "whatsapp.duplicate_message.skipped",
                     message_id=message.message_id,
                 )
-            # On error, do NOT send anything back (avoid noise during outages)
-            return None  # bridge handles sending; callback returns None
+            else:
+                # Non-success statuses are logged, never echoed to the user
+                # (deliberate: avoid noisy auto-replies during incidents).
+                log.warning(
+                    "whatsapp.message.not_replied",
+                    message_id=message.message_id,
+                    status=response.status.value,
+                    error=response.error,
+                )
+            return None
+
+        async def _on_send_failure(message, response_text: str, error: Exception) -> None:
+            """Record a lost reply in the dead-letter table (the audit found
+            replies were silently dropped when the outbound send failed)."""
+            from wax.reliability.dead_letter import DeadLetterRepository
+            from wax.state.engine import db_session
+
+            svc = getattr(app.state, "services", None)
+            if svc is not None:
+                svc.metrics.send_failure("whatsapp")
+            try:
+                async with db_session() as session:
+                    await DeadLetterRepository(session).record(
+                        kind="whatsapp.send",
+                        error_type=type(error).__name__,
+                        error_message=str(error)[:5000],
+                        attempts=1,
+                        payload={
+                            "to_phone": message.from_phone,
+                            "response_text": response_text[:2000],
+                            "interface_message_id": message.message_id,
+                        },
+                    )
+                    await session.commit()
+            except Exception as dl_error:
+                log.critical(
+                    "whatsapp.dead_letter_write_failed",
+                    error=str(dl_error),
+                    message_id=message.message_id,
+                )
 
         return await adapter.handle_webhook(
             raw_body=request_body,
             signature_header=x_hub_signature_256,
             runtime_callback=_runtime_callback,
+            on_send_failure=_on_send_failure,
         )
 
     return app
