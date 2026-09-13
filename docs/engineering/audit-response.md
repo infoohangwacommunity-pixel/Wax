@@ -201,3 +201,42 @@ workflow. Prior non-goals stand.
 baseline: 312). Live probe: 9/9 PASS over real HTTP (added: event-ledger
 emission proof, live event-wake claim/run proof; message id now unique per
 run so idempotency dedup cannot mask the live path).
+
+---
+
+# Addendum 3 — Fourth Pass: The Five Boundaries Became Mechanisms
+
+The fourth pass started from `848da4d`. All prior claims were re-verified
+independently (440 tests, 9/9 probe, 6 commits ahead, clean worktree). The
+final report of the third pass had listed five "remaining boundaries" —
+this pass re-evaluated each against the Universal Primitive Test and
+implemented every one as infrastructure. Full working list:
+`docs/engineering/reconciliation-4.md`.
+
+| Boundary (as recorded) | Verdict | Mechanism now live | Proof |
+|---|---|---|---|
+| Package acquisition — design recorded, not built | infrastructure | `workspace.acquire`: mandatory sha256, host allowlist, SSRF-guarded egress, byte caps, content-addressed cache (hash-verified hits), atomic writes, owned-workspace isolation, provenance audit | 12 tests; ADR-0015 |
+| Character-based context budget | infrastructure | provider-context negotiation (`wax.intelligence.context_limits`): advertised limit − reserve → budget; configured fallback; floor; adapter-local tokenizer knowledge | 12 tests; ADR-0015 |
+| Single-instance worker | infrastructure | multi-worker correctness: SKIP LOCKED atomic claims, lease fencing (zombie writes refused), heartbeats (lease/3), loud reclaim-exhaustion deaths, graceful draining shutdown | 14 tests; ADR-0013 |
+| No human-approval workflow | infrastructure | the generic approval primitive: pending approvals (idempotent fingerprint, expiry, provenance), human credential-path decisions (`/approve <id>`), one-time consumption, expiry sweep, AI can list/cancel — never decide | 16 tests + live probe; ADR-0014 |
+| Signal ledger has no retention pruning | infrastructure | deterministic waiter-safe retention + bounded storage in `runtime.maintenance` | 10 tests + live probe; ADR-0015 |
+
+Additional defects found and fixed during the pass: silent reclaim
+exhaustion (now dead-letter + `work.dead` announcement), unannounced wait
+expiry (`work.expired:<id>` now emitted), shutdown orphaning in-flight
+work (bounded draining), model↔migration drift (`alembic check` now
+clean), the destructive-scheduling guard superseded by the approval gate,
+and the work handler's missing approval-consume path (found by open-world
+scenario F and fixed).
+
+Open-world validation expanded (wave 2, `tests/integration/test_open_world_2.py`):
+capability-boundary honesty (not_found / unavailable / denied as distinct
+structured outcomes), approval-gated durable work end to end, restart
+continuity of scheduled work with effect visibility, provider substitution
+with context-budget adaptation, and interface handoff (same principal, new
+interface credential, memory evidence intact).
+
+**Test count after this pass: 518** (session start 440; audit-era
+baselines: 408 → 373 → 312). Live probe: **12 PASS checks** over real HTTP,
+including the full approval flow (pending → webhook decision → exactly-once
+execution) and a live ledger-retention pass.

@@ -258,3 +258,27 @@ Stage Summary:
 - Live probe: 9/9 PASS over real HTTP
 - No new domain features: every addition is a generalizable primitive (condition waiting, event ledger, memory revision/consolidation, budgeted context, dead-work recovery)
 - Non-goals recorded with rationale: package acquisition, ledger pruning, model context-limit negotiation, multi-replica, human-approval workflow
+
+---
+Task ID: PASS-4-FOUNDATIONS
+Agent: main (Super Z)
+Task: Fourth principal-engineer pass — re-verify all claims, re-evaluate the five recorded boundaries as candidate primitives, implement every legitimate one, expand open-world validation, document, push.
+
+Work Log:
+- Re-established reality from the repository (not from reports): 440 tests verified passing, live probe 9/9 verified, main @ 848da4d six commits ahead of origin/main, worktree clean
+- Reconciliation #4 (docs/engineering/reconciliation-4.md): all five recorded boundaries pass the Universal Primitive Test — all are infrastructure
+- Multi-worker runtime (ADR-0013): atomic claims (FOR UPDATE SKIP LOCKED), lease fencing (expected_owner on every terminal write), heartbeats (lease/3), ClaimBatch same-transaction announcements, graceful draining stop; fixed silent reclaim-exhaustion (dead-letter + work.dead) and unannounced wait expiry (work.expired:<id>); 14 concurrency tests (commit 0302f8e)
+- Human-approval primitive (ADR-0014): pending_approvals migration + ApprovalService (fingerprint idempotency, ownership, one-time consumption, expiry sweep); bridge approval gate + submit_approval_decision (human credential path) + /approve /deny grammar; approval.list/cancel capabilities; approval.* runtime-owned signals; durable work consumes approvals; 16 tests (commit 254359f)
+- Signal-ledger retention (ADR-0015): waiter-safe pruning (a signal a pending event-wake can still fire is never deleted) + bounded storage; runtime.maintenance loop (approvals expiry + ledger retention); 10 tests (commit ac6cd81)
+- Context-budget negotiation (ADR-0015): provider-advertised context limits → derived evidence budget (limit − reserve → chars at 4 chars/token); configured fallback; floor; adapter-local advertisement (OpenAI per-model, Anthropic 200k, mock configurable); resilience wrapper transparent to negotiation; assembly hardened against malformed evidence; 12 tests (commit 881b6af)
+- workspace.acquire (ADR-0015): artifact acquisition into owned scratch workspaces — mandatory sha256, host allowlist, SSRF-guarded egress with per-hop re-validation, byte cap, content-addressed cache with hash-verified hits, atomic writes, provenance audit, never executes; 12 tests (commit 510408a)
+- Open-world wave 2 (commit bf031ef): capability-boundary honesty (not_found/unavailable/denied as distinct structured outcomes), approval-gated durable work END TO END (found + fixed the handler's missing consume path), restart continuity, provider substitution with budget adaptation, interface handoff; replaced the destructive-scheduling guard (refuse-to-run-without-YES supersedes refuse-to-schedule)
+- Migration discipline (commit 94ee9c1): fresh-DB + upgrade-from-production + rollback roundtrip tests; alembic check driven to ZERO drift (server_default alignment)
+- Live probe extended to 12 PASS checks (commit ea6b3b4): full approval flow over real HTTP (pending → webhook decision → exactly-once execution) + live ledger-retention pass
+- Docs: ADR-0013/0014/0015, reconciliation-4, audit-response Addendum 3, handoff rewrite, README map update, this worklog
+
+Stage Summary:
+- 518 tests passing (440 at session start; audit-era baselines 408/373/312)
+- Live probe: 12 PASS over real HTTP, exit 0
+- alembic check: zero drift
+- All five former boundaries are now live mechanisms; remaining boundaries (isolation grade, tokenizer locality, maintenance election, retrieval upgrade) are documented deployment/scale decisions, not missing primitives

@@ -1,9 +1,9 @@
 # WAX — Engineering Handoff
 
-**Last updated:** 2026-09 (third principal-engineer pass)
+**Last updated:** 2026-09 (fourth principal-engineer pass)
 **Branch:** `main`
-**Total tests:** 440 passing
-**Live probe:** 9/9 PASS (`python scripts/live_probe.py`)
+**Total tests:** 518 passing
+**Live probe:** 12 PASS checks (`python scripts/live_probe.py`)
 
 ## What WAX Is
 
@@ -55,12 +55,15 @@ work.schedule (time wake) → capability handler → message.send.
 | Mechanism | Surface | Notes |
 |---|---|---|
 | Durable waiting | `work.schedule` with `wake_at`/`delay_seconds` **or** `wake_event` (+`not_before`, `expires_at`) | ADR-0011. Event waits correlate against the `runtime_signals` ledger; watermark makes waits never retroactive; broadcast semantics |
-| Runtime signals | `runtime_signals` table; `signal.emit` capability | `interface.*` and `work.*` namespaces are runtime-owned (wait-only for the AI) |
-| Terminal-work announcement | automatic | `work.succeeded:<id>` / `work.dead:<id>` enable dependency composition ("run B when A finishes") |
+| Multi-worker runtime | atomic claims (SKIP LOCKED), lease fencing, heartbeats (lease/3), draining shutdown | ADR-0013. Zombie workers cannot write; reclaim-exhaustion and wait-expiry are ANNOUNCED (dead-letter + `work.dead`/`work.expired` signals) |
+| Human approval | agency gate → pending approvals → `/approve <id>` / `/deny <id>` | ADR-0014. Idempotent fingerprint, expiry, one-time consumption, credential-path decisions; AI can list/cancel — never decide; durable work consumes approvals too |
+| Runtime signals | `runtime_signals` table; `signal.emit` capability | `interface.*`, `work.*`, `approval.*` namespaces are runtime-owned (wait-only for the AI); waiter-safe retention in `runtime.maintenance` (ADR-0015) |
+| Terminal-work announcement | automatic | `work.succeeded:<id>` / `work.dead:<id>` / `work.expired:<id>` enable dependency composition and honest reaction to death |
 | Dead-work recovery | `work.requeue` | ownership-checked; provenance-linked fresh attempt; dead item kept for audit |
 | Memory lifecycle | `memory.store` (+`supersedes`), `memory.consolidate`, `memory.search`, `memory.forget`, expiry worker | ADR-0012. Supersession = revision; consolidation = evidence → durable representation with provenance chain |
-| Context assembly | `wax.continuity.assembly` | objective/conversation/memory evidence, budgeted by priority, truncation announced |
-| Capability invocation | registry descriptors → tool specs; gated invoke loop | bounded rounds; honest structured failures (not_found/denied/timeout) |
+| Context assembly | `wax.continuity.assembly` + `wax.intelligence.context_limits` | objective/conversation/memory evidence, budget NEGOTIATED from the provider's advertised context limit (fallback configured), truncation announced |
+| Artifact acquisition | `workspace.acquire` | ADR-0015. sha256 integrity mandatory, host allowlist, SSRF-guarded egress, content-addressed cache, owned-workspace isolation, provenance audit; acquisition never executes |
+| Capability invocation | registry descriptors → tool specs; gated invoke loop | bounded rounds; honest structured failures (not_found/denied/timeout/pending_approval) |
 | Execution environments | `scratch.workspace` + `code.run` | opt-in authority for code execution; egress through the network boundary |
 
 ## Invariants (enforced by tests)
@@ -82,9 +85,10 @@ work.schedule (time wake) → capability handler → message.send.
 
 ```bash
 uv pip install -e ".[dev]"
-pytest                                  # 440 tests
-python scripts/live_probe.py            # 9/9 live-path checks over real HTTP
+pytest                                  # 518 tests
+python scripts/live_probe.py            # 12 live-path checks over real HTTP
 alembic upgrade head                    # migrations (SQLite for dev; Postgres for prod)
+alembic check                           # must report zero drift
 ```
 
 ## Deployment (Railway)
@@ -98,22 +102,27 @@ alembic upgrade head                    # migrations (SQLite for dev; Postgres f
 
 - Constitution/principles: WAX Architectural Build Roadmap PDF + repo README
 - Architecture: `docs/architecture/runtime-boundary.md`
-- Decisions: `docs/decisions/ADR-0001..0012`
+- Decisions: `docs/decisions/ADR-0001..0015`
 - Evidence: `docs/engineering/audit-response.md` (+ addenda),
-  `docs/engineering/reconciliation-3.md`, worklog
+  `docs/engineering/reconciliation-4.md`, worklog
 - Probe: `scripts/live_probe.py` (the live-path gold standard)
 
 ## Current Boundaries (honest limits)
 
-- Single-instance worker (lease design admits replicas; not needed at
-  current scale — ADR-0004/0011).
-- No human-approval workflow yet: destructive actions are denied honestly
-  (the denial path is real; the approval loop is a product decision).
-- Character-based context budget (~4 chars/token), not tokenizer-exact.
-- No package/dependency acquisition service (design constraints recorded
-  in ADR-0011 §Future).
-- Signal ledger has no retention pruning yet (rows are small; pruning is
-  a recorded follow-up).
+- Subprocess isolation for `code.run` is accident-isolation, not a
+  sandbox; adversarial multi-tenant code needs container/microVM-grade
+  isolation at the deployment layer (the isolation CONTRACT is in place).
+- Tokenizer-exact accounting lives inside provider adapters when needed;
+  the runtime core uses the conservative chars/token estimator (INV-03).
+- The maintenance loop is idempotent and multi-instance-safe; no leader
+  election (no correctness need at current scale).
+- Postgres tsvector/embedding retrieval upgrades (ADR-0010) — the
+  portable scorer remains correct at current scale.
+
+Every former "recorded non-goal" from the third pass — package
+acquisition, character-only budget, single-instance worker, human
+approval, ledger pruning — is now a live mechanism (ADR-0013/0014/0015,
+reconciliation-4).
 
 ## What NOT to Change Casually
 

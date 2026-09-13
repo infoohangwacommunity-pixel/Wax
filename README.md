@@ -17,14 +17,15 @@ WAX is built like an operating system, not like an app:
 
 | An OS provides… | WAX provides… |
 |---|---|
-| processes & scheduling | durable work + wake conditions (`work_items`: time or event wake, leases, retries, dead-letter, requeue) |
-| wait/notify & signals | the `runtime_signals` event ledger (`interface.*`/`work.*` runtime-owned; gated AI emission) |
-| permissions | Authority & Agency (the AI has agency; the runtime has sovereignty) |
+| processes & scheduling | durable work + wake conditions (`work_items`: time or event wake, leases + fencing, heartbeats, retries, dead-letter, requeue — multi-worker safe) |
+| wait/notify & signals | the `runtime_signals` event ledger (`interface.*`/`work.*`/`approval.*` runtime-owned; gated AI emission; waiter-safe retention) |
+| permissions | Authority & Agency (the AI has agency; the runtime has sovereignty) + the human-approval primitive (pending approvals, `/approve <id>`, replay-proof one-time consumption) |
 | syscalls | Capabilities (the sole effect path — always gated, audited, metered) |
-| filesystem | dynamic provisioning (ephemeral resources with owner/TTL/limits/cleanup) |
+| filesystem | dynamic provisioning (ephemeral resources with owner/TTL/limits/cleanup) + artifact acquisition (`workspace.acquire`: pinned hashes, allowlisted sources, cache) |
+| package manager | `workspace.acquire` — dependency acquisition as an environment mechanism (verify + isolate, never execute) |
 | memory | memory mechanisms (evidence, revision, consolidation, relevance retrieval, enforced forgetting) |
 | network stack | interface abstraction (WhatsApp first, never the architecture) + egress boundary |
-| device drivers | model adapters (mock / OpenAI-compatible / Anthropic behind one contract) |
+| device drivers | model adapters (mock / OpenAI-compatible / Anthropic behind one contract) with context-limit negotiation |
 
 Applications emerge from composition. "Remind me in one hour" is not a
 feature — it is `work.schedule` → wake → `message.send`, composed by the
@@ -65,7 +66,7 @@ src/wax/
 Documentation that matters:
 
 - `docs/architecture/runtime-boundary.md` — the layer model + invariants
-- `docs/decisions/ADR-0001…0012` — every consequential decision and why
+- `docs/decisions/ADR-0001…0015` — every consequential decision and why
 - `docs/engineering/audit-response.md` — forensic-audit disposition with proofs
 - `docs/engineering/handoff.md`, `docs/engineering/worklog.md` — engineering history
 
