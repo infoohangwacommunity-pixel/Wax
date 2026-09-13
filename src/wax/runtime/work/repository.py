@@ -12,13 +12,22 @@ Claim semantics (the heart of Phase R, extended by wake conditions):
 - A leased/running item whose lease EXPIRED is also claimable — its worker
   died, and the work must not be lost. Reclaiming counts as a new attempt
   (the dead worker's effect state is unknown; capability work is treated as
-  at-least-once with attempts bounded).
+  at-least-once with attempts bounded). A reclaim that would exceed max
+  attempts KILLS the item — and the kill is ANNOUNCED (work.dead signal +
+  dead-letter row, emitted by the runner in the same transaction).
 - Claiming sets a lease (owner + expiry) so concurrent workers cannot
-  double-run the same item.
+  double-run the same item. On PostgreSQL the claim SELECT takes row locks
+  (FOR UPDATE SKIP LOCKED) so two workers can never claim the same row;
+  on SQLite the single-writer locking serves the same guarantee.
+- Terminal writes are FENCED: mark_running/mark_succeeded/mark_failed
+  accept expected_owner and refuse to write if the lease has moved to
+  another worker (the classic "zombie worker" race; the fencing token is
+  the lease ownership itself).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -41,6 +50,24 @@ VALID_WORK_STATUSES = frozenset(
     {"pending", "leased", "running", "succeeded", "failed", "dead", "cancelled"}
 )
 TERMINAL_WORK_STATUSES = frozenset({"succeeded", "dead", "cancelled"})
+
+
+@dataclass
+class ClaimBatch:
+    """What one claim pass produced. The three lists are disjoint.
+
+    `expired` and `reclaim_dead` items are ALREADY dead when returned;
+    the runner announces them (ledger signals, dead-letter rows) in the
+    same transaction that persisted their death, so no death is silent.
+    """
+
+    claimed: list[WorkItemRecord] = field(default_factory=list)
+    expired: list[WorkItemRecord] = field(default_factory=list)
+    reclaim_dead: list[WorkItemRecord] = field(default_factory=list)
+    reclaimed: int = 0  # claims that took over an expired lease
+
+    def __len__(self) -> int:
+        return len(self.claimed)
 
 
 def _utcnow() -> datetime:
@@ -143,7 +170,7 @@ class WorkRepository:
         worker_id: str,
         lease_seconds: float,
         limit: int = 10,
-    ) -> list[WorkItemRecord]:
+    ) -> ClaimBatch:
         """Claim up to `limit` runnable items for this worker.
 
         Claimable = pending time-wake items that are due, pending event-wake
@@ -155,10 +182,18 @@ class WorkRepository:
 
         Also sweeps expired WAITS: pending items whose expires_at has
         passed die honestly with "condition not met" (a lifecycle outcome,
-        not an execution failure — no dead-letter row).
+        not an execution failure — no dead-letter row, but the expiry IS
+        announced on the ledger so dependents can react).
+
+        On PostgreSQL the claim query takes row locks (FOR UPDATE SKIP
+        LOCKED): two workers polling concurrently can never claim the same
+        row. On SQLite the database-level write lock gives the same
+        guarantee. All deaths (expiry, reclaim-exhaustion) are returned in
+        the batch so the caller can announce them in the same transaction.
         """
         now = _utcnow()
         lease_expiry = now + timedelta(seconds=lease_seconds)
+        batch = ClaimBatch()
 
         # 1. Deadline sweep for unmet conditions (before claiming so an
         #    expired wait can never be claimed in the same pass).
@@ -167,13 +202,15 @@ class WorkRepository:
             WorkItemRecord.expires_at.is_not(None),
             WorkItemRecord.expires_at <= now,
         )
-        expired_count = 0
         for item in (await self._session.execute(expired_stmt)).scalars():
             item.status = "dead"
             item.last_error = "wake condition not met before expires_at; wait expired"
-            expired_count += 1
-        if expired_count:
-            log.info("work.wait_expired", count=expired_count)
+            batch.expired.append(item)
+        if batch.expired:
+            log.info("work.wait_expired", count=len(batch.expired))
+            # Flush NOW: sessions run with autoflush=False, and the claim
+            # query below must see these rows as dead (same transaction).
+            await self._session.flush()
 
         # 2. Time-wake: due items. Event-wake: items whose condition is met
         #    (a signal exists after their watermark) and whose floor passed.
@@ -204,15 +241,23 @@ class WorkRepository:
             .order_by(WorkItemRecord.available_at.asc())
             .limit(limit)
         )
+        # Row locks make the claim ATOMIC across concurrent workers on
+        # PostgreSQL (FOR UPDATE SKIP LOCKED — a row another worker already
+        # claimed is simply skipped, never double-claimed). On SQLite the
+        # dialect ignores the lock and the database write lock serializes.
+        stmt = stmt.with_for_update(skip_locked=True)
+
         result = await self._session.execute(stmt)
-        claimed: list[WorkItemRecord] = []
         for item in result.scalars():
             if item.status in ("leased", "running") and item.attempts >= item.max_attempts:
                 # No attempts left — the item dies instead of being re-leased.
+                # This death is a RECLAIM death (the previous worker vanished
+                # mid-work): announce it like any other terminal failure.
                 item.status = "dead"
                 item.lease_owner = None
                 item.lease_expires_at = None
                 item.last_error = f"lease expired after {item.attempts} attempts; giving up"
+                batch.reclaim_dead.append(item)
                 continue
             reclaimed = item.status in ("leased", "running")
             item.status = "leased"
@@ -221,30 +266,82 @@ class WorkRepository:
             item.attempts += 1
             if reclaimed:
                 item.last_error = f"reclaimed after lease expiry (attempt {item.attempts})"
-            claimed.append(item)
-        if claimed:
+                batch.reclaimed += 1
+            batch.claimed.append(item)
+        if batch.claimed or batch.reclaim_dead:
             await self._session.flush()
-        return claimed
+        return batch
 
-    async def mark_running(self, work_id: str) -> bool:
+    async def renew_lease(
+        self,
+        work_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> bool:
+        """Extend the lease of a running item this worker still owns.
+
+        The heartbeat of the multi-worker design: a worker processing a
+        long item renews its lease periodically so a healthy slow worker is
+        never mistaken for a dead one (no spurious reclaims, no double
+        execution). Returns False if ownership was lost — the caller must
+        abandon the work immediately (its result would be fenced anyway).
+        """
         item = await self.get(work_id)
-        if item is None or item.status != "leased":
+        if item is None or item.lease_owner != worker_id:
             return False
-        item.status = "running"
+        if item.status not in ("leased", "running"):
+            return False
+        item.lease_expires_at = _utcnow() + timedelta(seconds=lease_seconds)
         await self._session.flush()
         return True
 
-    async def mark_succeeded(self, work_id: str, result: dict[str, Any] | None) -> bool:
+    async def mark_running(
+        self, work_id: str, *, expected_owner: str | None = None
+    ) -> str:
+        """Transition leased → running. With `expected_owner` the write is
+        FENCED: if the lease has moved to another worker (the caller is a
+        zombie), nothing is written and "fenced" is returned.
+
+        Returns "running" (success), "fenced" (ownership lost), or "stale"
+        (item not in leased state — e.g. already terminal).
+        """
+        item = await self.get(work_id)
+        if item is None or item.status != "leased":
+            return "stale"
+        if expected_owner is not None and item.lease_owner != expected_owner:
+            log.warning("work.fenced", work_id=work_id, stage="running")
+            return "fenced"
+        item.status = "running"
+        await self._session.flush()
+        return "running"
+
+    async def mark_succeeded(
+        self,
+        work_id: str,
+        result: dict[str, Any] | None,
+        *,
+        expected_owner: str | None = None,
+    ) -> str:
+        """Record success. Fenced when `expected_owner` no longer owns the
+        lease — a zombie worker's late result is DISCARDED (the reclaiming
+        worker's attempt is authoritative).
+
+        Returns "succeeded", "fenced", or "stale".
+        """
         item = await self.get(work_id)
         if item is None or item.status not in ("leased", "running"):
-            return False
+            return "stale"
+        if expected_owner is not None and item.lease_owner != expected_owner:
+            log.warning("work.fenced", work_id=work_id, stage="succeeded")
+            return "fenced"
         item.status = "succeeded"
         item.result = result
         item.lease_owner = None
         item.lease_expires_at = None
         await self._session.flush()
         log.info("work.succeeded", work_id=work_id, kind=item.kind)
-        return True
+        return "succeeded"
 
     async def mark_failed(
         self,
@@ -252,13 +349,18 @@ class WorkRepository:
         error: str,
         *,
         backoff_seconds: float = 30.0,
+        expected_owner: str | None = None,
     ) -> str:
         """Record a failed attempt. Returns the new status:
-        "pending" (will retry after backoff) or "dead" (attempts exhausted).
+        "pending" (will retry after backoff), "dead" (attempts exhausted),
+        "fenced" (ownership lost — nothing was written), or "unknown".
         """
         item = await self.get(work_id)
         if item is None or item.status not in ("leased", "running"):
             return "unknown"
+        if expected_owner is not None and item.lease_owner != expected_owner:
+            log.warning("work.fenced", work_id=work_id, stage="failed")
+            return "fenced"
         item.last_error = error[:5000]
         if item.attempts >= item.max_attempts:
             item.status = "dead"

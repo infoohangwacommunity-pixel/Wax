@@ -2,24 +2,37 @@
 
 Phase R (durable work) + Phase V (background runtime): the runtime — not
 the AI — owns time. The runner is an in-process asyncio worker started by
-the app lifespan (no second process needed at this scale; the lease design
-admits multiple workers/replicas later without schema change).
+the app lifespan. The lease design (atomic claims with SKIP LOCKED row
+locks, fencing on terminal writes, lease heartbeats, expired-lease
+reclaim) admits MANY runners concurrently — additional processes or
+replicas just construct another WorkRunner against the same database.
 
 Loop:
 1. claim_due(): take leased ownership of due or condition-satisfied items
-   (crash-safe; event-wake items are correlated against the signal ledger).
-2. dispatch each to its registered handler.
-3. success → mark_succeeded; failure → mark_failed with backoff; exhausted
-   attempts → dead + dead-letter row.
+   (crash-safe; event-wake items are correlated against the signal ledger;
+   concurrent workers can never claim the same row). The batch also carries
+   the pass's DEATHS — expired waits and reclaim-exhausted items — which
+   are announced here, in the same transaction that persisted them.
+2. dispatch each claimed item to its registered handler, with a HEARTBEAT:
+   while the handler runs, the worker renews its lease (a healthy slow
+   worker is never mistaken for a dead one).
+3. success → mark_succeeded (FENCED: a zombie worker whose lease was
+   reclaimed cannot write its result); failure → mark_failed with backoff;
+   exhausted attempts → dead + dead-letter row.
 4. Terminal states are ANNOUNCED: the runner appends a runtime signal
-   (work.succeeded:<id> / work.dead:<id>) to the event ledger, so other
-   work can wait on "this work finished" — dependency composition without
-   any workflow engine.
+   (work.succeeded:<id> / work.dead:<id> / work.expired:<id>) to the event
+   ledger, so other work can wait on "this work finished" or honestly
+   react to "this work died" — dependency composition without any
+   workflow engine.
 
 Recovery scan (on startup): executions left "running" by a previous process
 and processed_messages left "pending" are reconciled to failed/retryable so
 Meta redeliveries can retry — closing the crash hole the audit found
 (Section 8: durable-state machinery existed but nothing ever resumed).
+
+Graceful shutdown is part of the contract: stop() stops claiming and lets
+in-flight items finish (bounded by a grace period) before the process
+exits — a shutdown never orphans a running item.
 
 The runner knows NOTHING about use cases. Handlers are registered
 mechanisms; today there is exactly one: run a capability.
@@ -52,7 +65,7 @@ class WorkExecutionError(Exception):
 
 
 class WorkRunner:
-    """In-process background worker for durable work."""
+    """In-process background worker for durable work (multi-worker safe)."""
 
     def __init__(
         self,
@@ -63,6 +76,7 @@ class WorkRunner:
         batch_size: int = 10,
         retry_backoff_seconds: float = 30.0,
         stale_execution_seconds: float = 900.0,
+        max_concurrency: int = 1,
     ) -> None:
         self._services = services
         self._poll_interval = poll_interval_seconds
@@ -70,10 +84,12 @@ class WorkRunner:
         self._batch_size = batch_size
         self._retry_backoff = retry_backoff_seconds
         self._stale_execution_seconds = stale_execution_seconds
+        self._max_concurrency = max(1, max_concurrency)
         self._worker_id = f"worker-{str(ULID())[:8]}"
         self._handlers: dict[str, WorkHandler] = {}
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
+        self._heartbeats: set[asyncio.Task] = set()
 
     # --- Handler registration --------------------------------------------
 
@@ -94,14 +110,28 @@ class WorkRunner:
             poll_interval_s=self._poll_interval,
         )
 
-    async def stop(self) -> None:
+    async def stop(self, *, grace_seconds: float = 30.0) -> None:
+        """Graceful shutdown: stop claiming, let in-flight items finish.
+
+        Bounded by `grace_seconds`; if work is still in-flight past the
+        grace period the task is cancelled and the items' leases expire —
+        another worker reclaims them (the standard recovery path). No item
+        is ever lost to a shutdown, and a finished shutdown never leaves a
+        half-written state.
+        """
         self._stopping.set()
         if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._task  # shutdown is best-effort
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=grace_seconds)
+            if not self._task.done():
+                self._task.cancel()
+                with contextlib.suppress(BaseException):
+                    await self._task
             self._task = None
-            log.info("work.runner_stopped", worker_id=self._worker_id)
+        for hb in list(self._heartbeats):
+            hb.cancel()
+        self._heartbeats.clear()
+        log.info("work.runner_stopped", worker_id=self._worker_id)
 
     async def _run_loop(self) -> None:
         while not self._stopping.is_set():
@@ -114,6 +144,8 @@ class WorkRunner:
                     error=str(e),
                     error_type=type(e).__name__,
                 )
+            if self._stopping.is_set():
+                break
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=self._poll_interval)
 
@@ -121,21 +153,99 @@ class WorkRunner:
 
     async def run_once(self) -> int:
         """Claim and process one batch. Returns the number of items run."""
+        from wax.reliability.dead_letter import DeadLetterRepository
+        from wax.runtime.work.signals import SignalRepository
         from wax.state.engine import db_session
 
         async with db_session() as session:
             repo = WorkRepository(session)
-            items = await repo.claim_due(
+            batch = await repo.claim_due(
                 worker_id=self._worker_id,
                 lease_seconds=self._lease_seconds,
                 limit=self._batch_size,
             )
+            # Announce every death this pass produced, in the SAME
+            # transaction that persisted it — no silent deaths.
+            for item in batch.expired:
+                await SignalRepository(session).emit(
+                    f"work.expired:{item.id}",
+                    payload={"work_id": item.id, "kind": item.kind},
+                    emitted_by="work_runner",
+                )
+            for item in batch.reclaim_dead:
+                await DeadLetterRepository(session).record(
+                    kind=f"work.{item.kind}",
+                    principal_id=item.principal_id,
+                    execution_id=item.execution_id,
+                    error_type="LeaseExhausted",
+                    error_message=item.last_error or "lease expired; attempts exhausted",
+                    attempts=item.attempts,
+                    payload=item.payload,
+                )
+                await SignalRepository(session).emit(
+                    f"work.dead:{item.id}",
+                    payload={"work_id": item.id, "kind": item.kind, "error": (item.last_error or "")[:500]},
+                    emitted_by="work_runner",
+                )
+            claimed = list(batch.claimed)
+            if batch.reclaimed:
+                self._services.metrics.work_reclaimed()
             await session.commit()
 
-        for item in items:
-            await self._process_item(item)
+        if not claimed:
+            self._services.metrics.work_inflight(float(await self._inflight()))
+            return 0
+
+        if self._max_concurrency == 1:
+            for item in claimed:
+                await self._process_item(item)
+        else:
+            sem = asyncio.Semaphore(self._max_concurrency)
+
+            async def _guarded(rec: WorkItemRecord) -> None:
+                async with sem:
+                    await self._process_item(rec)
+
+            await asyncio.gather(*(_guarded(item) for item in claimed))
+
         self._services.metrics.work_inflight(float(await self._inflight()))
-        return len(items)
+        return len(claimed)
+
+    def _spawn_heartbeat(self, item_id: str) -> asyncio.Task:
+        """Renew this item's lease while its handler runs.
+
+        Interval is lease/3: two failed renewals still leave a live lease,
+        so a healthy slow worker is never reclaimed by mistake. The task
+        ends itself when ownership is lost or the item finishes.
+        """
+
+        async def _beat() -> None:
+            from wax.state.engine import db_session
+
+            interval = max(self._lease_seconds / 3.0, 0.05)
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    async with db_session() as session:
+                        renewed = await WorkRepository(session).renew_lease(
+                            item_id,
+                            worker_id=self._worker_id,
+                            lease_seconds=self._lease_seconds,
+                        )
+                        await session.commit()
+                    if not renewed:
+                        return
+                except Exception as e:
+                    log.warning(
+                        "work.heartbeat_error",
+                        work_id=item_id,
+                        error=str(e),
+                    )
+
+        task = asyncio.create_task(_beat(), name=f"wax-heartbeat-{item_id}")
+        self._heartbeats.add(task)
+        task.add_done_callback(self._heartbeats.discard)
+        return task
 
     async def _process_item(self, item: WorkItemRecord) -> None:
         from wax.runtime.work.signals import SignalRepository
@@ -143,29 +253,45 @@ class WorkRunner:
 
         handler = self._handlers.get(item.kind)
         kind = item.kind
+        heartbeat: asyncio.Task | None = None
         try:
             if handler is None:
                 raise WorkExecutionError(f"No handler registered for kind={kind!r}")
             async with db_session() as session:
-                await WorkRepository(session).mark_running(item.id)
+                outcome = await WorkRepository(session).mark_running(
+                    item.id, expected_owner=self._worker_id
+                )
                 await session.commit()
+            if outcome != "running":
+                # Fenced or already terminal: another attempt owns this item.
+                self._services.metrics.work_fenced()
+                return
 
+            heartbeat = self._spawn_heartbeat(item.id)
             result = await handler(self._services, item)
 
             async with db_session() as session:
-                await WorkRepository(session).mark_succeeded(item.id, result)
-                # Announce the terminal state on the event ledger: other
-                # work may be waiting for THIS work to finish.
-                await SignalRepository(session).emit(
-                    f"work.succeeded:{item.id}",
-                    payload={"work_id": item.id, "kind": kind},
-                    emitted_by="work_runner",
+                status = await WorkRepository(session).mark_succeeded(
+                    item.id, result, expected_owner=self._worker_id
                 )
+                if status == "succeeded":
+                    # Announce the terminal state on the event ledger: other
+                    # work may be waiting for THIS work to finish.
+                    await SignalRepository(session).emit(
+                        f"work.succeeded:{item.id}",
+                        payload={"work_id": item.id, "kind": kind},
+                        emitted_by="work_runner",
+                    )
+                else:
+                    self._services.metrics.work_fenced()
                 await session.commit()
             self._services.metrics.work_woken("succeeded", kind)
         except Exception as e:
             self._services.metrics.work_woken("failed", kind)
             await self._fail_item(item, e)
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
 
     async def _fail_item(self, item: WorkItemRecord, error: Exception) -> None:
         from wax.reliability.dead_letter import DeadLetterRepository
@@ -179,7 +305,13 @@ class WorkRunner:
                     item.id,
                     f"{type(error).__name__}: {error}",
                     backoff_seconds=self._retry_backoff,
+                    expected_owner=self._worker_id,
                 )
+                if status == "fenced":
+                    # A zombie worker's failure report is discarded.
+                    self._services.metrics.work_fenced()
+                    await session.commit()
+                    return
                 if status == "dead":
                     await DeadLetterRepository(session).record(
                         kind=f"work.{item.kind}",

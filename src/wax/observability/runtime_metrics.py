@@ -77,10 +77,42 @@ class RuntimeMetrics:
     def work_inflight(self, count: float) -> None:
         self._registry.gauge("work_items_inflight").set(count)
 
+    def work_fenced(self) -> None:
+        """A zombie worker's write was refused (fencing held)."""
+        self._registry.counter("work_fenced_writes_total").inc()
+
+    def work_reclaimed(self) -> None:
+        """A lease-expired item was taken over by another attempt."""
+        self._registry.counter("work_reclaims_total").inc()
+
     # --- Event ledger (durable waiting) ------------------------------------
 
     def signal_emitted(self, signal: str) -> None:
         self._registry.counter("runtime_signals_total", signal=signal).inc()
+
+    def signals_pruned(self, count: float) -> None:
+        self._registry.counter("runtime_signals_pruned_total").inc(count)
+
+    # --- Approvals (authority boundary) ------------------------------------
+
+    def approval_requested(self) -> None:
+        self._registry.counter("approvals_requested_total").inc()
+
+    def approval_decided(self, decision: str) -> None:
+        self._registry.counter("approvals_decided_total", decision=decision).inc()
+
+    def approval_expired(self) -> None:
+        self._registry.counter("approvals_expired_total").inc()
+
+    # --- Artifact acquisition ----------------------------------------------
+
+    def artifact_acquired(self, *, cache_hit: bool) -> None:
+        self._registry.counter(
+            "artifacts_acquired_total", cache_hit=str(cache_hit).lower()
+        ).inc()
+
+    def artifact_rejected(self, reason: str) -> None:
+        self._registry.counter("artifacts_rejected_total", reason=reason).inc()
 
     # --- Memory lifecycle -------------------------------------------------
 
