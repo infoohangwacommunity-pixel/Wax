@@ -103,6 +103,16 @@ class RuntimeMetrics:
         """A code execution ran under the given isolation kind."""
         self._registry.counter("code_executions_total", isolation=isolation).inc()
 
+    # --- Maintenance leadership ----------------------------------------------
+
+    def maintenance_led(self) -> None:
+        """This instance LED a maintenance pass."""
+        self._registry.counter("maintenance_leadership_total", role="leader").inc()
+
+    def maintenance_followed(self) -> None:
+        """This instance FOLLOWED (skipped a maintenance pass)."""
+        self._registry.counter("maintenance_leadership_total", role="follower").inc()
+
     # --- Approvals (authority boundary) ------------------------------------
 
     def approval_requested(self) -> None:

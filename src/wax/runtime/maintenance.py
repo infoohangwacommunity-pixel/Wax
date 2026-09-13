@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from wax.runtime.leadership import MaintenanceLeadership
 from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
@@ -32,37 +33,60 @@ def _metric():  # type: ignore[no-untyped-def]
 
 
 async def run_maintenance_pass(settings: Any) -> dict[str, Any]:
-    """One maintenance pass. Returns counters for logging/tests."""
+    """One maintenance pass. Returns counters for logging/tests.
+
+    Multi-instance correctness: the pass runs on the LEADER only
+    (Postgres advisory-lock election). Followers skip and say so —
+    the skip is visible in the return value, the log, and metrics.
+    """
     from wax.authority.approvals import ApprovalService
     from wax.runtime.work.signals import SignalRepository
     from wax.state.engine import db_session
 
-    results: dict[str, Any] = {"expired_approvals": 0, "signals_pruned": 0}
+    leadership = await MaintenanceLeadership.acquire(settings)
+    try:
+        if not leadership.is_leader:
+            _metric().maintenance_followed()
+            return {
+                "skipped": "not_leader",
+                "leadership_mode": leadership.mode,
+                "expired_approvals": 0,
+                "signals_pruned": 0,
+            }
 
-    async with db_session() as session:
-        expired = await ApprovalService(session).expire_due()
-        results["expired_approvals"] = len(expired)
-        if expired:
-            _metric().approval_expired()
-        await session.commit()
+        results: dict[str, Any] = {
+            "expired_approvals": 0,
+            "signals_pruned": 0,
+            "leadership_mode": leadership.mode,
+        }
 
-    async with db_session() as session:
-        stats = await SignalRepository(session).prune(
-            retention_seconds=float(settings.signal_retention_seconds),
-            max_rows=int(settings.signal_max_ledger_rows),
+        async with db_session() as session:
+            expired = await ApprovalService(session).expire_due()
+            results["expired_approvals"] = len(expired)
+            if expired:
+                _metric().approval_expired()
+            await session.commit()
+
+        async with db_session() as session:
+            stats = await SignalRepository(session).prune(
+                retention_seconds=float(settings.signal_retention_seconds),
+                max_rows=int(settings.signal_max_ledger_rows),
+            )
+            await session.commit()
+        pruned = int(stats.get("retention_deleted", 0)) + int(
+            stats.get("bound_deleted", 0)
         )
-        await session.commit()
-    pruned = int(stats.get("retention_deleted", 0)) + int(
-        stats.get("bound_deleted", 0)
-    )
-    results["signals_pruned"] = pruned
-    results["signal_prune_stats"] = stats
-    if pruned:
-        _metric().signals_pruned(float(pruned))
+        results["signals_pruned"] = pruned
+        results["signal_prune_stats"] = stats
+        if pruned:
+            _metric().signals_pruned(float(pruned))
 
-    if results["expired_approvals"] or pruned:
-        log.info("runtime.maintenance_pass", **results)
-    return results
+        _metric().maintenance_led()
+        if results["expired_approvals"] or pruned:
+            log.info("runtime.maintenance_pass", **results)
+        return results
+    finally:
+        await leadership.release()
 
 
 async def maintenance_loop(settings: Any, interval_seconds: float = 300.0) -> None:
