@@ -35,9 +35,20 @@ BASE = f"http://127.0.0.1:{PORT}"
 def build_settings() -> WaxSettings:
     """Minimal settings: WhatsApp configured so the client initializes.
     Signal retention is set tiny so the live pruning proof can run in
-    one pass; the approval expiry is the real default."""
+    one pass; the approval expiry is the real default. The database is a
+    FRESH file per run so probe checks (exactly-once counts, ledger
+    retention) are never masked by a previous run's state."""
+    import tempfile
+
+    db_path = os.path.join(tempfile.mkdtemp(prefix="wax-probe-"), "probe.db")
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+    # migrations/env.py rebuilds WaxSettings from the environment when the
+    # alembic chain runs — publish the probe's DB through the same channel
+    # so the migrations and the app use ONE database.
+    os.environ["WAX_DATABASE_URL"] = db_url
     return WaxSettings.model_validate(
         {
+            "database_url": db_url,
             "whatsapp_access_token": "probe-token",
             "whatsapp_phone_number_id": "123456789",
             "whatsapp_app_secret": APP_SECRET,
