@@ -62,6 +62,10 @@ from wax.intelligence.service import IntelligenceService
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
 from wax.objective.contracts import ObjectiveCreate, ObjectiveKind, ObjectiveStatus
+from wax.objective.evidence import (
+    sync_active_for_execution,
+    sync_awaiting_human_for_execution,
+)
 from wax.objective.repository import ObjectiveRepository
 from wax.observability.audit import record_audit_event
 from wax.reliability.dead_letter import DeadLetterRepository
@@ -284,7 +288,11 @@ class RuntimeBridge:
             objective=request.effective_text or "[empty message]",
         )
         await exec_repo.start(execution.id)
-        await objective_repo.attach_execution(objective.id, execution.id)
+        # History row (ADR-0020): this execution's participation in the
+        # objective's life is recorded evidence, not just a mutable pointer.
+        await objective_repo.record_execution_start(
+            objective.id, execution.id, kind="bridge"
+        )
         await objective_repo.transition(objective.id, ObjectiveStatus.IN_PROGRESS)
         record.execution_id = execution.id
 
@@ -384,6 +392,9 @@ class RuntimeBridge:
             await exec_repo.complete(
                 execution.id,
                 checkpoint={"response": response_text[:1000]},
+            )
+            await objective_repo.record_execution_end(
+                objective.id, execution.id, outcome="succeeded"
             )
             await objective_repo.transition(objective.id, ObjectiveStatus.SUCCEEDED)
             await conversations.touch(conversation_id, execution_id=execution.id)
@@ -767,6 +778,14 @@ class RuntimeBridge:
                     capability=call.name,
                     execution_id=execution_id,
                 )
+                # Evidence sync (ADR-0020): the human decided — the
+                # objective is active again. BOTH objectives reactivate:
+                # the one that requested the approval (it was awaiting the
+                # human) and the one consuming it.
+                await sync_active_for_execution(session, execution_id)
+                await sync_active_for_execution(
+                    session, approved.requested_by_execution_id
+                )
                 # Fall through to budget + invoker below.
             else:
                 return await _finalize(
@@ -797,6 +816,9 @@ class RuntimeBridge:
                     emitted_by="bridge",
                 )
                 await self._notify_approval(session, record)
+                # Evidence sync (ADR-0020): a pending approval IS the
+                # objective awaiting a human.
+                await sync_awaiting_human_for_execution(session, execution_id)
             self._services.metrics.approval_requested()
             return await _finalize(
                 _structured_failure(
@@ -1173,6 +1195,10 @@ class RuntimeBridge:
             if execution_id is not None:
                 await exec_repo.fail(execution_id, f"{type(error).__name__}: {error}"[:1000])
             if objective_id is not None:
+                # Close the participation row (ADR-0020), then transition.
+                await ObjectiveRepository(session).record_execution_end(
+                    objective_id, execution_id or "", outcome="failed"
+                )
                 await ObjectiveRepository(session).transition(objective_id, ObjectiveStatus.FAILED)
 
             if final_outcome == "dead":

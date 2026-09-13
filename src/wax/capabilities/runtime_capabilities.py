@@ -30,6 +30,10 @@ from sqlalchemy import select
 
 from wax.capabilities.contracts import CapabilityDescriptor, InvocationContext
 from wax.capabilities.registry import CapabilityRegistry
+from wax.objective.evidence import (
+    sync_active_for_execution,
+    sync_waiting_for_execution,
+)
 from wax.runtime.logging import get_logger
 from wax.state.engine import db_session
 
@@ -469,6 +473,11 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 wake_event=wake_event,
                 expires_at=expires_at,
             )
+            # Evidence sync (ADR-0020): scheduled durable work under this
+            # execution means the objective IS waiting on a real condition.
+            await sync_waiting_for_execution(
+                session, ctx.request_id or ctx.execution_id
+            )
             await session.commit()
 
         return {
@@ -801,7 +810,10 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
     registry.register(MEMORY_CONSOLIDATE_DESCRIPTOR, memory_consolidate_impl)
-    log.info("capability.runtime_registered", count=15)
+    registry.register(OBJECTIVE_LIST_DESCRIPTOR, objective_list_impl)
+    registry.register(OBJECTIVE_RESUME_DESCRIPTOR, objective_resume_impl)
+    registry.register(OBJECTIVE_UPDATE_STATUS_DESCRIPTOR, objective_update_status_impl)
+    log.info("capability.runtime_registered", count=18)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -1195,4 +1207,281 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
         "memory_id": record.id,
         "consolidated_count": len(source_ids),
         "superseded_ids": superseded_ids,
+    }
+
+
+# --- objective.* (the intelligence can drive its principal's objectives) ---
+#
+# ADR-0020. Before these capabilities existed the objective record was a
+# runtime-internal artifact: the bridge created one per interaction, and
+# the intelligence could neither see its principal's broader objectives
+# nor continue one across messages. That made every long-running human
+# goal a chain of sibling single-message objectives — continuity by
+# accident, not by representation. These capabilities close that with
+# generic mechanisms ONLY: list (visibility), resume (continue a prior
+# objective with this interaction's execution), update_status (close
+# with recorded evidence). No domain kinds, no task taxonomy — the
+# description stays free text the intelligence interprets.
+
+OBJECTIVE_LIST_DESCRIPTOR = CapabilityDescriptor(
+    name="objective.list",
+    description=(
+        "List the current principal's objectives (what the human wants "
+        "to accomplish), most recent first, with status and execution "
+        "counts. Use this to discover ongoing work before assuming a "
+        "request is new."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "Optional filter: pending, in_progress, waiting, "
+                "awaiting_human, succeeded, failed, cancelled, abandoned",
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+    },
+    required_permission="objective.read",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+OBJECTIVE_RESUME_DESCRIPTOR = CapabilityDescriptor(
+    name="objective.resume",
+    description=(
+        "Continue an existing objective of this principal with the "
+        "current interaction: the execution now advances THAT objective "
+        "instead of a fresh per-message one, and the interaction history "
+        "of both records the link. Use when the human's message clearly "
+        "belongs to earlier work (for example 'continue that')."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "objective_id": {"type": "string"},
+            "note": {
+                "type": "string",
+                "maxLength": 2000,
+                "description": "Why this message continues the objective",
+            },
+        },
+        "required": ["objective_id"],
+    },
+    required_permission="objective.write",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+OBJECTIVE_UPDATE_STATUS_DESCRIPTOR = CapabilityDescriptor(
+    name="objective.update_status",
+    description=(
+        "Close or cancel one of this principal's objectives with the "
+        "evidence that justifies it. Allowed targets: succeeded, failed, "
+        "cancelled, abandoned. Completion must carry real evidence from "
+        "this interaction (capability results, artifacts) — the runtime "
+        "records the claim with its evidence; it does not verify intent."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "objective_id": {"type": "string"},
+            "status": {
+                "type": "string",
+                "enum": ["succeeded", "failed", "cancelled", "abandoned"],
+            },
+            "evidence": {
+                "type": "string",
+                "maxLength": 2000,
+                "description": "What actually happened that justifies this status",
+            },
+        },
+        "required": ["objective_id", "status", "evidence"],
+    },
+    required_permission="objective.write",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+_VALID_OBJECTIVE_CLOSE_STATUSES = ("succeeded", "failed", "cancelled", "abandoned")
+
+
+async def objective_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from wax.objective.contracts import ObjectiveStatus
+    from wax.objective.repository import ObjectiveRepository
+    from wax.state.engine import db_session
+
+    status = inputs.get("status")
+    try:
+        limit = int(inputs.get("limit", 20))
+    except (TypeError, ValueError) as e:
+        raise ValueError("limit must be an integer") from e
+    if not 1 <= limit <= 50:
+        raise ValueError("limit must be between 1 and 50")
+
+    async with db_session() as session:
+        repo = ObjectiveRepository(session)
+        if status is not None:
+            valid = {s.value for s in ObjectiveStatus}
+            if status not in valid:
+                raise ValueError(f"status must be one of {sorted(valid)}")
+        records = await repo.list_for_principal(
+            ctx.principal_id, status=status, limit=limit
+        )
+        items = []
+        for r in records:
+            history = await repo.list_executions(r.id, limit=200)
+            items.append(
+                {
+                    "objective_id": r.id,
+                    "description": r.description[:500],
+                    "kind": r.kind,
+                    "status": r.status,
+                    "success_criteria": r.success_criteria,
+                    "created_at": r.created_at.isoformat(),
+                    "updated_at": r.updated_at.isoformat(),
+                    "execution_count": len(history),
+                    "last_execution_outcome": (
+                        history[-1].outcome if history and history[-1].outcome else None
+                    ),
+                }
+            )
+        await session.commit()
+
+    return {"count": len(items), "objectives": items}
+
+
+async def objective_resume_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from wax.objective.contracts import ACTIVE_ELIGIBLE_STATES, ObjectiveStatus
+    from wax.objective.evidence import objective_for_execution
+    from wax.objective.repository import ObjectiveRepository
+    from wax.state.engine import db_session
+
+    objective_id = inputs.get("objective_id")
+    if not objective_id or not isinstance(objective_id, str):
+        raise ValueError("objective_id is required")
+    note = inputs.get("note")
+    if note is not None and not isinstance(note, str):
+        raise ValueError("note must be a string")
+
+    # On the live bridge path request_id IS the bridge execution; the
+    # invoker-internal execution id is the fallback (direct calls).
+    execution_id = ctx.request_id or ctx.execution_id
+
+    async with db_session() as session:
+        repo = ObjectiveRepository(session)
+        target = await repo.get(objective_id)
+        if target is None or target.principal_id != ctx.principal_id:
+            # Do not leak other principals' objectives.
+            raise ValueError(f"No such objective for this principal: {objective_id}")
+        if target.status not in ACTIVE_ELIGIBLE_STATES:
+            raise ValueError(
+                f"Objective {objective_id} is {target.status} and cannot be resumed"
+            )
+
+        previous_objective_id: str | None = None
+        current = await objective_for_execution(session, execution_id)
+        if current is not None and current.id != target.id:
+            previous_objective_id = current.id
+            if current.status in ("pending", "in_progress", "waiting", "awaiting_human"):
+                # The per-message objective is superseded by the resumed
+                # one: close its history honestly and cancel it.
+                await repo.record_execution_end(
+                    current.id, execution_id or "", outcome="superseded"
+                )
+                await repo.transition(current.id, ObjectiveStatus.CANCELLED)
+
+        # Redirect the execution to the resumed objective: new history
+        # row + current pointer + active transition.
+        await repo.record_execution_start(
+            target.id, execution_id or ctx.execution_id, kind="bridge"
+        )
+        await repo.transition(target.id, ObjectiveStatus.IN_PROGRESS)
+
+        context = dict(target.context or {})
+        resumes = list(context.get("resumes") or [])
+        resumes.append(
+            {
+                "at": datetime.now(UTC).isoformat(),
+                "execution_id": execution_id,
+                "note": (note or "")[:2000] or None,
+                "from_objective_id": previous_objective_id,
+            }
+        )
+        context["resumes"] = resumes[-20:]
+        target.context = context
+        await session.commit()
+
+    return {
+        "objective_id": objective_id,
+        "status": "in_progress",
+        "superseded_objective_id": previous_objective_id,
+    }
+
+
+async def objective_update_status_impl(
+    inputs: dict[str, Any], ctx: InvocationContext
+) -> dict[str, Any]:
+    from wax.objective.repository import ObjectiveRepository
+    from wax.state.engine import db_session
+
+    objective_id = inputs.get("objective_id")
+    if not objective_id or not isinstance(objective_id, str):
+        raise ValueError("objective_id is required")
+    status = inputs.get("status")
+    if status not in _VALID_OBJECTIVE_CLOSE_STATUSES:
+        raise ValueError(
+            f"status must be one of {list(_VALID_OBJECTIVE_CLOSE_STATUSES)}"
+        )
+    evidence = inputs.get("evidence")
+    if not evidence or not isinstance(evidence, str):
+        raise ValueError("evidence is required: the runtime records WHY with the status")
+
+    async with db_session() as session:
+        repo = ObjectiveRepository(session)
+        record = await repo.get(objective_id)
+        if record is None or record.principal_id != ctx.principal_id:
+            raise ValueError(f"No such objective for this principal: {objective_id}")
+        if record.status in ("succeeded", "failed", "cancelled", "abandoned"):
+            raise ValueError(
+                f"Objective {objective_id} is already terminal ({record.status})"
+            )
+
+        # Record the claim WITH its evidence (mission §24: the runtime
+        # retains the evidence supporting the completed state), then
+        # transition. Terminal statuses accept no further transitions.
+        context = dict(record.context or {})
+        close_events = list(context.get("status_evidence") or [])
+        close_events.append(
+            {
+                "at": datetime.now(UTC).isoformat(),
+                "execution_id": ctx.request_id or ctx.execution_id,
+                "status": status,
+                "evidence": evidence[:2000],
+            }
+        )
+        context["status_evidence"] = close_events[-20:]
+        record.context = context
+
+        closed = await repo.record_execution_end(
+            objective_id, ctx.request_id or ctx.execution_id, outcome=status
+        )
+        ok = await repo.transition(objective_id, status)
+        if not ok:
+            raise ValueError(
+                f"Cannot transition objective {objective_id} from "
+                f"{record.status} to {status}"
+            )
+        await session.commit()
+
+    return {
+        "objective_id": objective_id,
+        "status": status,
+        "history_rows_closed": closed,
     }

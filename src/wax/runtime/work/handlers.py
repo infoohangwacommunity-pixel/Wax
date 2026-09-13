@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from wax.objective.evidence import (
+    sync_active_for_execution,
+    sync_awaiting_human_for_execution,
+)
 from wax.runtime.logging import get_logger
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work.runner import WorkExecutionError
@@ -22,6 +26,32 @@ from wax.state.engine import db_session
 from wax.state.work_models import WorkItemRecord
 
 log = get_logger(__name__)
+
+
+async def record_work_participation(item: WorkItemRecord) -> None:
+    """Append the objective-execution history row for this work run (ADR-0020).
+
+    Tolerant: an unresolvable objective (no history, no pointer) simply
+    records nothing — the work still runs. Must never break execution.
+    """
+    from wax.objective.evidence import objective_for_execution
+    from wax.objective.repository import ObjectiveRepository
+
+    if not item.execution_id:
+        return
+    try:
+        async with db_session() as session:
+            objective = await objective_for_execution(session, item.execution_id)
+            if objective is None:
+                return
+            await ObjectiveRepository(session).record_execution_start(
+                objective.id, item.id, kind="work"
+            )
+            await session.commit()
+    except Exception as e:  # noqa: BLE001 — history must never break work
+        log.warning(
+            "objective.work_history_failed", work_id=item.id, reason=str(e)[:300]
+        )
 
 
 async def capability_handler(services: RuntimeServices, item: WorkItemRecord) -> dict[str, Any]:
@@ -106,6 +136,10 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
                     capability=capability_name,
                     work_id=item.id,
                 )
+                # Evidence sync (ADR-0020): the human approved — the
+                # objective's wait on this decision is over.
+                await sync_active_for_execution(session, item.execution_id)
+                await session.commit()
             else:
                 # No approval yet: create/return the pending request
                 # idempotently, announce it, and fail this attempt honestly.
@@ -125,6 +159,11 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
                         payload={"approval_id": record.id, "capability": capability_name},
                         emitted_by="work_runner",
                     )
+                    # Evidence sync (ADR-0020): a pending approval created
+                    # from durable work IS the objective awaiting a human.
+                    await sync_awaiting_human_for_execution(
+                        session, item.execution_id
+                    )
                 await session.commit()
                 services.metrics.approval_requested()
                 raise WorkExecutionError(
@@ -138,6 +177,12 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
             ResourceUsage(budget_key, ResourceKind.CAPABILITY_INVOCATIONS, 1.0, notes="work")
         ):
             raise WorkExecutionError("Resource budget exhausted for work invocation")
+
+        # Evidence sync (ADR-0020): the wait resolved — the objective is
+        # active again, and this run joins its execution history.
+        await sync_active_for_execution(session, item.execution_id)
+        await session.commit()
+        await record_work_participation(item)
 
         invoker = services.invoker(session)
         result = await invoker.invoke(

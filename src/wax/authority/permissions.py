@@ -32,6 +32,7 @@ class PermissionNamespace(StrEnum):
     IDENTITY = "identity"
     AUTHORITY = "authority"
     AUDIT = "audit"
+    OBJECTIVE = "objective"
     ADMIN = "admin"
 
 
@@ -63,6 +64,10 @@ _PERMISSION_MANIFEST: tuple[str, ...] = (
     "authority.role.create",
     # Audit (Phase C)
     "audit.read",
+    # Objective lifecycle (ADR-0020) — the intelligence may list, resume,
+    # and close its principal's objectives, under the principal's authority.
+    "objective.read",
+    "objective.write",
     # Admin
     "admin.*",
 )
@@ -102,6 +107,8 @@ BUILTIN_ROLES: dict[str, frozenset[str]] = {
             "authority.role.revoke",
             "authority.role.create",
             "audit.read",
+            "objective.read",
+            "objective.write",
             "admin.*",
         }
     ),
@@ -112,6 +119,8 @@ BUILTIN_ROLES: dict[str, frozenset[str]] = {
             "capability.invoke:built_in",
             "execution.start",
             "execution.read",
+            "objective.read",
+            "objective.write",
         }
     ),
     "service": frozenset(

@@ -12,14 +12,49 @@ from pydantic import BaseModel, Field
 class ObjectiveStatus(StrEnum):
     """Lifecycle states for an objective.
 
-    pending → in_progress → succeeded | failed | abandoned
+    pending → in_progress → succeeded | failed | abandoned, plus the
+    evidence-driven states the runtime syncs WITHOUT intelligence in the
+    loop (ADR-0020):
+
+    - waiting: durable work linked to this objective exists and is not
+      yet claimed (time or event wake) — the objective is not stalled,
+      it is WAITING on a real condition the runtime tracks.
+    - awaiting_human: a pending human approval exists whose provenance
+      traces to this objective's execution.
+    - cancelled: actively cancelled (by the principal or by the
+      intelligence under the principal's authority) — distinct from
+      abandoned (drifted / no longer pursued) and from failed (honest
+      failure with error evidence).
+
+    Transitions are enforced by ObjectiveRepository._VALID_TRANSITIONS.
     """
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    WAITING = "waiting"
+    AWAITING_HUMAN = "awaiting_human"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     ABANDONED = "abandoned"
+
+
+#: States an objective can be resumed into active work from.
+ACTIVE_ELIGIBLE_STATES = (
+    ObjectiveStatus.PENDING.value,
+    ObjectiveStatus.WAITING.value,
+    ObjectiveStatus.AWAITING_HUMAN.value,
+    ObjectiveStatus.FAILED.value,
+    ObjectiveStatus.IN_PROGRESS.value,
+)
+
+#: Terminal states — no further transitions (evidence stands).
+TERMINAL_OBJECTIVE_STATUSES = (
+    ObjectiveStatus.SUCCEEDED.value,
+    ObjectiveStatus.FAILED.value,
+    ObjectiveStatus.CANCELLED.value,
+    ObjectiveStatus.ABANDONED.value,
+)
 
 
 class ObjectiveKind(StrEnum):

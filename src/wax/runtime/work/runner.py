@@ -48,6 +48,7 @@ from typing import Any
 
 from ulid import ULID
 
+from wax.objective.evidence import sync_failure_for_work
 from wax.runtime.logging import get_logger
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work.repository import WorkRepository
@@ -172,6 +173,9 @@ class WorkRunner:
                     payload={"work_id": item.id, "kind": item.kind},
                     emitted_by="work_runner",
                 )
+                # Evidence sync (ADR-0020): an expired wait is honest
+                # failure for the objective if nothing else is pending.
+                await sync_failure_for_work(session, item)
             for item in batch.reclaim_dead:
                 await DeadLetterRepository(session).record(
                     kind=f"work.{item.kind}",
@@ -187,6 +191,7 @@ class WorkRunner:
                     payload={"work_id": item.id, "kind": item.kind, "error": (item.last_error or "")[:500]},
                     emitted_by="work_runner",
                 )
+                await sync_failure_for_work(session, item)
             claimed = list(batch.claimed)
             if batch.reclaimed:
                 self._services.metrics.work_reclaimed()
@@ -333,6 +338,9 @@ class WorkRunner:
                         },
                         emitted_by="work_runner",
                     )
+                    # Evidence sync (ADR-0020): if this was the objective's
+                    # last outstanding work, the objective fails honestly.
+                    await sync_failure_for_work(session, item)
                 await session.commit()
         except Exception as finalize_error:
             log.critical(

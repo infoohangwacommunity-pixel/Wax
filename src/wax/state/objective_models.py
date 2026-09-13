@@ -8,9 +8,10 @@ contamination (INV-01, INV-08).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -58,3 +59,45 @@ class ObjectiveRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Optional: the execution that is working on this objective.
     # Set when an execution starts; cleared when it ends.
     execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+
+class ObjectiveExecutionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
+    """One execution's participation in an objective's life (ADR-0020).
+
+    An objective is NOT one execution (mission §16: an objective may
+    produce retries, resumptions, parallel work). The objective's
+    ``execution_id`` column remains the CURRENT-execution pointer; this
+    table is the append-only HISTORY — who worked on the objective,
+    when it started/ended, and the honest outcome. Resumption (§99)
+    reads this history to reconstruct what happened without starting
+    from scratch.
+    """
+
+    __tablename__ = "objective_executions"
+    __table_args__ = (
+        Index("ix_objexec_objective", "objective_id"),
+        Index("ix_objexec_execution", "execution_id"),
+    )
+
+    objective_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("objectives.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # The execution (bridge interaction or durable-work run) that acted.
+    execution_id: Mapped[str] = mapped_column(String(26), nullable=False)
+
+    # "bridge" (a live interaction) | "work" (a durable work run).
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Honest terminal outcome of THIS participation:
+    # succeeded | failed | cancelled | superseded (resumed elsewhere).
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
