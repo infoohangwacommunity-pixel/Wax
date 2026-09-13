@@ -1,8 +1,8 @@
-"""phase_r_bridge
+"""phase_u_continuity
 
-Revision ID: bb7848c831d0
+Revision ID: 39f1f5817922
 Revises: 
-Create Date: 2026-09-13 08:21:51.409834+00:00
+Create Date: 2026-09-13 08:33:39.655011+00:00
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'bb7848c831d0'
+revision: str = '39f1f5817922'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -76,6 +76,25 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name', name='uq_roles_name')
     )
+    op.create_table('conversations',
+    sa.Column('principal_id', sa.String(length=26), nullable=False),
+    sa.Column('status', sa.String(length=32), nullable=False),
+    sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_message_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('message_count', sa.Integer(), nullable=False),
+    sa.Column('interface_kind', sa.String(length=32), nullable=False),
+    sa.Column('objective_id', sa.String(length=26), nullable=True),
+    sa.Column('last_execution_id', sa.String(length=26), nullable=True),
+    sa.Column('summary', sa.Text(), nullable=True),
+    sa.Column('id', sa.String(length=26), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['principal_id'], ['principals.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_conversations_last_message', 'conversations', ['last_message_at'], unique=False)
+    op.create_index(op.f('ix_conversations_principal_id'), 'conversations', ['principal_id'], unique=False)
+    op.create_index('ix_conversations_principal_status', 'conversations', ['principal_id', 'status'], unique=False)
     op.create_table('executions',
     sa.Column('principal_id', sa.String(length=26), nullable=False),
     sa.Column('kind', sa.String(length=64), nullable=False),
@@ -203,6 +222,10 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_executions_principal_id'), table_name='executions')
     op.drop_index('ix_executions_principal', table_name='executions')
     op.drop_table('executions')
+    op.drop_index('ix_conversations_principal_status', table_name='conversations')
+    op.drop_index(op.f('ix_conversations_principal_id'), table_name='conversations')
+    op.drop_index('ix_conversations_last_message', table_name='conversations')
+    op.drop_table('conversations')
     op.drop_table('roles')
     op.drop_index('ix_processed_messages_principal', table_name='processed_messages')
     op.drop_index('ix_processed_messages_execution', table_name='processed_messages')
