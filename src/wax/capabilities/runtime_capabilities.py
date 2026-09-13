@@ -425,9 +425,17 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "expires_at": record.expires_at.isoformat() if record.expires_at else None,
         }
 
+    # --- code.run (Phase U): isolated execution behind explicit authority.
+    # Registered here so it ships with the container; the member role does
+    # NOT include capability.invoke:code_run, so it is denied for ordinary
+    # principals until a deployment grants it (trust boundary by default).
+    from wax.capabilities.code_run import register_code_run_capability
+
+    register_code_run_capability(registry, services)
+
     registry.register(WORK_SCHEDULE_DESCRIPTOR, work_schedule_impl)
     registry.register(WORK_CANCEL_DESCRIPTOR, work_cancel_impl)
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
     registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
-    log.info("capability.runtime_registered", count=5)
+    log.info("capability.runtime_registered", count=6)

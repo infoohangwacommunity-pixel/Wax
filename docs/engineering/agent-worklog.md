@@ -117,3 +117,18 @@ Audit source: WAX_Current_Repository_Reality_Report.pdf (41-page forensic audit)
   directory; honest refusal on invalid TTL / limit exhaustion.
 - Lifespan: maintenance reaper task (60s interval) with clean shutdown.
 - 352 -> 360 tests (test_provisioning.py).
+
+## Task 6 — Phase U: Execution environments (commit 6)
+
+- code.run capability (capabilities/code_run.py): wraps the previously
+  unwired SubprocessBoundary/IsolationService. Scrubbed env, hard timeout,
+  output caps, optional scratch.workspace integration (ownership-verified
+  cwd).
+- Trust boundary made explicit and DEFAULT-DENY: descriptor requires
+  capability.invoke:code_run, which is NOT in the member role — code
+  execution is opt-in per deployment via role assignment. The descriptor
+  honestly tells the model a subprocess is isolation, not a sandbox.
+- wax/state/__init__.py now imports every model module (single schema
+  registration point — create_all/alembic/tooling see the full metadata).
+- 360 -> 365 tests (test_code_run.py: member default-deny, admin runs,
+  timeout enforced, env secrets never inherited, workspace ownership).

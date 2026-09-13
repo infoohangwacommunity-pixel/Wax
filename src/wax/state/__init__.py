@@ -24,3 +24,19 @@ __all__ = [
     "get_engine",
     "init_engine",
 ]
+
+# Import every model module so Base.metadata is complete for ANY entry
+# point that imports wax.state (tests create_all, alembic autogenerate,
+# future tooling). Adding a model module here is mandatory.
+from wax.state import (  # noqa: F401
+    audit_models,
+    authority_models,
+    bridge_models,
+    continuity_models,
+    execution_models,
+    identity_models,
+    memory_models,
+    objective_models,
+    provisioning_models,
+    work_models,
+)
