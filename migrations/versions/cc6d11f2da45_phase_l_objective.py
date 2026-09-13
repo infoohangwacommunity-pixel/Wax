@@ -1,8 +1,8 @@
-"""phase_h_execution
+"""phase_l_objective
 
-Revision ID: e4b6c125244a
+Revision ID: cc6d11f2da45
 Revises: 
-Create Date: 2026-09-12 22:13:19.099954+00:00
+Create Date: 2026-09-13 07:58:10.076599+00:00
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'e4b6c125244a'
+revision: str = 'cc6d11f2da45'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -96,6 +96,23 @@ def upgrade() -> None:
     op.create_index('ix_memory_principal_status', 'memory_records', ['principal_id', 'status'], unique=False)
     op.create_index(op.f('ix_memory_records_principal_id'), 'memory_records', ['principal_id'], unique=False)
     op.create_index('ix_memory_superseded_by', 'memory_records', ['superseded_by'], unique=False)
+    op.create_table('objectives',
+    sa.Column('principal_id', sa.String(length=26), nullable=False),
+    sa.Column('description', sa.Text(), nullable=False),
+    sa.Column('kind', sa.String(length=32), nullable=False),
+    sa.Column('status', sa.String(length=32), nullable=False),
+    sa.Column('success_criteria', sa.Text(), nullable=True),
+    sa.Column('context', sa.JSON(), nullable=False),
+    sa.Column('execution_id', sa.String(length=26), nullable=True),
+    sa.Column('id', sa.String(length=26), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['principal_id'], ['principals.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_objectives_principal', 'objectives', ['principal_id'], unique=False)
+    op.create_index(op.f('ix_objectives_principal_id'), 'objectives', ['principal_id'], unique=False)
+    op.create_index('ix_objectives_status', 'objectives', ['status'], unique=False)
     op.create_table('principal_credentials',
     sa.Column('principal_id', sa.String(length=26), nullable=False),
     sa.Column('kind', sa.String(length=64), nullable=False),
@@ -153,6 +170,10 @@ def downgrade() -> None:
     op.drop_table('principal_roles')
     op.drop_index(op.f('ix_principal_credentials_principal_id'), table_name='principal_credentials')
     op.drop_table('principal_credentials')
+    op.drop_index('ix_objectives_status', table_name='objectives')
+    op.drop_index(op.f('ix_objectives_principal_id'), table_name='objectives')
+    op.drop_index('ix_objectives_principal', table_name='objectives')
+    op.drop_table('objectives')
     op.drop_index('ix_memory_superseded_by', table_name='memory_records')
     op.drop_index(op.f('ix_memory_records_principal_id'), table_name='memory_records')
     op.drop_index('ix_memory_principal_status', table_name='memory_records')
