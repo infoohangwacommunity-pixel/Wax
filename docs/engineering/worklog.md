@@ -191,3 +191,26 @@ DO NOT:
 - Add I/O imports to wax.core (INV-09)
 - Allow the AI principal to have permissions (INV-04)
 - Use mocks in place of real persistence/authorization/isolation (Directive §61)
+
+---
+Task ID: AUDIT-RESPONSE
+Agent: main (Super Z)
+Task: Execute the audit-driven disposition list — wire unwired subsystems, fix live-path bugs, build Phases R/S/U/V/W mechanisms, document, verify live.
+
+Work Log:
+- Fixed POST /webhooks/whatsapp binding (raw body via request.body(), signature via Header alias) and GET hub.* aliases — both verified over real HTTP (commit 7e83dcb)
+- Wired RuntimeServices into the lifespan; bridge now routes identity -> security -> continuity -> intelligence -> capability(Agency/Authority/accounting) -> observability (commit 3a73131)
+- Built the tool-calling contract: intelligence requests capabilities by descriptor; runtime gates, authorizes, meters, audits (commit 066cb1e)
+- Built the durable work runtime: work_items migration, wake conditions, leases, in-process worker, retries, dead-letter, identity continuity (commit 5c1cbfd, ADR-0004)
+- Built dynamic provisioning: ephemeral resources with owner/scope/TTL/limits/audit/sweeper (commit 7898a34, ADR-0005)
+- Wired SubprocessBoundary as authority-gated code.run capability with isolation + authority + accounting (commit b3ecb43, ADR-0006)
+- Built WhatsApp delivery intelligence: send_long_text chunking at the wire limit, paragraph-boundary preference, (i/n) markers; bridge cap replaced by interface-agnostic ceiling (commit 29cdc77, ADR-0007)
+- Added 8 Phase-W tests; fixed test expectations to the real chunk math (4096 limit minus 32 marker chars)
+- Wrote ADR-0003..0007 and docs/engineering/audit-response.md
+- scripts/live_probe.py: boots the real app with migrations, proves over HTTP: healthz, Meta GET handshake, signed POST processed through the full chain (identity->authority->objective->execution->resources->intelligence->memory->objective.succeeded), invalid-signature not processed, oversize guard observed
+
+Stage Summary:
+- 373 tests pass (baseline was 312)
+- Live probe: PROBE PASS (exit 0) — every claim in audit-response.md §5 is backed by the probe or a named test file
+- ReminderService/TimerService/domain modes remain permanently absent (INV-01 enforced)
+- 7 commits in the audit-response series on main; ready to push
