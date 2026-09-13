@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from wax import __version__
@@ -85,7 +85,9 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             )
             app.state.whatsapp_client = wa_client
             lifecycle.on_shutdown("whatsapp.close", wa_client.close())
-            log.info("whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id)
+            log.info(
+                "whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id
+            )
         else:
             app.state.whatsapp_client = None
             log.warning("whatsapp.client.not_configured")
@@ -235,7 +237,8 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             "database_url_scheme": settings.database_url.split("://", 1)[0],
             "llm_provider": settings.llm_default_provider or "(mock)",
             "whatsapp_configured": bool(settings.whatsapp_access_token),
-            "secret_key_set": bool(settings.secret_key) and settings.secret_key != "change-me-to-a-real-secret",
+            "secret_key_set": bool(settings.secret_key)
+            and settings.secret_key != "change-me-to-a-real-secret",
         }
 
         try:
@@ -268,14 +271,19 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
     # -------------------------------------------------------------------
     @app.get("/webhooks/whatsapp", tags=["webhook"])
     async def whatsapp_verify(
-        mode: str | None = None,
-        token: str | None = None,
-        challenge: str | None = None,
-    ) -> JSONResponse:
+        hub_mode: str | None = Query(default=None, alias="hub.mode"),
+        hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
+        hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
+    ) -> Response:
         """Meta's webhook verification endpoint.
 
-        Meta sends a GET request with hub.mode, hub.verify_token, hub.challenge.
-        If the token matches, we echo back the challenge.
+        Meta sends: GET /webhooks/whatsapp?hub.mode=subscribe
+        &hub.verify_token=...&hub.challenge=...
+
+        The parameter names MUST match Meta's wire format exactly
+        (hub.mode, hub.verify_token, hub.challenge) — FastAPI binds query
+        parameters by alias. If the token matches, we echo back the
+        challenge as the plain-text response body.
         """
         whatsapp_client = getattr(app.state, "whatsapp_client", None)
         if whatsapp_client is None:
@@ -284,24 +292,32 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
 
         adapter = WhatsAppAdapter(client=whatsapp_client)
-        result = adapter.verify_webhook_token(mode, token, challenge)
+        result = adapter.verify_webhook_token(hub_mode, hub_verify_token, hub_challenge)
         if result is None:
             return JSONResponse(status_code=403, content={"error": "verification_failed"})
         # Meta expects the challenge echoed back as plain text body, not JSON
-        from fastapi import Response
-
         return Response(content=result, media_type="text/plain")
 
     @app.post("/webhooks/whatsapp", tags=["webhook"])
     async def whatsapp_webhook(
-        request_body: bytes,
-        x_hub_signature_256: str = "",
+        request: Request,
+        x_hub_signature_256: str = Header(default="", alias="X-Hub-Signature-256"),
     ) -> dict[str, Any]:
         """Receive WhatsApp webhook events.
+
+        Binding notes (both defects were verified live by the forensic
+        audit and MUST NOT regress):
+        - The raw body is read via `request.body()` — declaring a plain
+          `bytes` parameter makes FastAPI treat it as a query parameter,
+          which 422-rejects every genuine Meta POST before our code runs.
+        - The signature arrives in the X-Hub-Signature-256 HEADER, bound
+          via Header(alias=...), not as a query parameter.
 
         Security: signature verified via HMAC-SHA256 of the raw body using
         the WhatsApp app secret.
         """
+        request_body = await request.body()
+
         whatsapp_client = getattr(app.state, "whatsapp_client", None)
         if whatsapp_client is None:
             return {"status": "whatsapp_not_configured"}
