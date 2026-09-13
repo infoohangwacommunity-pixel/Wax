@@ -1,7 +1,7 @@
 # WAX Runtime Boundary
 
 **Status:** PROVISIONAL
-**Last updated:** 2026-09-13
+**Last updated:** 2026-09-14
 
 This document defines the explicit boundary around `wax.core` — the
 universal runtime layer — and what may live outside it.
@@ -36,6 +36,8 @@ This is enforced as **Invariant INV-09** and tested in
 │  wax.capabilities   (capability registry + invocation)      │ ← I/O
 │  wax.execution      (durable execution, workers)            │ ← I/O
 │  wax.intelligence   (model provider adapters)               │ ← I/O
+│  wax.isolation      (code execution boundaries — sandbox)   │ ← I/O
+│  wax.media          (extraction pipeline)                   │ ← I/O
 │  wax.observability  (structured logs, metrics, traces)      │ ← I/O
 ├─────────────────────────────────────────────────────────────┤
 │  wax.core          (contracts, invariants, exceptions,       │ ← NO I/O

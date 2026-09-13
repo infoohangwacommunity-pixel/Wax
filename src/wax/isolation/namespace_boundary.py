@@ -244,7 +244,9 @@ class NamespaceBoundary(SubprocessBoundary):
         # 2. Writable space. Order matters when there is no workspace:
         #    /tmp must be mounted before mkdir into it.
         if request.working_dir:
-            wd = request.working_dir
+            # Absolute path: the mount script runs with a different cwd,
+            # and bind-mount semantics require exact path identity.
+            wd = os.path.abspath(request.working_dir)
             lines += [
                 f"mount --bind {wd} {wd}",
                 f"mount -o remount,rw,bind {wd}",

@@ -332,3 +332,26 @@ Stage Summary:
 - Re-evaluated non-goals (honest): microVM tier (contract accepts it), audio
   transcription (model download = deployment decision), embedding retrieval
   (BM25+recall resolves the named failures), Anthropic offline tokenizer (none exists)
+
+---
+Task ID: PASS-6-CYCLE2
+Agent: main (Super Z)
+Task: Automatic continuation cycle — verify wave-3 composition of the new
+mechanisms, harden, document, push.
+
+Work Log:
+- Open-world wave 3 (tests/integration/test_open_world_3.py): the fifth-pass
+  mechanisms compose as one runtime flow — scratch.workspace (capability
+  surface) → code.run under the runtime-selected sandbox (reads seeded
+  artifact, computes, writes output.txt) → real filesystem effect in the
+  owned workspace → memory.store → memory.search retrieves the evidence;
+  plus OCR end-to-end feeding extracted text (never bytes)
+- Namespace boundary: working_dir is made absolute before the mount script
+  (bind-mount requires path identity across cwd)
+- runtime-boundary.md: layer model updated (isolation, media layers); date
+- Suite 585 passing; live probe PASS (13 checks observed, 12 mandated)
+
+Stage Summary:
+- main advanced and pushed; local == origin
+- Cycle 2 closed; every new mechanism is exercised in composition, not
+  only in unit isolation
