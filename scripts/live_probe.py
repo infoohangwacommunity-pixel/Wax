@@ -20,10 +20,11 @@ import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import uvicorn  # noqa: E402
+import uvicorn
+from ulid import ULID
 
-from wax.core.config import WaxSettings  # noqa: E402
-from wax.runtime.app import create_app  # noqa: E402
+from wax.core.config import WaxSettings
+from wax.runtime.app import create_app
 
 APP_SECRET = "probe-app-secret"
 VERIFY_TOKEN = "probe-verify-token"
@@ -65,7 +66,7 @@ async def probe() -> int:
     def _migrate() -> None:
         try:
             command.upgrade(alembic_cfg, "head")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             err.append(exc)
 
     t = threading.Thread(target=_migrate)
@@ -130,6 +131,10 @@ async def probe() -> int:
             failures.append("verification")
 
         # -- 3. Signed Meta-shaped POST (live path) ----------------------
+        # Unique message id per run: a re-delivered message is honestly
+        # deduplicated by the runtime (idempotency), so the probe must
+        # present a fresh message to exercise the live path end to end.
+        probe_message_id = f"wamid.PROBE{ULID()}"
         payload = {
             "object": "whatsapp_business_account",
             "entry": [
@@ -152,7 +157,7 @@ async def probe() -> int:
                                 "messages": [
                                     {
                                         "from": "2348000000000",
-                                        "id": "wamid.PROBE1",
+                                        "id": probe_message_id,
                                         "timestamp": "1726000000",
                                         "text": {"body": "hello runtime"},
                                         "type": "text",
@@ -175,21 +180,91 @@ async def probe() -> int:
             },
         )
         ok = r.status_code == 200
-        print(
-            f"[{'PASS' if ok else 'FAIL'}] POST signed webhook "
-            f"-> {r.status_code} {r.text[:120]}"
-        )
+        print(f"[{'PASS' if ok else 'FAIL'}] POST signed webhook -> {r.status_code} {r.text[:120]}")
         if not ok:
             failures.append("signed-post")
 
         # -- 3b. Metrics recorded the live message ------------------------
         r = await http.get("/metrics")
         recorded = "bridge_messages_started_total" in r.text
-        print(
-            f"[{'PASS' if recorded else 'FAIL'}] /metrics shows the processed message"
-        )
+        print(f"[{'PASS' if recorded else 'FAIL'}] /metrics shows the processed message")
         if not recorded:
             failures.append("metrics-recording")
+
+        # -- 3c. Event ledger + durable-waiting proof (live path) ---------
+        # The accepted message must have announced
+        # interface.message:<principal> on the runtime signal ledger.
+        # Then: schedule an event-wake work item whose watermark predates
+        # that signal, run the REAL runner once, and watch it wake and run.
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select
+
+        from wax.runtime.work import WorkRepository, WorkRunner, capability_handler
+        from wax.state.engine import db_session
+        from wax.state.work_models import RuntimeSignalRecord, WorkItemRecord
+
+        async with db_session() as session:
+            sig = (
+                await session.execute(
+                    select(RuntimeSignalRecord)
+                    .where(RuntimeSignalRecord.name.like("interface.message:%"))
+                    .order_by(RuntimeSignalRecord.emitted_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        ok = sig is not None and sig.emitted_by == "bridge"
+        print(
+            f"[{'PASS' if ok else 'FAIL'}] event ledger recorded "
+            f"interface message signal (name={sig.name if sig else None})"
+        )
+        if not ok:
+            failures.append("event-ledger")
+
+        if ok:
+            pid = sig.name.split(":", 1)[1]
+            async with db_session() as session:
+                item = await WorkRepository(session).schedule(
+                    kind="capability",
+                    payload={
+                        "capability_name": "echo",
+                        "inputs": {"message": "probe-woke"},
+                    },
+                    wake_at=datetime.now(UTC),
+                    principal_id=pid,
+                    max_attempts=1,
+                    wake_kind="event",
+                    wake_event=sig.name,
+                )
+                # The wait is inserted AFTER the fact for probe purposes;
+                # move the watermark behind the signal so it can fire.
+                item.wake_watermark = sig.emitted_at - timedelta(seconds=5)
+                await session.commit()
+
+            services = getattr(app.state, "services", None)
+            runner = WorkRunner(
+                services,
+                poll_interval_seconds=0.05,
+                lease_seconds=120.0,
+                retry_backoff_seconds=0.0,
+            )
+            runner.register_handler("capability", capability_handler)
+            ran = await runner.run_once()
+            async with db_session() as session:
+                final = await session.get(WorkItemRecord, item.id)
+            ok = (
+                ran == 1
+                and final is not None
+                and final.status == "succeeded"
+                and final.result == {"echo": {"message": "probe-woke"}}
+            )
+            print(
+                f"[{'PASS' if ok else 'FAIL'}] durable waiting: event-wake work "
+                f"correlated against the ledger and ran (ran={ran}, "
+                f"status={final.status if final else None})"
+            )
+            if not ok:
+                failures.append("durable-waiting")
 
         # -- 4. Invalid signature not processed (security live path) -----
         # Contract: respond 200 (do not leak validity to probes / avoid
@@ -203,10 +278,7 @@ async def probe() -> int:
             },
         )
         ok = r.status_code == 200 and r.json().get("status") == "invalid_signature"
-        print(
-            f"[{'PASS' if ok else 'FAIL'}] POST bad signature "
-            f"-> {r.status_code} {r.text[:60]}"
-        )
+        print(f"[{'PASS' if ok else 'FAIL'}] POST bad signature -> {r.status_code} {r.text[:60]}")
         if not ok:
             failures.append("bad-signature")
 

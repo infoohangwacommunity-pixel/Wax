@@ -315,6 +315,26 @@ class RuntimeBridge:
         # the recovery scan can reconcile and Meta redelivery can retry.
         await session.commit()
 
+        # Announce the accepted interaction on the runtime event ledger:
+        # "this human's message was accepted by the runtime" — emitted
+        # BEFORE intelligence runs, so work scheduled WHILE processing this
+        # message (watermark = now) can only be woken by the user's NEXT
+        # message, never by the one being processed. Security-gate
+        # rejections never reach this point (a refused prober is not an
+        # interaction); later processing failures leave the fact standing
+        # (the human did interact).
+        from wax.runtime.work.signals import SignalRepository
+
+        await SignalRepository(session).emit(
+            f"interface.message:{principal_id}",
+            payload={
+                "interface": request.interface_kind.value,
+                "message_id": request.interface_message_id,
+            },
+            emitted_by="bridge",
+        )
+        await session.commit()
+
         # 6. Context assembly via ContinuityService (single composer).
         # The current message drives relevance retrieval: the AI sees what
         # is RELEVANT, not merely what is recent.
@@ -371,22 +391,6 @@ class RuntimeBridge:
             record.outcome = "success"
             record.response_text = response_text
             record.processed_at = datetime.now(UTC)
-
-            # Announce the fact on the runtime event ledger: "this human
-            # interacted with the runtime now". Durable work waiting on
-            # interface.message:<principal> (continue-when-the-user-replies)
-            # is satisfied by the NEXT runner pass. The interface namespace
-            # is runtime-owned — intelligence can wait on it, never emit it.
-            from wax.runtime.work.signals import SignalRepository
-
-            await SignalRepository(session).emit(
-                f"interface.message:{principal.id}",
-                payload={
-                    "interface": request.interface_kind.value,
-                    "message_id": request.interface_message_id,
-                },
-                emitted_by="bridge",
-            )
 
             await record_audit_event(
                 session,
@@ -450,7 +454,9 @@ class RuntimeBridge:
         metrics = self._services.metrics
         exec_repo = ExecutionRepository(session)
 
-        messages = self._build_messages(principal_display, request, context, sanitizer_result)
+        messages = self._build_messages(
+            principal_display, request, context, sanitizer_result, principal_id
+        )
         tools = self._capability_tools()
         max_rounds = max(0, int(self._services.settings.max_tool_rounds))
 
@@ -689,6 +695,7 @@ class RuntimeBridge:
         request: RuntimeRequest,
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
+        principal_id: str | None = None,
     ) -> list[LLMMessage]:
         """Assemble the LLM message list.
 
@@ -700,7 +707,9 @@ class RuntimeBridge:
         """
         from wax.continuity.assembly import assemble_evidence, build_evidence_sections
 
-        system_prompt = self._build_system_prompt(principal_display=principal_display)
+        system_prompt = self._build_system_prompt(
+            principal_display=principal_display, principal_id=principal_id
+        )
         messages: list[LLMMessage] = [
             LLMMessage(role=MessageRole.SYSTEM, content=system_prompt),
         ]
@@ -996,7 +1005,9 @@ class RuntimeBridge:
         )
         return principal, credential
 
-    def _build_system_prompt(self, *, principal_display: str | None) -> str:
+    def _build_system_prompt(
+        self, *, principal_display: str | None, principal_id: str | None = None
+    ) -> str:
         """Build the system prompt for the LLM.
 
         This is intentionally minimal. WAX does NOT hardcode a tutor
@@ -1005,13 +1016,21 @@ class RuntimeBridge:
         conversation state, memories) is NOT baked in here — it is
         delivered as separate labelled evidence lines by the assembly
         mechanism, so the runtime can budget, rank, and attribute it.
+
+        The principal id IS an environment fact (like a process id): the
+        intelligence needs it to compose runtime names such as the
+        interface.message:<principal_id> wake condition.
         """
         name_str = f" The user's name is {principal_display}." if principal_display else ""
+        principal_str = (
+            f" The principal you act for has id {principal_id}." if principal_id else ""
+        )
         return (
             "You are an AI operating inside the WAX runtime. You are intelligent; "
             "WAX is the environment that holds memory, identity, capabilities, and "
             "authorization on your behalf."
             + name_str
+            + principal_str
             + " Help the user pursue their objective. Be concise and useful. If you "
             "need a capability you don't have, say so explicitly rather than "
             "fabricating."
