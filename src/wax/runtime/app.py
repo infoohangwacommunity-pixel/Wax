@@ -141,10 +141,21 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         except Exception as e:
             checks["database"] = f"fail: {type(e).__name__}"
 
-        # TODO Phase O: check at least one LLM provider is configured
-        # TODO Phase G: check capability registry is populated
+        # Phase K: check LLM provider is configured
+        intel = getattr(app.state, "intelligence", None)
+        if intel is not None:
+            checks["intelligence"] = "ok"
+        else:
+            checks["intelligence"] = "fail: not_initialized"
 
-        all_ok = all(v == "ok" for v in checks.values())
+        # Phase Q: check WhatsApp client (optional — may be None in dev)
+        whatsapp = getattr(app.state, "whatsapp_client", None)
+        if settings.whatsapp_access_token:
+            checks["whatsapp"] = "ok" if whatsapp is not None else "fail: not_initialized"
+        else:
+            checks["whatsapp"] = "not_configured"
+
+        all_ok = all(v == "ok" or v == "not_configured" for v in checks.values())
         status_code = 200 if all_ok else 503
         return JSONResponse(
             status_code=status_code,
@@ -154,6 +165,89 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
                 "version": __version__,
             },
         )
+
+    @app.get("/metrics", tags=["observability"])
+    async def metrics() -> JSONResponse:
+        """Prometheus-compatible metrics endpoint.
+
+        Returns the global MetricsRegistry snapshot. In production, a
+        Prometheus scraper polls this endpoint every 15-60 seconds.
+        """
+        from wax.observability.metrics import get_metrics
+
+        snapshot = get_metrics().snapshot()
+        return JSONResponse(content=snapshot)
+
+    @app.get("/migrations/status", tags=["operations"])
+    async def migrations_status() -> JSONResponse:
+        """Check whether the database schema is up to date.
+
+        Returns the current migration revision + whether the schema matches
+        the latest migration. Useful for deployment validation.
+        """
+        try:
+            from alembic.config import Config as AlembicConfig
+            from alembic.runtime.migration import MigrationContext
+            from alembic.script import ScriptDirectory
+            from sqlalchemy import text
+
+            from wax.state.engine import db_session
+
+            # Get current revision from DB
+            async with db_session() as session:
+                result = await session.execute(text("SELECT version_num FROM alembic_version"))
+                row = result.fetchone()
+                current = row[0] if row else None
+
+            # Get head revision from migrations dir
+            cfg = AlembicConfig("alembic.ini")
+            script_dir = ScriptDirectory.from_config(cfg)
+            head = script_dir.get_current_head()
+
+            return JSONResponse(
+                content={
+                    "current_revision": current,
+                    "head_revision": head,
+                    "up_to_date": current == head,
+                }
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"{type(e).__name__}: {e}"},
+            )
+
+    @app.get("/config/validate", tags=["operations"])
+    async def validate_config() -> JSONResponse:
+        """Validate the current configuration.
+
+        Returns the configuration (with secrets redacted) + whether it
+        passes production hardening checks.
+        """
+        from wax.core.config import WaxSettings
+
+        config_summary = {
+            "env": settings.env.value,
+            "host": settings.host,
+            "port": settings.port,
+            "log_level": settings.log_level.value,
+            "log_format": settings.log_format.value,
+            "database_url_scheme": settings.database_url.split("://", 1)[0],
+            "llm_provider": settings.llm_default_provider or "(mock)",
+            "whatsapp_configured": bool(settings.whatsapp_access_token),
+            "secret_key_set": bool(settings.secret_key) and settings.secret_key != "change-me-to-a-real-secret",
+        }
+
+        try:
+            settings.enforce_production_hardening()
+            config_summary["production_ready"] = settings.is_production
+            config_summary["validation_passed"] = True
+        except Exception as e:
+            config_summary["production_ready"] = False
+            config_summary["validation_passed"] = False
+            config_summary["validation_error"] = str(e)
+
+        return JSONResponse(content=config_summary)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, Any]:

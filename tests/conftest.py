@@ -62,8 +62,18 @@ async def app(test_settings: Any) -> Any:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Initialize app.state.* as the lifespan would (so /readyz finds them)
+    from wax.intelligence.service import IntelligenceService
+    from wax.runtime.bridge.service import RuntimeBridge
+
+    intel = IntelligenceService.from_settings(test_settings)
+    app.state.intelligence = intel
+    app.state.runtime_bridge = RuntimeBridge(intelligence=intel)
+    app.state.whatsapp_client = None
+
     yield app
 
+    await intel.close()
     await dispose_engine()
 
 
