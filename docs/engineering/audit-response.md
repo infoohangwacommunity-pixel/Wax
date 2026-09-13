@@ -160,3 +160,44 @@ Open gaps intentionally NOT closed (evidence-based non-goals):
 - Human-approval workflow for agency-gated destructive actions
   (denial path is honest today; the workflow is a product decision
   requiring an approver identity story).
+
+---
+
+# Addendum 2 — Third Pass: Missing Primitives (environment capability)
+
+Reconciliation #3 (`docs/engineering/reconciliation-3.md`) verified six
+gaps. Five are closed below; the sixth (stale handoff) was rewritten. The
+theme of this pass: **missing primitives**, not features — the environment
+itself becoming capable of supporting open-ended work.
+
+| # | Gap found | Category | Fix + proof |
+|---|---|---|---|
+| 1 | Durable waiting was a timer: work could wait only for a clock time (`available_at <= now`); no event/dependency/human-response conditions | waiting | ADR-0011: `runtime_signals` event ledger + `wake_kind` (time\|event) + watermark (no retroactive wakes) + `expires_at` (unmet conditions die honestly) + `signal.emit` (reserved namespaces runtime-owned: intelligence may wait on `interface.*`/`work.*`, never emit them) + runner announces terminal work states + bridge announces accepted messages. 10 tests (`TestEventWakeConditions`) + probe step 3c (live signal + live wake) |
+| 2 | Memory revision/consolidation unreachable: `supersede()` had no caller; contradictions stayed duplicated; no evidence→durable path | memory | ADR-0012: `memory.store(supersedes=)` revision path (verify-before-create, ownership-checked) + `memory.consolidate` (N sources → one durable record, provenance=consolidation, supersession chain retained). 6 tests (`TestMemoryRevisionAndConsolidation`) + open-world scenario 2 |
+| 3 | Context assembly discarded collected evidence: objective, conversation gap, summary, last execution status fetched but never delivered; no budget | context | ADR-0012: `wax.continuity.assembly` — labelled evidence sections (objective > conversation > memory), budget-aware fill by priority, announced truncation; system prompt stripped to persona + environment facts (principal id). 10 tests (`test_context_assembly.py`) |
+| 4 | Scheduled work lost its trace: `work_schedule_impl` dropped the caller's execution context | continuity | work items now carry the scheduling execution's id (work → execution → objective traceability); test in `TestEventWakeConditions::test_scheduled_work_carries_execution_traceability` |
+| 5 | Dead work was a graveyard: dead-letter had no re-drive path; a provider outage exhausting retries lost the objective forever | recovery | `work.requeue` capability: ownership-checked, dead-only, fresh provenance-linked item due now; dead item retained for audit. 3 tests (`TestWorkRequeue`) |
+| 6 | `handoff.md` stale (claimed 208 tests / Phase R proposed) | docs | rewritten to current reality (this commit) |
+
+**Open-world validation** (objectives nobody designed features for; every
+one a pure composition, `tests/integration/test_open_world.py`):
+1. "Continue when the user next messages you" — event wake on
+   `interface.message:<principal>`; the reply wakes the work. Revealed and
+   fixed an ordering bug: the interface signal is announced at message
+   ACCEPTANCE, before intelligence runs, so a wait scheduled during message
+   N waits for message N+1.
+2. "Remember / correct / consolidate" — store → revise → consolidate
+   across three messages; supersession chain verified end to end.
+3. "Analyze data in a scratch workspace" — provision → authority-gated
+   execute → remember; the acquisition loop (mission §17) with the
+   security boundary intact.
+
+**Deliberate non-goals (evidence-based, recorded in ADR-0011):**
+package/dependency acquisition service; signal-ledger retention pruning;
+model-advertised context limits; multi-replica workers; human-approval
+workflow. Prior non-goals stand.
+
+**Test count after this pass: 440** (session start: 408; original audit
+baseline: 312). Live probe: 9/9 PASS over real HTTP (added: event-ledger
+emission proof, live event-wake claim/run proof; message id now unique per
+run so idempotency dedup cannot mask the live path).

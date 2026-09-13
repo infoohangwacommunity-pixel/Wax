@@ -4,6 +4,12 @@ Basis: repository at `49c90e1` (408 tests verified passing locally; live probe
 verified PROBE PASS exit 0). Every gap below names its source evidence. This
 file is the working list; closed items move to the audit-response addendum.
 
+**STATUS: all six gaps closed in this cycle** — commits `2ace7c4` (G1),
+`9dd4a73` (G2), `430c334` (G3), `0ab9522` (G5), `648957e` (G4 fix within
+open-world commit + probe), docs commit (G6). See audit-response Addendum 2
+for the disposition table with proofs. ADR-0011 (durable waiting) and
+ADR-0012 (memory lifecycle + context assembly) record the decisions.
+
 ## Verified gaps (to implement this cycle)
 
 ### G1 — Durable waiting is a timer, not a condition  (mission §14)

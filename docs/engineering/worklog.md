@@ -235,3 +235,26 @@ Stage Summary:
 - 408 tests passing (session baseline 373, original audit baseline 312)
 - Live probe: 7/7 PASS over real HTTP (healthz, readyz, metrics, Meta handshake, signed POST full chain, metrics-recording, signature rejection)
 - Deliberate non-goals recorded: multi-replica workers, tsvector/embedding upgrade, human-approval workflow (all evidence-based)
+
+---
+Task ID: PASS-3-PRIMITIVES
+Agent: main (Super Z)
+Task: Third principal-engineer pass — verify prior claims, reconcile repository against the mission, close missing primitives (not features), prove, document, push.
+
+Work Log:
+- Verified session start state: 408 tests passing, live probe PASS exit 0, worktree clean (mode-only artifacts silenced via core.fileMode=false)
+- Reconciliation #3 produced 6 verified gaps (docs/engineering/reconciliation-3.md)
+- G1 durable waiting: runtime_signals event ledger; work_items.wake_kind (time|event) + wake_event + wake_watermark (strict, no retroactive wakes) + expires_at (honest expiry, no dead-letter); claim_due correlates event waiters; broadcast semantics; retries re-consume the same signal; runtime-owned namespaces (interface.*, work.*) wait-only for AI; signal.emit capability (gated); runner announces work.succeeded/dead:<id>; bridge announces interface.message:<principal> at ACCEPTANCE (before intelligence — a wait scheduled during message N is woken only by N+1); work.requeue closes the recovery loop; scheduled work carries execution traceability (commit 2ace7c4, requeue 0ab9522, ADR-0011)
+- G2 memory lifecycle: memory.store(supersedes) revision path (verify-before-create, ownership-checked); memory.consolidate (N≤20 sources → one durable record, provenance=consolidation, superseded chain / consolidated_from link); 6 tests (commit 9dd4a73, ADR-0012)
+- G3 context assembly: wax.continuity.assembly — objective > conversation > memory evidence sections, budget-aware fill by priority, truncation announced; system prompt stripped to persona + environment facts (principal id); config context_char_budget (commit 430c334, ADR-0012)
+- G4 work→execution traceability fixed inside G1 (ctx.request_id)
+- G6 handoff.md rewritten to current reality
+- Open-world validation (test_open_world.py): continue-when-user-replies (event wake), store→revise→consolidate, provision→execute→remember (authority-gated); revealed + fixed the acceptance-time signal ordering
+- Probe extended to 9 checks: live event-ledger emission + live event-wake claim/run; unique message id per run (idempotent dedup otherwise masks the live path)
+- Docs: ADR-0011 (research: Temporal signals, Erlang selective receive, condition variables, SKIP LOCKED, consumer offsets — alternatives + uncertainties recorded), ADR-0012 (systems consolidation, Generative Agents, MemGPT; tokenizer-free budget rationale), audit-response Addendum 2, README mechanism map, handoff rewrite
+
+Stage Summary:
+- 440 tests passing (408 at session start; 312 original audit baseline)
+- Live probe: 9/9 PASS over real HTTP
+- No new domain features: every addition is a generalizable primitive (condition waiting, event ledger, memory revision/consolidation, budgeted context, dead-work recovery)
+- Non-goals recorded with rationale: package acquisition, ledger pruning, model context-limit negotiation, multi-replica, human-approval workflow

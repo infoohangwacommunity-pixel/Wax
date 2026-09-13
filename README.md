@@ -17,17 +17,19 @@ WAX is built like an operating system, not like an app:
 
 | An OS provides… | WAX provides… |
 |---|---|
-| processes & scheduling | durable work + wake conditions (`work_items`, leases, retries, dead-letter) |
+| processes & scheduling | durable work + wake conditions (`work_items`: time or event wake, leases, retries, dead-letter, requeue) |
+| wait/notify & signals | the `runtime_signals` event ledger (`interface.*`/`work.*` runtime-owned; gated AI emission) |
 | permissions | Authority & Agency (the AI has agency; the runtime has sovereignty) |
 | syscalls | Capabilities (the sole effect path — always gated, audited, metered) |
 | filesystem | dynamic provisioning (ephemeral resources with owner/TTL/limits/cleanup) |
-| memory | memory mechanisms (evidence storage, relevance retrieval, enforced forgetting) |
+| memory | memory mechanisms (evidence, revision, consolidation, relevance retrieval, enforced forgetting) |
 | network stack | interface abstraction (WhatsApp first, never the architecture) + egress boundary |
 | device drivers | model adapters (mock / OpenAI-compatible / Anthropic behind one contract) |
 
 Applications emerge from composition. "Remind me in one hour" is not a
 feature — it is `work.schedule` → wake → `message.send`, composed by the
-AI through gated capabilities.
+AI through gated capabilities. Neither is "ping me when I reply" — that
+is `work.schedule(wake_event="interface.message:<principal>")`.
 
 ## Architecture map
 
@@ -40,8 +42,9 @@ src/wax/
   agency/         policy decisions incl. destructive-action gates
   capabilities/   registry + invoker (sole effect enforcement point, INV-04)
                   built-ins: echo, http.get (network-boundaried), code.run
-                  runtime:  work.schedule/cancel/list, message.send,
-                            scratch.workspace, memory.store/search/forget
+                  runtime:  work.schedule/cancel/list/requeue, signal.emit,
+                            message.send, scratch.workspace,
+                            memory.store/search/forget/consolidate
   execution/      durable executions with checkpoints + steps
   runtime/        app wiring, RuntimeServices container, RuntimeBridge,
                   durable-work runner, provisioning service
@@ -62,7 +65,7 @@ src/wax/
 Documentation that matters:
 
 - `docs/architecture/runtime-boundary.md` — the layer model + invariants
-- `docs/decisions/ADR-0001…0010` — every consequential decision and why
+- `docs/decisions/ADR-0001…0012` — every consequential decision and why
 - `docs/engineering/audit-response.md` — forensic-audit disposition with proofs
 - `docs/engineering/handoff.md`, `docs/engineering/worklog.md` — engineering history
 
