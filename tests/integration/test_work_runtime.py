@@ -989,3 +989,133 @@ class TestEventWakeConditions:
         assert hit is not None
         assert hit.payload["interface"] == "whatsapp"
         assert hit.emitted_by == "bridge"
+
+
+class TestWorkRequeue:
+    """G5: dead work is a recovery state, not a graveyard (ADR-0011 §requeue).
+
+    When retries are exhausted (e.g. a provider outage), the objective must
+    not be lost forever: the owner can requeue the dead item as a fresh,
+    provenance-linked attempt."""
+
+    async def _make_dead_work(self, services, principal_id: str) -> str:
+        """Schedule echo work, then drive it through exhaustion to dead."""
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        async with db_session() as session:
+            invoker = services.invoker(session)
+            result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="work.schedule",
+                    principal_id=principal_id,
+                    inputs={
+                        "payload": {"capability_name": "echo", "inputs": {}},
+                        "delay_seconds": 0.05,
+                        "max_attempts": 2,
+                    },
+                )
+            )
+            await session.commit()
+        assert result.outcome == "success"
+        work_id = result.outputs["work_id"]
+
+        runner = WorkRunner(
+            services,
+            poll_interval_seconds=0.05,
+            lease_seconds=120.0,
+            retry_backoff_seconds=0.0,
+            stale_execution_seconds=900.0,
+        )
+        from wax.runtime.work.runner import WorkExecutionError
+
+        async def failing_handler(services_, item):
+            raise WorkExecutionError("dependency gone")
+
+        runner.register_handler("capability", failing_handler)
+
+        await asyncio.sleep(0.1)
+        await runner.run_once()  # attempt 1 → fail → retry
+        await runner.run_once()  # attempt 2 → fail → dead (+ dead letter)
+        item = await _get_work(work_id)
+        assert item.status == "dead"
+        return work_id
+
+    async def _invoke(self, services, principal_id: str, inputs: dict):
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        async with db_session() as session:
+            invoker = services.invoker(session)
+            result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="work.requeue",
+                    principal_id=principal_id,
+                    inputs=inputs,
+                )
+            )
+            await session.commit()
+        return result
+
+    async def test_requeue_revives_dead_work_with_provenance(self, fresh_db, services) -> None:
+        pid = await TestEventWakeConditions._principal(self, services)
+        dead_id = await self._make_dead_work(services, pid)
+
+        result = await self._invoke(services, pid, {"work_id": dead_id})
+        assert result.outcome == "success", result.error
+        assert result.outputs["requeued_from"] == dead_id
+        assert result.outputs["status"] == "pending"
+
+        # The requeued item runs with the ORIGINAL payload and succeeds.
+        runner = WorkRunner(
+            services,
+            poll_interval_seconds=0.05,
+            lease_seconds=120.0,
+            retry_backoff_seconds=0.0,
+            stale_execution_seconds=900.0,
+        )
+        runner.register_handler("capability", capability_handler)
+        ran = await runner.run_once()
+        assert ran == 1
+        item = await _get_work(result.outputs["work_id"])
+        assert item.status == "succeeded"
+        assert item.payload.get("requeued_from") == dead_id
+        assert item.payload.get("capability_name") == "echo"
+
+    async def test_requeue_is_ownership_checked(self, fresh_db, services) -> None:
+        owner = await TestEventWakeConditions._principal(self, services)
+        bridge = RuntimeBridge(
+            intelligence=IntelligenceService(MockLLMProvider()), services=services
+        )
+        async with db_session() as session:
+            other = await bridge.process(
+                session, _request(message_id="msg-requeue-other", sender_id="+2348000000009")
+            )
+        stranger = other.principal_id
+
+        dead_id = await self._make_dead_work(services, owner)
+        result = await self._invoke(services, stranger, {"work_id": dead_id})
+        assert result.outcome == "failure"
+        assert "different principal" in result.error
+
+    async def test_requeue_refuses_live_and_succeeded_work(self, fresh_db, services) -> None:
+        pid = await TestEventWakeConditions._principal(self, services)
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        async with db_session() as session:
+            invoker = services.invoker(session)
+            scheduled = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="work.schedule",
+                    principal_id=pid,
+                    inputs={
+                        "payload": {"capability_name": "echo", "inputs": {}},
+                        "delay_seconds": 60,
+                    },
+                )
+            )
+            await session.commit()
+        assert scheduled.outcome == "success"
+        live_id = scheduled.outputs["work_id"]
+
+        result = await self._invoke(services, pid, {"work_id": live_id})
+        assert result.outcome == "failure"
+        assert "Only dead work" in result.error

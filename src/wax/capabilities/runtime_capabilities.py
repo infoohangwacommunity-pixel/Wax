@@ -196,6 +196,34 @@ WORK_LIST_DESCRIPTOR = CapabilityDescriptor(
     is_destructive=False,
 )
 
+WORK_REQUEUE_DESCRIPTOR = CapabilityDescriptor(
+    name="work.requeue",
+    description=(
+        "Requeue the caller's own DEAD work item (e.g. work that exhausted "
+        "retries during a provider outage). Creates a fresh work item with "
+        "the same payload, due immediately, provenance-linked to the dead "
+        "item. The dead item is retained for audit."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"work_id": {"type": "string"}},
+        "required": ["work_id"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "work_id": {"type": "string"},
+            "requeued_from": {"type": "string"},
+            "status": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
 MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
     name="message.send",
     description=(
@@ -536,6 +564,48 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "recipient_id": recipient_id,
         }
 
+    # --- work.requeue: dead work is a recovery state, not a graveyard ----
+
+    async def work_requeue_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.repository import WorkRepository
+
+        work_id = inputs.get("work_id")
+        if not work_id or not isinstance(work_id, str):
+            raise ValueError("work_id is required")
+
+        async with db_session() as session:
+            repo = WorkRepository(session)
+            item = await repo.get(work_id)
+            if item is None:
+                raise ValueError(f"No such work item: {work_id}")
+            if item.principal_id != ctx.principal_id:
+                raise ValueError("work_id belongs to a different principal")
+            if item.status != "dead":
+                # Honest constraint: requeue is the recovery path for DEAD
+                # work only — live work retries on its own; terminal success
+                # must not be double-run.
+                raise ValueError(f"Only dead work can be requeued (status={item.status})")
+            payload = dict(item.payload or {})
+            payload["requeued_from"] = item.id
+            # The requeued item runs as a FRESH attempt, due now, with the
+            # same handler payload and the same owner. The original stays
+            # dead for audit; the new item carries the provenance link.
+            new_item = await repo.schedule(
+                kind=item.kind,
+                payload=payload,
+                wake_at=datetime.now(UTC),
+                principal_id=item.principal_id,
+                execution_id=item.execution_id,
+                max_attempts=item.max_attempts,
+            )
+            await session.commit()
+
+        return {
+            "work_id": new_item.id,
+            "requeued_from": item.id,
+            "status": new_item.status,
+        }
+
     # --- signal.emit: gated emission onto the runtime event ledger ------
 
     async def signal_emit_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
@@ -625,6 +695,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(WORK_SCHEDULE_DESCRIPTOR, work_schedule_impl)
     registry.register(WORK_CANCEL_DESCRIPTOR, work_cancel_impl)
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
+    registry.register(WORK_REQUEUE_DESCRIPTOR, work_requeue_impl)
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
     registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
     registry.register(SIGNAL_EMIT_DESCRIPTOR, signal_emit_impl)
@@ -632,7 +703,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
     registry.register(MEMORY_CONSOLIDATE_DESCRIPTOR, memory_consolidate_impl)
-    log.info("capability.runtime_registered", count=11)
+    log.info("capability.runtime_registered", count=12)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
