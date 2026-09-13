@@ -1,8 +1,8 @@
-"""phase_u_continuity
+"""phase_v_reliability
 
-Revision ID: 39f1f5817922
+Revision ID: a06446a7edd3
 Revises: 
-Create Date: 2026-09-13 08:33:39.655011+00:00
+Create Date: 2026-09-13 08:37:06.768763+00:00
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '39f1f5817922'
+revision: str = 'a06446a7edd3'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -37,6 +37,26 @@ def upgrade() -> None:
     op.create_index('ix_audit_events_created_at', 'audit_events', ['created_at'], unique=False)
     op.create_index('ix_audit_events_kind', 'audit_events', ['event_kind'], unique=False)
     op.create_index('ix_audit_events_principal', 'audit_events', ['actor_principal_id'], unique=False)
+    op.create_table('dead_letter_entries',
+    sa.Column('kind', sa.String(length=64), nullable=False),
+    sa.Column('principal_id', sa.String(length=26), nullable=True),
+    sa.Column('execution_id', sa.String(length=26), nullable=True),
+    sa.Column('error_type', sa.String(length=128), nullable=False),
+    sa.Column('error_message', sa.Text(), nullable=False),
+    sa.Column('attempts', sa.Integer(), nullable=False),
+    sa.Column('payload', sa.JSON(), nullable=True),
+    sa.Column('failed_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('reprocessed', sa.Boolean(), server_default='false', nullable=False),
+    sa.Column('reprocessed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('id', sa.String(length=26), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_dead_letter_created', 'dead_letter_entries', ['created_at'], unique=False)
+    op.create_index(op.f('ix_dead_letter_entries_principal_id'), 'dead_letter_entries', ['principal_id'], unique=False)
+    op.create_index('ix_dead_letter_kind', 'dead_letter_entries', ['kind'], unique=False)
+    op.create_index('ix_dead_letter_principal', 'dead_letter_entries', ['principal_id'], unique=False)
     op.create_table('principals',
     sa.Column('status', sa.String(length=32), nullable=False),
     sa.Column('display_name', sa.String(length=255), nullable=True),
@@ -231,6 +251,11 @@ def downgrade() -> None:
     op.drop_index('ix_processed_messages_execution', table_name='processed_messages')
     op.drop_table('processed_messages')
     op.drop_table('principals')
+    op.drop_index('ix_dead_letter_principal', table_name='dead_letter_entries')
+    op.drop_index('ix_dead_letter_kind', table_name='dead_letter_entries')
+    op.drop_index(op.f('ix_dead_letter_entries_principal_id'), table_name='dead_letter_entries')
+    op.drop_index('ix_dead_letter_created', table_name='dead_letter_entries')
+    op.drop_table('dead_letter_entries')
     op.drop_index('ix_audit_events_principal', table_name='audit_events')
     op.drop_index('ix_audit_events_kind', table_name='audit_events')
     op.drop_index('ix_audit_events_created_at', table_name='audit_events')

@@ -39,6 +39,7 @@ import wax.state.execution_models  # noqa: E402,F401  (Phase H)
 import wax.state.objective_models  # noqa: E402,F401  (Phase L)
 import wax.state.bridge_models  # noqa: E402,F401  (Phase R)
 import wax.state.continuity_models  # noqa: E402,F401  (Phase U)
+import wax.reliability.dead_letter  # noqa: E402,F401  (Phase V)
 
 config = context.config
 
