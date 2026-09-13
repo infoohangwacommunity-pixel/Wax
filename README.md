@@ -49,9 +49,11 @@ src/wax/
   execution/      durable executions with checkpoints + steps
   runtime/        app wiring, RuntimeServices container, RuntimeBridge,
                   durable-work runner, provisioning service
-  intelligence/   LLM contracts + adapters (mock, OpenAI-compatible,
-                  Anthropic) + ResilientProvider (retry + circuit breaker)
-  memory/         evidence storage, relevance retrieval, lifecycle worker
+  intelligence/   LLM contracts + adapters (mock, OpenAI-compatible with
+                  tiktoken-exact counters, Anthropic) + ResilientProvider
+                  (retry + circuit breaker) + context-budget negotiation
+  memory/         evidence storage, two-stage retrieval (lexical recall +
+                  BM25 ranking; PG tsvector+GIN), lifecycle worker
   continuity/     conversation lifecycle + context assembly
   security/       rate limiting, abuse, input sanitization, cost caps,
                   network egress boundary (SSRF)
@@ -59,14 +61,19 @@ src/wax/
   resources/      per-execution budgets and accounting
   observability/  metrics, structured logging, append-only audit events
   interfaces/     WhatsApp Cloud API adapter (interface owns wire limits)
-  isolation/      subprocess boundary (code.run execution)
-  media/          extraction pipeline (runtime extracts, AI interprets)
+  isolation/      code.run boundaries: namespace sandbox (kernel-enforced:
+                  no network, read-only FS, masked /proc+/sys, rlimits)
+                  with loud subprocess fallback — runtime-selected, never AI-selected
+  media/          extraction pipeline (runtime extracts, AI interprets):
+                  real tesseract OCR + pypdf text layer (self-gating),
+                  honest audio stub
+  runtime/leadership  per-pass maintenance leader election (advisory lock)
 ```
 
 Documentation that matters:
 
 - `docs/architecture/runtime-boundary.md` — the layer model + invariants
-- `docs/decisions/ADR-0001…0015` — every consequential decision and why
+- `docs/decisions/ADR-0001…0019` — every consequential decision and why
 - `docs/engineering/audit-response.md` — forensic-audit disposition with proofs
 - `docs/engineering/handoff.md`, `docs/engineering/worklog.md` — engineering history
 

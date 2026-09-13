@@ -1,8 +1,8 @@
 # WAX — Engineering Handoff
 
-**Last updated:** 2026-09 (fourth principal-engineer pass)
+**Last updated:** 2026-09 (fifth principal-engineer pass)
 **Branch:** `main`
-**Total tests:** 518 passing
+**Total tests:** 581 passing
 **Live probe:** 12 PASS checks (`python scripts/live_probe.py`)
 
 ## What WAX Is
@@ -109,20 +109,29 @@ alembic check                           # must report zero drift
 
 ## Current Boundaries (honest limits)
 
-- Subprocess isolation for `code.run` is accident-isolation, not a
-  sandbox; adversarial multi-tenant code needs container/microVM-grade
-  isolation at the deployment layer (the isolation CONTRACT is in place).
-- Tokenizer-exact accounting lives inside provider adapters when needed;
-  the runtime core uses the conservative chars/token estimator (INV-03).
-- The maintenance loop is idempotent and multi-instance-safe; no leader
-  election (no correctness need at current scale).
-- Postgres tsvector/embedding retrieval upgrades (ADR-0010) — the
-  portable scorer remains correct at current scale.
+The fourth pass's four remaining boundaries are CLOSED (ADR-0016..0019,
+reconciliation-5):
 
-Every former "recorded non-goal" from the third pass — package
-acquisition, character-only budget, single-instance worker, human
-approval, ledger pruning — is now a live mechanism (ADR-0013/0014/0015,
-reconciliation-4).
+- `code.run` now runs in a **kernel-enforced namespace sandbox** by
+  default (no network, read-only FS, masked /proc+/sys, rlimits) with a
+  LOUD subprocess fallback — microVM isolation remains a deployment option.
+- **Token accounting is exact where the ecosystem allows** (OpenAI
+  adapter loads tiktoken; `exact-tokens` extra) and honestly labeled
+  where it cannot be (Anthropic estimator).
+- The **maintenance loop elects a leader per pass** on Postgres
+  (advisory lock); SQLite is a documented single-writer.
+- **Memory retrieval** is two-stage: lexical recall beyond the newest-N
+  pool (PG: tsvector+GIN) + Okapi BM25 ranking.
+
+Remaining, genuinely deployment/external:
+
+- Audio transcription: offline Whisper-class models are a large model
+  download — a deployment decision; the extractor honestly reports
+  `audio_transcription_not_configured`.
+- Anthropic exact tokenizer: none exists offline; the estimator errs
+  safe (ADR-0018).
+- Firecracker/microVM tier: available via the `IsolationBoundary`
+  contract when a deployment requires a second VM layer.
 
 ## What NOT to Change Casually
 
@@ -130,5 +139,8 @@ reconciliation-4).
 - `wax.authority.seed` — AI principal has no inherent permissions.
 - `wax.security.network` — capability egress boundary (ADR-0008).
 - `wax.isolation.subprocess_boundary._prepare_command` env filter — secret boundary.
+- `wax.isolation.namespace_boundary` mount script ordering — the sandbox's
+  ro-/, masked-proc/sys, rw-workspace, private-/tmp sequence is load-bearing.
+- `wax.authority.permissions._PERMISSION_MANIFEST` — import-time drift guard.
 - `wax.runtime.work.signals.validate_signal_name` — namespace trust boundary.
 - `wax.runtime.logging._redact_sensitive` — keep the sensitive-key list conservative.

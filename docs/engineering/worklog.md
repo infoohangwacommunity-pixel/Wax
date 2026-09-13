@@ -282,3 +282,53 @@ Stage Summary:
 - Live probe: 12 PASS over real HTTP, exit 0
 - alembic check: zero drift
 - All five former boundaries are now live mechanisms; remaining boundaries (isolation grade, tokenizer locality, maintenance election, retrieval upgrade) are documented deployment/scale decisions, not missing primitives
+
+---
+Task ID: PASS-5-CONTINUATION
+Agent: main (Super Z)
+Task: Continuation loop — implement the four remaining boundaries (isolation
+grade, tokenizer-exact accounting, maintenance leadership, retrieval
+upgrade), then forensic gap hunt #5, implement findings, document, push.
+
+Work Log:
+- Verified start state: 518 tests, probe 12 PASS, main==origin @ b1a7c9e, clean
+- Namespace sandbox (f9f1334, ADR-0016): user namespaces (user+mount+pid+net+ipc+uts)
+  give code.run kernel-enforced no-network, read-only FS (workspace re-bound rw at
+  original path), masked /proc+/sys (kills the same-uid /proc/*/environ secret
+  channel), private size-capped noexec /tmp, rlimits (AS/NPROC/FSIZE/CPU), group
+  kill. Empirically proved each property before writing the boundary. 20 adversarial
+  tests. isolation_backend=auto|namespace|subprocess with LOUD metered fallback;
+  result + capability output carry the enforcement grade
+- Maintenance leadership (e08efa2, ADR-0017): per-pass Postgres advisory-lock
+  election; SQLite=single_writer (documented); fail-open on unknown dialects;
+  followers skip VISIBLY (result + maintenance_leadership_total{role}); regression
+  proves the follower sweep genuinely does not run
+- Tokenizer-exact accounting (1a836c8, ADR-0018): OpenAI adapter loads real tiktoken
+  per model family (optional exact-tokens extra, lazy, process-cached failure);
+  token_counter provenance on every adapter; negotiation calibrates chars/token from
+  the ADAPTER'S counter (clamped [2,6]); ContextBudget carries counter+ratio;
+  complete() logs estimated_input_tokens by the provider's own math. 23 tests
+- Retrieval upgrade (cd541f5, ADR-0019): two-stage search — RECALL = newest-N ∪
+  lexical ilike matches (old-but-relevant memories no longer trapped below the
+  recency pool) with PG tsvector+GIN behind dialect-guarded migration d9e4f2a8b1c7;
+  RANK = Okapi BM25 (k1=1.2,b=0.75) blended with recency/confidence. 11 property
+  tests; migration chain fresh/upgrade/rollback green
+- Gap hunt #5 batch 1 (6a75039): ledger prune stats double-subtraction fixed
+  (live probe surfaced ledger_total_after=-5) + regression; REAL image OCR
+  (tesseract) + PDF text (pypdf) extractors replace stubs — verified end-to-end
+  (OCR reads rendered text; PDF text layer extracted; self-gating honest failures);
+  dead fake send_typing_indicator removed; rlimits wired to settings; probe
+  switched to subprocess.run
+- Gap hunt #5 batch 2 (8c8b72d): PermissionNamespace derives BUILTIN_PERMISSIONS
+  from the manifest (import-time drift guard); role⊆manifest invariant tests; dead
+  symbols removed (PrincipalCreate, PrincipalCredentialCreate, SendResult,
+  services_from_app, utc_now, image/document stubs); ruff hygiene in src
+- Docs: reconciliation-5, audit-response Addendum 4, handoff/README updates
+
+Stage Summary:
+- 581 tests passing (518 at session start; audit-era baselines 440/408/373/312)
+- Live probe: 12 PASS over real HTTP, re-verified after every boundary change
+- All four reconciliation-4 non-goals are now live mechanisms (ADR-0016..0019)
+- Re-evaluated non-goals (honest): microVM tier (contract accepts it), audio
+  transcription (model download = deployment decision), embedding retrieval
+  (BM25+recall resolves the named failures), Anthropic offline tokenizer (none exists)

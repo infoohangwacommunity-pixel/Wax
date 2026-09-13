@@ -240,3 +240,28 @@ interface credential, memory evidence intact).
 baselines: 408 → 373 → 312). Live probe: **12 PASS checks** over real HTTP,
 including the full approval flow (pending → webhook decision → exactly-once
 execution) and a live ledger-retention pass.
+
+---
+
+## Addendum 4 — fifth pass (continuation loop): the four remaining boundaries closed
+
+Reconciliation-4 recorded four "deliberate non-goals". Re-evaluated
+against the Universal Primitive Test, ALL FOUR are infrastructure, and
+all four are now implemented (`docs/engineering/reconciliation-5.md`):
+
+| Former non-goal | Mechanism now live | Proof |
+|---|---|---|
+| Container-grade isolation for `code.run` | `NamespaceBoundary` (ADR-0016): unprivileged user namespaces — kernel-enforced no-network, read-only filesystem (workspace re-bound rw), masked /proc+/sys (kills the same-uid `/proc/*/environ` secret channel), private size-capped noexec /tmp, rlimits, process-group kill; `isolation_backend=auto` degrades LOUDLY to subprocess | 20 adversarial tests |
+| Tokenizer-exact accounting | adapters own real token counters (ADR-0018): OpenAI/tiktoken exact (optional extra), provenance declared per adapter, negotiation calibrates to the adapter's own ratio (clamped), budget + completion logs carry the counter used | 23 tests |
+| Maintenance leader election | per-pass Postgres advisory-lock leadership; SQLite = single_writer (documented); followers skip VISIBLY (result + metric); claims stay concurrent by design | 9 tests; ADR-0017 |
+| Memory retrieval upgrade | two-stage retrieval (ADR-0019): RECALL = newest-N ∪ lexical matches (PG: generated tsvector + GIN, dialect-guarded migration `d9e4f2a8b1c7`) then RANK = Okapi BM25 + recency/confidence | 11 property tests; migration chain green |
+
+Forensic gap hunt #5 also found and fixed: the ledger-prune stats
+double-subtraction (live-probe evidence: `ledger_total_after=-5`), fake
+image/document extractors replaced with REAL ones (tesseract OCR + pypdf
+text layer — both verified end-to-end), a dead fake typing-indicator
+method removed, dead contract/symbol cleanup, and role↔manifest
+permission drift guards. Full list in reconciliation-5.
+
+**Test count after this pass: 581** (session start 518). Live probe:
+**12 PASS** over real HTTP, re-verified after every boundary change.
