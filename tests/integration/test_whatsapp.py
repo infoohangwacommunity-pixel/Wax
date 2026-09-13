@@ -246,8 +246,10 @@ class TestWhatsAppAdapterWebhook:
         assert m.media_id == "media_abc"
         assert m.media_mime_type == "image/jpeg"
         assert m.media_caption == "Look at this"
-        # effective_text should use the caption
-        assert m.effective_text == "Look at this"
+        # effective_text should include the caption + a marker for the media
+        # (Phase T will replace the marker with extracted text from OCR/etc.)
+        assert "Look at this" in m.effective_text
+        assert "media_abc" in m.effective_text
 
     async def test_status_event_processed(self, adapter: WhatsAppAdapter) -> None:
         """Webhooks also deliver message status (sent/delivered/read)."""

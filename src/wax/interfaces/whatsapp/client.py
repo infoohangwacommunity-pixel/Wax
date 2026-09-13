@@ -154,6 +154,250 @@ class WhatsAppClient:
             }
         )
 
+    async def send_reaction(
+        self, to_phone: str, message_id: str, emoji: str
+    ) -> dict[str, Any]:
+        """React to a user's message with an emoji."""
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_phone,
+                "type": "reaction",
+                "reaction": {"message_id": message_id, "emoji": emoji},
+            }
+        )
+
+    async def send_location(
+        self,
+        to_phone: str,
+        latitude: float,
+        longitude: float,
+        name: str | None = None,
+        address: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a location pin to the user."""
+        location: dict[str, Any] = {
+            "latitude": str(latitude),
+            "longitude": str(longitude),
+        }
+        if name:
+            location["name"] = name
+        if address:
+            location["address"] = address
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_phone,
+                "type": "location",
+                "location": location,
+            }
+        )
+
+    async def send_contacts(
+        self, to_phone: str, contacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Send one or more contacts (vCard format).
+
+        Each contact dict must match WhatsApp's contacts schema (see
+        https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages).
+        """
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_phone,
+                "type": "contacts",
+                "contacts": contacts,
+            }
+        )
+
+    async def send_media(
+        self,
+        to_phone: str,
+        media_type: str,
+        *,
+        media_id: str | None = None,
+        media_link: str | None = None,
+        caption: str | None = None,
+        filename: str | None = None,
+        reply_to_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Send an image, video, audio, document, or sticker.
+
+        Either media_id (uploaded via upload_media) or media_link (URL
+        that Meta fetches) is required.
+
+        Args:
+            media_type: one of image, video, audio, document, sticker
+            media_id: media_id returned by upload_media
+            media_link: publicly-accessible URL Meta fetches
+            caption: optional (image, video, document only)
+            filename: optional (documents only)
+            reply_to_message_id: optional reply context
+        """
+        if media_type not in ("image", "video", "audio", "document", "sticker"):
+            raise WaxValidationError(
+                f"Unsupported media type: {media_type!r}"
+            )
+        if not media_id and not media_link:
+            raise WaxValidationError("Either media_id or media_link is required")
+        media_obj: dict[str, Any] = {}
+        if media_id:
+            media_obj["id"] = media_id
+        if media_link:
+            media_obj["link"] = media_link
+        if caption and media_type in ("image", "video", "document"):
+            media_obj["caption"] = caption
+        if filename and media_type == "document":
+            media_obj["filename"] = filename
+
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_phone,
+            "type": media_type,
+            media_type: media_obj,
+        }
+        if reply_to_message_id:
+            payload["context"] = {"message_id": reply_to_message_id}
+        return await self._send(payload)
+
+    async def mark_as_read(self, message_id: str) -> dict[str, Any]:
+        """Mark an incoming message as read (sends read receipt to user).
+
+        Also requires a typing indicator to be sent before this for the
+        user to see the read receipt immediately.
+        """
+        url = f"/{self._phone_number_id}/messages"
+        response = await self._client.post(
+            url,
+            json={
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": message_id,
+            },
+        )
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    async def send_typing_indicator(
+        self, message_id: str, typing: bool = True
+    ) -> dict[str, Any]:
+        """Send a typing indicator (shows "typing..." in WhatsApp UI).
+
+        Requires the message_id of the user's message that triggered this.
+        """
+        url = f"/{self._phone_number_id}/messages"
+        response = await self._client.post(
+            url,
+            json={
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": "",  # not needed; typing uses message_id context
+                "type": "reaction",  # placeholder; real typing uses a different endpoint
+                "context": {"message_id": message_id},
+                "typing": typing,
+            },
+        )
+        # This is a placeholder for the real typing indicator API; Meta
+        # may require a separate endpoint or webhook-based approach.
+        if response.status_code >= 400:
+            log.warning("whatsapp.typing_indicator_failed", status=response.status_code)
+        return response.json() if response.content else {}
+
+    # -------------------------------------------------------------------
+    # Media lifecycle (Phase S)
+    # -------------------------------------------------------------------
+
+    async def upload_media(
+        self,
+        *,
+        mime_type: str,
+        filename: str,
+        file_bytes: bytes,
+    ) -> str:
+        """Upload binary media to Meta for sending later.
+
+        Returns the media_id to use with send_media(media_id=...).
+
+        Args:
+            mime_type: e.g. "image/jpeg", "audio/ogg", "application/pdf"
+            filename: the filename to associate
+            file_bytes: the raw binary content
+        """
+        url = f"/{self._phone_number_id}/media"
+        # Note: this requires multipart/form-data, not JSON
+        files = {
+            "file": (filename, file_bytes, mime_type),
+        }
+        # Strip JSON content-type header for multipart upload
+        headers = {"Authorization": f"Bearer {self._access_token_for_uploads}"}
+        response = await self._client.post(
+            url,
+            data={
+                "messaging_product": "whatsapp",
+                "type": mime_type.split("/")[0],  # image, video, audio, document
+            },
+            files=files,
+            headers=headers,
+        )
+        response.raise_for_status()
+        data = response.json()
+        media_id = data.get("id")
+        if not media_id:
+            raise WaxValidationError(f"Media upload did not return an id: {data}")
+        log.info(
+            "whatsapp.media.uploaded",
+            media_id=media_id,
+            mime_type=mime_type,
+            filename=filename,
+            size_bytes=len(file_bytes),
+        )
+        return media_id
+
+    async def download_media(self, media_id: str) -> bytes:
+        """Download media binary by its media_id.
+
+        Returns the raw bytes. Phase T (Media Intelligence Pipeline) uses
+        this to fetch images/audio/documents for OCR/transcription.
+        """
+        # Step 1: get the temporary media URL
+        url = f"/{media_id}"
+        response = await self._client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        media_url = data.get("url")
+        if not media_url:
+            raise WaxValidationError(f"Media {media_id} did not return a URL")
+
+        # Step 2: download the binary
+        async with self._client.stream("GET", media_url) as download_response:
+            download_response.raise_for_status()
+            chunks: list[bytes] = []
+            async for chunk in download_response.aiter_bytes():
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+    async def delete_media(self, media_id: str) -> dict[str, Any]:
+        """Revoke a previously uploaded media_id."""
+        url = f"/{media_id}"
+        response = await self._client.delete(url)
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    @property
+    def _access_token_for_uploads(self) -> str:
+        """Extract the access token from the client's headers.
+
+        The Authorization header was set at construction time as
+        'Bearer <token>'. We extract it for multipart uploads where
+        we override headers.
+        """
+        auth = self._client.headers.get("Authorization", "")
+        return auth.removeprefix("Bearer ").strip()
+
     def verify_webhook_signature(self, payload: bytes, signature_header: str) -> bool:
         """Verify the X-Hub-Signature-256 header.
 

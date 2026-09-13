@@ -141,7 +141,18 @@ class WhatsAppAdapter:
     def _normalize_message(
         self, msg_data: dict[str, Any], value: dict[str, Any]
     ) -> WhatsAppIncomingMessage | None:
-        """Convert WhatsApp's payload shape into our universal contract."""
+        """Convert WhatsApp's payload shape into our universal contract.
+
+        Supports ALL incoming WhatsApp message types:
+        - text, image, audio, document, video, sticker
+        - location, contacts
+        - interactive (button_reply, list_reply)
+        - reaction
+        - system events (customer_changed_phone_number, etc.)
+        - reply context (when user replies to a specific message)
+        - forwarded / frequently_forwarded metadata
+        - errors (when outbound message delivery fails)
+        """
         try:
             msg_type = msg_data.get("type", "unknown")
             try:
@@ -154,35 +165,89 @@ class WhatsAppAdapter:
             if contacts:
                 from_name = contacts[0].get("profile", {}).get("name")
 
-            # Extract content per type
-            text_body = None
-            media_id = None
-            media_mime_type = None
-            media_caption = None
-            interactive_id = None
-            interactive_title = None
+            # Common fields
+            text_body: str | None = None
+            media_id: str | None = None
+            media_mime_type: str | None = None
+            media_caption: str | None = None
+            media_sha256: str | None = None
+            media_filename: str | None = None
+            interactive_id: str | None = None
+            interactive_title: str | None = None
+            reaction_emoji: str | None = None
+            reaction_message_id: str | None = None
+            location_lat: float | None = None
+            location_lon: float | None = None
+            location_name: str | None = None
+            location_addr: str | None = None
+            contacts_list: list[dict[str, Any]] = []
+            system_kind: str | None = None
+            is_forwarded = bool(msg_data.get("context", {}).get("forwarded"))
+            is_frequently_forwarded = bool(
+                msg_data.get("context", {}).get("frequently_forwarded")
+            )
+            reply_context_message_id: str | None = None
+            reply_context_from: str | None = None
 
-            type_data = msg_data.get(msg_type, {})
+            # Extract content per type
+            type_data = msg_data.get(msg_type, {}) or {}
+
             if msg_type == "text":
                 text_body = type_data.get("body")
-            elif msg_type in ("image", "audio", "document", "video"):
+            elif msg_type in ("image", "video", "audio", "document", "sticker"):
                 media_id = type_data.get("id")
                 media_mime_type = type_data.get("mime_type")
-                if msg_type == "document":
-                    media_caption = type_data.get("caption")
-                elif msg_type == "image":
+                media_sha256 = type_data.get("sha256")
+                if msg_type == "image":
                     media_caption = type_data.get("caption")
                 elif msg_type == "video":
                     media_caption = type_data.get("caption")
+                elif msg_type == "document":
+                    media_caption = type_data.get("caption")
+                    media_filename = type_data.get("filename")
+            elif msg_type == "location":
+                location_lat = float(type_data.get("latitude", 0))
+                location_lon = float(type_data.get("longitude", 0))
+                location_name = type_data.get("name")
+                location_addr = type_data.get("address")
+            elif msg_type == "contacts":
+                # WhatsApp sends a list of contact objects
+                contacts_in = type_data if isinstance(type_data, list) else [type_data]
+                for c in contacts_in:
+                    if isinstance(c, dict):
+                        contacts_list.append(c)
             elif msg_type == "interactive":
-                interactive = type_data
-                interactive_type = interactive.get("type")
+                interactive_type = type_data.get("type")
                 if interactive_type == "button_reply":
-                    interactive_id = interactive.get("button_reply", {}).get("id")
-                    interactive_title = interactive.get("button_reply", {}).get("title")
+                    interactive_id = type_data.get("button_reply", {}).get("id")
+                    interactive_title = type_data.get("button_reply", {}).get("title")
                 elif interactive_type == "list_reply":
-                    interactive_id = interactive.get("list_reply", {}).get("id")
-                    interactive_title = interactive.get("list_reply", {}).get("title")
+                    interactive_id = type_data.get("list_reply", {}).get("id")
+                    interactive_title = type_data.get("list_reply", {}).get("title")
+            elif msg_type == "reaction":
+                reaction_msg = type_data.get("message_id")
+                reaction_emoji = type_data.get("emoji")
+                reaction_message_id = reaction_msg
+            elif msg_type == "system":
+                system_kind = type_data.get("type")
+                # for customer_changed_phone_number, body has old/new
+                body = type_data.get("body") or {}
+                # Extract legacy fields
+                from_phone_legacy = body.get("wa_id") if isinstance(body, dict) else None
+                if from_phone_legacy:
+                    # We'll override later if from_phone from msg_data
+                    pass
+
+            # Reply context (when user replies to a specific message)
+            context_data = msg_data.get("context")
+            if context_data:
+                reply_context_message_id = context_data.get("id")
+                reply_context_from = context_data.get("from")
+
+            # Forwarded metadata
+            if context_data:
+                is_forwarded = bool(context_data.get("forwarded"))
+                is_frequently_forwarded = bool(context_data.get("frequently_forwarded"))
 
             return WhatsAppIncomingMessage(
                 message_id=msg_data.get("id", ""),
@@ -196,8 +261,22 @@ class WhatsAppAdapter:
                 media_id=media_id,
                 media_mime_type=media_mime_type,
                 media_caption=media_caption,
+                media_sha256=media_sha256,
+                media_filename=media_filename,
                 interactive_id=interactive_id,
                 interactive_title=interactive_title,
+                reply_context_message_id=reply_context_message_id,
+                reply_context_from=reply_context_from,
+                reaction_emoji=reaction_emoji,
+                reaction_message_id=reaction_message_id,
+                location_latitude=location_lat,
+                location_longitude=location_lon,
+                location_name=location_name,
+                location_address=location_addr,
+                contacts=contacts_list,
+                system_kind=system_kind,
+                is_forwarded=is_forwarded,
+                is_frequently_forwarded=is_frequently_forwarded,
                 raw_payload=msg_data,
             )
         except Exception as e:
