@@ -17,18 +17,18 @@ across principals (privacy + correctness).
 """
 
 from wax.continuity.contracts import (
+    ContinuityContext,
     ConversationRecord,
     ConversationStatus,
-    ContinuityContext,
 )
 from wax.continuity.repository import ConversationRepository
-from wax.continuity.service import ConversationService, ContinuityService
+from wax.continuity.service import ContinuityService, ConversationService
 
 __all__ = [
-    "ConversationRecord",
-    "ConversationStatus",
     "ContinuityContext",
+    "ContinuityService",
+    "ConversationRecord",
     "ConversationRepository",
     "ConversationService",
-    "ContinuityService",
+    "ConversationStatus",
 ]

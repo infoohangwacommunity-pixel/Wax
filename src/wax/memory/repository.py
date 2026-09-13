@@ -15,7 +15,7 @@ but it is excluded from default retrieval.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,7 +122,7 @@ class MemoryRepository:
             .values(
                 status=MemoryStatus.SUPERSEDED.value,
                 superseded_by=new_memory_id,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
             )
         )
         if result.rowcount > 0:
@@ -147,7 +147,7 @@ class MemoryRepository:
             )
             .values(
                 status=MemoryStatus.FORGOTTEN.value,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
             )
         )
         if result.rowcount > 0:
@@ -162,7 +162,7 @@ class MemoryRepository:
         This is the entry point for the future "forgetting" worker.
         """
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
         result = await self._session.execute(
             select(MemoryRecord).where(

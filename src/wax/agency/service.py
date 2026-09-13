@@ -12,6 +12,7 @@ INVARIANT: The AI cannot execute directly. Every decision passes here.
 
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from wax.agency.contracts import (
@@ -22,7 +23,6 @@ from wax.agency.contracts import (
 )
 from wax.authority.service import AuthorizationService
 from wax.runtime.logging import get_logger
-from sqlalchemy.ext.asyncio import AsyncSession
 
 log = get_logger(__name__)
 

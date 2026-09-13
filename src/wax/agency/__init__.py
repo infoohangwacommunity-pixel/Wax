@@ -17,17 +17,17 @@ through this service, which consults the runtime's policy.
 from wax.agency.contracts import (
     AgencyDecision,
     AgencyDecisionKind,
-    ApprovalLevel,
     AgencyPolicy,
     AgencyVerdict,
+    ApprovalLevel,
 )
 from wax.agency.service import AgencyService
 
 __all__ = [
     "AgencyDecision",
     "AgencyDecisionKind",
-    "ApprovalLevel",
     "AgencyPolicy",
-    "AgencyVerdict",
     "AgencyService",
+    "AgencyVerdict",
+    "ApprovalLevel",
 ]

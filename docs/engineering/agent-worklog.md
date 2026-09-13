@@ -71,3 +71,33 @@ Audit source: WAX_Current_Repository_Reality_Report.pdf (41-page forensic audit)
   from configuration (audit §14: base_url was unreachable via config).
 - 334 → 340 tests (test_tool_calling.py: full-gate echo invocation, honest
   not_found, destructive-denial, loop bound, OpenAI wire format).
+
+## Task 4 — Phase R/V: Durable work runtime (commit 4)
+
+- New table `work_items` (migration b7f21c9d4e02, round-trip verified on
+  SQLite): kind (runtime mechanism name), opaque payload, wake_at,
+  available_at, attempts/max_attempts, lease_owner/lease_expires_at,
+  status pending→leased→running→succeeded|failed(retry)|dead|cancelled.
+- WorkRepository: schedule / claim_due (crash-safe leases; expired leases
+  reclaimable; reclaim consumes an attempt; exhaustion → dead) /
+  mark_succeeded / mark_failed (exponential backoff slot) / cancel /
+  list_for_principal.
+- WorkRunner: in-process asyncio worker started in the lifespan (no second
+  process needed; lease design admits replicas later). Bounded retries,
+  dead-letter rows on exhaustion, in-flight gauge metric.
+- Recovery scan at startup: executions stuck "running" by a dead process →
+  failed; their processed_messages pending → failed (retryable on Meta
+  redelivery). Closes the audit §8 crash hole.
+- capability_handler: the universal "wake and invoke" handler — same gate
+  chain as the live path (agency → budget → authority → invoker).
+- Runtime capabilities (closures over the container, no globals):
+  work.schedule (honest early refusal of unknown/destructive targets),
+  work.cancel (ownership enforced), work.list, message.send (recipient
+  must be the caller's own verified credential; Meta 24-hour window
+  enforced truthfully — no invented templates).
+- CapabilityImpl protocol now passes InvocationContext(principal_id,
+  capability_name, execution_id, request_id); built-ins + invoker updated.
+- THE COMPOSITION TEST: user message → scripted AI calls work.schedule →
+  runner wakes → message.send delivers. A reminder exists as a
+  MECHANISM COMPOSITION; there is no ReminderService/TimerService.
+- 340 → 352 tests.

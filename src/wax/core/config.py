@@ -14,9 +14,7 @@ Design principles:
 
 from __future__ import annotations
 
-import os
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict

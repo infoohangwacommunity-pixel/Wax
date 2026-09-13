@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from wax.state.models import Base, TimestampMixin, ULIDPrimaryKeyMixin, utc_now
+from wax.state.models import Base, TimestampMixin, ULIDPrimaryKeyMixin
 
 
 class Principal(Base, ULIDPrimaryKeyMixin, TimestampMixin):

@@ -18,7 +18,7 @@ AuthorizationService.check() before invoking any capability. An architecture
 test will verify this.
 """
 
-from wax.authority.service import AuthorizationService
 from wax.authority.models import PrincipalRole, Role
+from wax.authority.service import AuthorizationService
 
 __all__ = ["AuthorizationService", "PrincipalRole", "Role"]

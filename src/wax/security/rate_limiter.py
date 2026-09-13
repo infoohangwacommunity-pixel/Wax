@@ -16,7 +16,6 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock
-from typing import Any
 
 from wax.runtime.logging import get_logger
 

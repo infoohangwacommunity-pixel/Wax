@@ -32,8 +32,8 @@ from wax.core.exceptions import (
 )
 
 __all__ = [
-    "WaxError",
     "WaxConfigurationError",
+    "WaxError",
     "WaxInvariantViolation",
     "WaxNotFoundError",
     "WaxNotImplementedError",

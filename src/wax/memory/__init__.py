@@ -18,16 +18,22 @@ Vector retrieval is ONE possible retrieval mechanism, not the definition
 of memory.
 """
 
-from wax.memory.contracts import MemoryKind, MemoryStatus, MemoryProvenance, MemoryCreate, MemoryRead
+from wax.memory.contracts import (
+    MemoryCreate,
+    MemoryKind,
+    MemoryProvenance,
+    MemoryRead,
+    MemoryStatus,
+)
 from wax.memory.models import MemoryRecord
 from wax.memory.repository import MemoryRepository
 
 __all__ = [
-    "MemoryRecord",
-    "MemoryKind",
-    "MemoryStatus",
-    "MemoryProvenance",
     "MemoryCreate",
+    "MemoryKind",
+    "MemoryProvenance",
     "MemoryRead",
+    "MemoryRecord",
     "MemoryRepository",
+    "MemoryStatus",
 ]

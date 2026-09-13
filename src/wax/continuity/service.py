@@ -7,13 +7,12 @@ ContinuityService: top-level "what context should the AI see?" — composes
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from wax.continuity.contracts import (
     ContinuityContext,
-    ConversationStatus,
 )
 from wax.continuity.repository import ConversationRepository
 from wax.execution.repository import ExecutionRepository
@@ -98,7 +97,7 @@ class ContinuityService:
         """
         conversation = await self._conv_repo.get_active_for_principal(principal_id)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if conversation is None:
             # Brand-new conversation
@@ -115,7 +114,7 @@ class ContinuityService:
         # SQLite may return naive datetimes; normalize to aware.
         last_msg = conversation.last_message_at
         if last_msg.tzinfo is None:
-            last_msg = last_msg.replace(tzinfo=timezone.utc)
+            last_msg = last_msg.replace(tzinfo=UTC)
         delta = now - last_msg
         days_since = delta.total_seconds() / 86400.0
 

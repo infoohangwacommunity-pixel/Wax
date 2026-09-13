@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from wax.isolation.contracts import (
     ExecutionResult,
@@ -44,7 +44,7 @@ class SubprocessBoundary(IsolationBoundary):
         return IsolationKind.SUBPROCESS
 
     async def execute(self, request: IsolationRequest) -> ExecutionResult:
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         start_perf = time.perf_counter()
 
         # Build the command based on language
@@ -65,7 +65,7 @@ class SubprocessBoundary(IsolationBoundary):
                 stderr=f"Executable not found: {e}",
                 duration_ms=0.0,
                 started_at=started_at,
-                ended_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(UTC),
             )
 
         try:
@@ -98,7 +98,7 @@ class SubprocessBoundary(IsolationBoundary):
         )
 
         duration_ms = (time.perf_counter() - start_perf) * 1000
-        ended_at = datetime.now(timezone.utc)
+        ended_at = datetime.now(UTC)
 
         log.info(
             "isolation.subprocess.executed",

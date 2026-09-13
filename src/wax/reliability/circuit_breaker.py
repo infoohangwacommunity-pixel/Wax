@@ -101,7 +101,7 @@ class CircuitBreaker:
 
         try:
             result = await operation()
-        except Exception as e:
+        except Exception:
             self._record_failure()
             raise
         else:

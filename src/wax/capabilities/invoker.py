@@ -21,8 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from ulid import ULID
 
@@ -31,9 +30,9 @@ from wax.capabilities.contracts import (
     CapabilityInvocationRequest,
     CapabilityInvocationResult,
     CapabilityStatus,
+    InvocationContext,
 )
 from wax.capabilities.registry import CapabilityRegistry
-from wax.core.exceptions import WaxTimeoutError
 from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
@@ -66,7 +65,7 @@ class CapabilityInvoker:
         The runtime enforces authorization BEFORE executing the capability.
         The AI cannot bypass this — there is no other path to invoke.
         """
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         execution_id = str(ULID())
         start_perf = time.perf_counter()
 
@@ -104,10 +103,17 @@ class CapabilityInvoker:
                 error=f"Principal lacks permission: {descriptor.required_permission}",
             )
 
-        # 4. Execute with timeout
+        # 4. Execute with timeout. The implementation receives an
+        # InvocationContext (who/what/why) — never authorization power.
+        context = InvocationContext(
+            principal_id=request.principal_id,
+            capability_name=request.capability_name,
+            execution_id=execution_id,
+            request_id=request.request_id,
+        )
         try:
             outputs = await asyncio.wait_for(
-                impl(request.inputs),
+                impl(request.inputs, context),
                 timeout=descriptor.timeout_seconds,
             )
         except TimeoutError:
@@ -136,7 +142,7 @@ class CapabilityInvoker:
                 error=f"{type(e).__name__}: {e}",
             )
 
-        ended_at = datetime.now(timezone.utc)
+        ended_at = datetime.now(UTC)
         duration_ms = (time.perf_counter() - start_perf) * 1000
 
         log.info(
@@ -167,7 +173,7 @@ class CapabilityInvoker:
         outcome: str,
         error: str,
     ) -> CapabilityInvocationResult:
-        ended_at = datetime.now(timezone.utc)
+        ended_at = datetime.now(UTC)
         duration_ms = (time.perf_counter() - start_perf) * 1000
         return CapabilityInvocationResult(
             capability_name=request.capability_name,

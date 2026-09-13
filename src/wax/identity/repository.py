@@ -7,7 +7,7 @@ replaceable (INV-07).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,7 +70,7 @@ class PrincipalRepository:
         principal = await self.get_principal(principal_id)
         if principal is None:
             return False
-        principal.deleted_at = datetime.now(timezone.utc)
+        principal.deleted_at = datetime.now(UTC)
         principal.status = "deleted"
         await self._session.flush()
         log.info("identity.principal.soft_deleted", principal_id=principal_id)
@@ -160,7 +160,7 @@ class PrincipalRepository:
         """Update last_used_at on a credential. Call after successful auth."""
         cred = await self._session.get(PrincipalCredential, credential_id)
         if cred is not None:
-            cred.last_used_at = datetime.now(timezone.utc)
+            cred.last_used_at = datetime.now(UTC)
             await self._session.flush()
 
     async def list_credentials(self, principal_id: str) -> list[PrincipalCredential]:

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,7 +110,7 @@ class ObjectiveRepository:
             return False
 
         record.status = new_value
-        record.updated_at = datetime.now(timezone.utc)
+        record.updated_at = datetime.now(UTC)
         await self._session.flush()
         log.info(
             "objective.transitioned",

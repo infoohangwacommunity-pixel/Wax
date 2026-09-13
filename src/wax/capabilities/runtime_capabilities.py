@@ -1,0 +1,369 @@
+"""Runtime capabilities — capabilities over runtime mechanisms.
+
+These are not features; they are the runtime's exposed mechanisms, the way
+an OS exposes syscalls. The AI composes them to pursue objectives:
+
+- work.schedule / work.cancel / work.list — durable work + time ownership
+  (Phase R / V). A "reminder" is work.schedule(kind="capability",
+  payload={capability_name: "message.send", ...}, wake_at=...).
+- message.send — outbound delivery through the DeliveryRouter with Meta
+  policy honesty (Phase W groundwork). The runtime knows the 24-hour
+  customer-service window and refuses (truthfully) outside it; it never
+  invents template capabilities that don't exist.
+
+Every implementation receives an InvocationContext (principal_id, ...) —
+authorization has ALREADY been enforced by the invoker before these run.
+Implementations close over their OWN container (no module globals), so
+multiple containers (tests, multi-runtime processes) stay isolated.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from wax.runtime.services import RuntimeServices
+
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+
+from wax.capabilities.contracts import CapabilityDescriptor, InvocationContext
+from wax.capabilities.registry import CapabilityRegistry
+from wax.runtime.logging import get_logger
+from wax.state.engine import db_session
+
+log = get_logger(__name__)
+
+# The 24-hour customer service window: inside it, a plain text reply is
+# permitted by Meta policy; outside it, an approved template would be
+# required. WAX has no registered templates, so the runtime reports that
+# constraint truthfully instead of faking a send.
+CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
+
+# Interface kind → credential kind (mirrors the bridge's identity mapping).
+_INTERFACE_CREDENTIAL_KIND: dict[str, str] = {
+    "whatsapp": "whatsapp_phone",
+    "web": "web_session",
+    "telegram": "telegram_chat",
+    "api": "api_key",
+}
+
+MAX_WORK_DELAY = timedelta(days=30)
+
+
+def _parse_wake_time(inputs: dict[str, Any]) -> datetime:
+    """Resolve wake_at (ISO 8601) or delay_seconds from the inputs."""
+    now = datetime.now(UTC)
+    wake_at_raw = inputs.get("wake_at")
+    delay_seconds = inputs.get("delay_seconds")
+
+    if wake_at_raw is not None and delay_seconds is not None:
+        raise ValueError("Provide either wake_at or delay_seconds, not both")
+
+    if wake_at_raw is not None:
+        if not isinstance(wake_at_raw, str):
+            raise ValueError("wake_at must be an ISO 8601 string")
+        try:
+            wake_at = datetime.fromisoformat(wake_at_raw.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(f"wake_at is not valid ISO 8601: {e}") from e
+        if wake_at.tzinfo is None:
+            wake_at = wake_at.replace(tzinfo=UTC)
+        return wake_at
+
+    if delay_seconds is not None:
+        try:
+            delay = float(delay_seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError("delay_seconds must be a number") from e
+        if delay < 0:
+            raise ValueError("delay_seconds must be >= 0")
+        if delay > MAX_WORK_DELAY.total_seconds():
+            raise ValueError("delay_seconds exceeds the 30-day maximum")
+        return now + timedelta(seconds=delay)
+
+    raise ValueError("Provide wake_at (ISO 8601) or delay_seconds (number)")
+
+
+# ---------------------------------------------------------------------------
+# Descriptor shapes (shared by registration; implementations are closures)
+# ---------------------------------------------------------------------------
+
+WORK_SCHEDULE_DESCRIPTOR = CapabilityDescriptor(
+    name="work.schedule",
+    description=(
+        "Schedule durable work that wakes at a future time and invokes a "
+        "capability. Survives restarts. payload.capability_name plus "
+        "wake_at (ISO 8601) or delay_seconds."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "payload": {
+                "type": "object",
+                "description": "Must include capability_name; may include inputs",
+            },
+            "kind": {"type": "string", "default": "capability"},
+            "wake_at": {"type": "string", "description": "ISO 8601 datetime"},
+            "delay_seconds": {"type": "number"},
+            "max_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
+        },
+        "required": ["payload"],
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+WORK_CANCEL_DESCRIPTOR = CapabilityDescriptor(
+    name="work.cancel",
+    description="Cancel the caller's own pending durable work by work_id.",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"work_id": {"type": "string"}},
+        "required": ["work_id"],
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+WORK_LIST_DESCRIPTOR = CapabilityDescriptor(
+    name="work.list",
+    description="List the caller's own durable work items (optional status filter).",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
+    name="message.send",
+    description=(
+        "Send a text message to the requesting principal on an attached "
+        "interface (default: whatsapp). Enforces identity ownership and "
+        "Meta's 24-hour customer service window."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "recipient_id": {"type": "string"},
+            "text": {"type": "string", "maxLength": 4000},
+            "interface_kind": {"type": "string", "default": "whatsapp"},
+        },
+        "required": ["recipient_id", "text"],
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=30.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+
+def register_runtime_capabilities(registry: CapabilityRegistry, services: RuntimeServices) -> None:
+    """Register the runtime-mechanism capabilities bound to THIS container."""
+
+    # --- work.schedule ----------------------------------------------------
+
+    async def work_schedule_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.repository import WorkRepository
+
+        payload = inputs.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("payload object is required")
+        capability_name = payload.get("capability_name")
+        if not capability_name or not isinstance(capability_name, str):
+            raise ValueError("payload.capability_name is required")
+
+        # Honest early feedback: refuse to schedule work whose capability
+        # does not exist (availability may still change by wake time).
+        try:
+            descriptor, _impl = services.capability_registry.get(capability_name)
+        except Exception as e:
+            raise ValueError(f"Unknown capability for scheduled work: {capability_name}") from e
+
+        kind = inputs.get("kind") or "capability"
+        if kind != "capability":
+            raise ValueError(f"Unsupported work kind: {kind!r} (only 'capability')")
+
+        wake_at = _parse_wake_time(inputs)
+        try:
+            max_attempts = int(inputs.get("max_attempts", 3))
+        except (TypeError, ValueError) as e:
+            raise ValueError("max_attempts must be an integer") from e
+        if not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be between 1 and 10")
+
+        if descriptor.is_destructive:
+            # Honest constraint: scheduled destructive work would hit the
+            # agency gate at wake time and could never run.
+            raise ValueError(
+                "Destructive capabilities cannot be scheduled: no "
+                "human-approval workflow exists yet"
+            )
+
+        async with db_session() as session:
+            repo = WorkRepository(session)
+            item = await repo.schedule(
+                kind=kind,
+                payload={
+                    "capability_name": capability_name,
+                    "inputs": payload.get("inputs") or {},
+                },
+                wake_at=wake_at,
+                principal_id=ctx.principal_id,
+                execution_id=None,
+                max_attempts=max_attempts,
+            )
+            await session.commit()
+
+        return {
+            "work_id": item.id,
+            "status": item.status,
+            "wake_at": item.wake_at.isoformat(),
+            "capability_name": capability_name,
+        }
+
+    # --- work.cancel ------------------------------------------------------
+
+    async def work_cancel_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.repository import TERMINAL_WORK_STATUSES, WorkRepository
+
+        work_id = inputs.get("work_id")
+        if not work_id or not isinstance(work_id, str):
+            raise ValueError("work_id is required")
+
+        async with db_session() as session:
+            repo = WorkRepository(session)
+            item = await repo.get(work_id)
+            if item is None:
+                raise ValueError(f"No such work item: {work_id}")
+            if item.principal_id != ctx.principal_id:
+                # Ownership boundary: only the owning human's AI may cancel.
+                raise ValueError("work_id belongs to a different principal")
+            if item.status in TERMINAL_WORK_STATUSES:
+                return {
+                    "work_id": work_id,
+                    "status": item.status,
+                    "cancelled": False,
+                }
+            new_status = await repo.cancel(work_id)
+            await session.commit()
+
+        return {"work_id": work_id, "status": new_status, "cancelled": True}
+
+    # --- work.list --------------------------------------------------------
+
+    async def work_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.repository import VALID_WORK_STATUSES, WorkRepository
+
+        status = inputs.get("status")
+        if status is not None and status not in VALID_WORK_STATUSES:
+            raise ValueError(f"status must be one of {sorted(VALID_WORK_STATUSES)}")
+
+        async with db_session() as session:
+            repo = WorkRepository(session)
+            items = await repo.list_for_principal(ctx.principal_id, status=status, limit=20)
+
+        return {
+            "count": len(items),
+            "items": [
+                {
+                    "work_id": i.id,
+                    "kind": i.kind,
+                    "status": i.status,
+                    "wake_at": i.wake_at.isoformat(),
+                    "attempts": i.attempts,
+                    "last_error": (i.last_error or "")[:200] or None,
+                    "payload": i.payload,
+                }
+                for i in items
+            ],
+        }
+
+    # --- message.send -----------------------------------------------------
+
+    async def message_send_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.bridge_models import ProcessedMessageRecord
+        from wax.state.identity_models import PrincipalCredential
+
+        interface_kind = inputs.get("interface_kind") or "whatsapp"
+        if interface_kind not in _INTERFACE_CREDENTIAL_KIND:
+            raise ValueError(f"Unknown interface kind: {interface_kind!r}")
+        credential_kind = _INTERFACE_CREDENTIAL_KIND[interface_kind]
+
+        recipient_id = inputs.get("recipient_id")
+        text = inputs.get("text")
+        if not recipient_id or not isinstance(recipient_id, str):
+            raise ValueError("recipient_id is required")
+        if not text or not isinstance(text, str):
+            raise ValueError("text is required")
+        if len(text) > 4000:
+            raise ValueError("text exceeds 4000 characters")
+
+        delivery = services.delivery
+        if not delivery.has(interface_kind):
+            raise ValueError(
+                f"No delivery interface attached for {interface_kind!r}; the "
+                "runtime cannot send messages right now (an honest "
+                "constraint, not a success)."
+            )
+
+        async with db_session() as session:
+            # 1. Ownership: recipient must be the CALLING principal's own
+            # verified credential. The AI cannot message third parties.
+            result = await session.execute(
+                select(PrincipalCredential).where(
+                    PrincipalCredential.kind == credential_kind,
+                    PrincipalCredential.value == recipient_id,
+                )
+            )
+            credential = result.scalar_one_or_none()
+            if credential is None or credential.principal_id != ctx.principal_id:
+                raise ValueError(
+                    "recipient_id is not a verified identity of the requesting "
+                    "principal; WAX will not message third parties"
+                )
+
+            # 2. Meta 24-hour window — evidence from the message ledger.
+            recent = await session.execute(
+                select(ProcessedMessageRecord.received_at)
+                .where(ProcessedMessageRecord.principal_id == ctx.principal_id)
+                .order_by(ProcessedMessageRecord.received_at.desc())
+                .limit(1)
+            )
+            last_inbound = recent.scalar_one_or_none()
+            if last_inbound is not None and last_inbound.tzinfo is None:
+                last_inbound = last_inbound.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
+            if last_inbound is None or (now - last_inbound) > CUSTOMER_SERVICE_WINDOW:
+                raise ValueError(
+                    "Outside the 24-hour customer service window: Meta "
+                    "requires an approved template message, and WAX has no "
+                    "registered templates. Ask the user to message WAX first."
+                )
+
+        await delivery.send(interface_kind, recipient_id, text)
+        services.metrics.send_ok(interface_kind)
+        return {
+            "sent": True,
+            "interface": interface_kind,
+            "recipient_id": recipient_id,
+        }
+
+    registry.register(WORK_SCHEDULE_DESCRIPTOR, work_schedule_impl)
+    registry.register(WORK_CANCEL_DESCRIPTOR, work_cancel_impl)
+    registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
+    registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
+    log.info("capability.runtime_registered", count=4)

@@ -27,6 +27,7 @@ from wax.authority.service import AuthorizationService
 from wax.capabilities.built_ins import register_builtins
 from wax.capabilities.invoker import CapabilityInvoker
 from wax.capabilities.registry import CapabilityRegistry
+from wax.capabilities.runtime_capabilities import register_runtime_capabilities
 from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
@@ -82,6 +83,10 @@ class RuntimeServices:
             capability_registry=registry,
             delivery=DeliveryRouter(),
         )
+        # Runtime mechanisms exposed to the AI as capabilities
+        # (work.schedule / work.cancel / work.list / message.send) —
+        # registered after construction so they close over this container.
+        register_runtime_capabilities(registry, services)
         log.info(
             "runtime.services.built",
             capabilities=len(registry),

@@ -15,19 +15,19 @@ INVARIANTS:
 """
 
 from wax.security.abuse import AbuseDetector, AbuseVerdict
+from wax.security.cost_protection import CostLimitConfig, CostProtector
 from wax.security.rate_limiter import (
     RateLimitConfig,
     RateLimitDecision,
     RateLimiter,
 )
-from wax.security.cost_protection import CostProtector, CostLimitConfig
 
 __all__ = [
     "AbuseDetector",
     "AbuseVerdict",
+    "CostLimitConfig",
+    "CostProtector",
     "RateLimitConfig",
     "RateLimitDecision",
     "RateLimiter",
-    "CostProtector",
-    "CostLimitConfig",
 ]

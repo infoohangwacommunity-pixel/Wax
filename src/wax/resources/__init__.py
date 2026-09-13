@@ -15,4 +15,4 @@ rejected by the runtime, not by the model.
 from wax.resources.accountant import ResourceAccountant
 from wax.resources.contracts import ResourceBudget, ResourceKind, ResourceUsage
 
-__all__ = ["ResourceBudget", "ResourceKind", "ResourceUsage", "ResourceAccountant"]
+__all__ = ["ResourceAccountant", "ResourceBudget", "ResourceKind", "ResourceUsage"]

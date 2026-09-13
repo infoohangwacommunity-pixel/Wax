@@ -18,6 +18,7 @@ from typing import Any
 from wax.capabilities.contracts import (
     CapabilityDescriptor,
     CapabilityStatus,
+    InvocationContext,
 )
 from wax.core.exceptions import WaxNotFoundError, WaxStateConflictError
 from wax.runtime.logging import get_logger
@@ -26,7 +27,7 @@ log = get_logger(__name__)
 
 # Type alias: a capability implementation is an async callable that takes
 # inputs (dict) and returns outputs (dict).
-CapabilityImpl = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+CapabilityImpl = Callable[[dict[str, Any], InvocationContext], Awaitable[dict[str, Any]]]
 
 
 class CapabilityRegistry:

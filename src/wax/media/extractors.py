@@ -19,7 +19,6 @@ when we wire local libraries (Tesseract, Whisper local model).
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from wax.media.contracts import (
     MediaExtractionResult,

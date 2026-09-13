@@ -10,15 +10,15 @@ why, and when — never contain secrets.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import DateTime, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
+from ulid import ULID
 
 from wax.state.models import Base, TimestampMixin, ULIDPrimaryKeyMixin
-from ulid import ULID
 
 
 class DeadLetterEntry(Base, ULIDPrimaryKeyMixin, TimestampMixin):
@@ -121,7 +121,7 @@ class DeadLetterRepository:
         return list(result.scalars().all())
 
     async def mark_reprocessed(self, entry_id: str) -> bool:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from sqlalchemy import select
 
@@ -132,6 +132,6 @@ class DeadLetterRepository:
         if entry is None:
             return False
         entry.reprocessed = True
-        entry.reprocessed_at = datetime.now(timezone.utc)
+        entry.reprocessed_at = datetime.now(UTC)
         await self._session.flush()
         return True

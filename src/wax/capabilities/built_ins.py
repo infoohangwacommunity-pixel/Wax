@@ -13,21 +13,23 @@ function in the provided CapabilityRegistry.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
-from wax.capabilities.contracts import CapabilityDescriptor
+from wax.capabilities.contracts import (
+    CapabilityDescriptor,
+    InvocationContext,
+)
 from wax.capabilities.registry import CapabilityRegistry
 
 
-async def echo_impl(inputs: dict[str, Any]) -> dict[str, Any]:
+async def echo_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
     """Trivial capability — returns its inputs. For smoke tests only."""
     return {"echo": inputs}
 
 
-async def http_get_impl(inputs: dict[str, Any]) -> dict[str, Any]:
+async def http_get_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
     """Perform an HTTP GET request.
 
     Inputs:

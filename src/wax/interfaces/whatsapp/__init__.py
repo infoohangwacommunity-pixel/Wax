@@ -46,34 +46,34 @@ runtime never sees WhatsApp objects — only RuntimeRequest / RuntimeResponse
 from wax.runtime.bridge.
 """
 
+from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
+from wax.interfaces.whatsapp.client import WhatsAppClient
 from wax.interfaces.whatsapp.contracts import (
+    WhatsAppContact,
+    WhatsAppError,
     WhatsAppIncomingMessage,
+    WhatsAppLocation,
     WhatsAppMessageStatus,
     WhatsAppMessageType,
     WhatsAppOutgoingMessage,
-    WhatsAppWebhookEvent,
     WhatsAppReaction,
-    WhatsAppContact,
-    WhatsAppLocation,
     WhatsAppReplyContext,
     WhatsAppSystemEvent,
-    WhatsAppError,
+    WhatsAppWebhookEvent,
 )
-from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
-from wax.interfaces.whatsapp.client import WhatsAppClient
 
 __all__ = [
     "WhatsAppAdapter",
     "WhatsAppClient",
+    "WhatsAppContact",
+    "WhatsAppError",
     "WhatsAppIncomingMessage",
-    "WhatsAppOutgoingMessage",
-    "WhatsAppWebhookEvent",
+    "WhatsAppLocation",
     "WhatsAppMessageStatus",
     "WhatsAppMessageType",
+    "WhatsAppOutgoingMessage",
     "WhatsAppReaction",
-    "WhatsAppContact",
-    "WhatsAppLocation",
     "WhatsAppReplyContext",
     "WhatsAppSystemEvent",
-    "WhatsAppError",
+    "WhatsAppWebhookEvent",
 ]

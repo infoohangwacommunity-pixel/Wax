@@ -15,11 +15,27 @@ outputs. The contract is stable; the implementation is replaceable (INV-07).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class InvocationContext:
+    """Who is invoking, and under what runtime trace.
+
+    Passed to every capability implementation as the second argument.
+    Capabilities must not trust it for authorization — the invoker has
+    already enforced permissions before the implementation runs.
+    """
+
+    principal_id: str
+    capability_name: str
+    execution_id: str
+    request_id: str | None = None
 
 
 class CapabilityStatus(StrEnum):

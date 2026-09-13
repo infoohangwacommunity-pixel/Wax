@@ -15,11 +15,9 @@ The model cannot grant itself more tokens by producing text.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
-from typing import Any
 
 from wax.runtime.logging import get_logger
 
@@ -62,7 +60,7 @@ class CostProtector:
         Returns True if the usage is within limits (and records it), False
         if it would exceed a cap (and does NOT record it).
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         with self._lock:
             tokens_used = self._usage.get(principal_id, {}).get(today, 0)
             msgs_used = self._messages.get(principal_id, {}).get(today, 0)

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from wax.continuity.contracts import (
-    ConversationStatus,
     DEFAULT_IDLE_TIMEOUT,
+    ConversationStatus,
 )
 from wax.runtime.logging import get_logger
 from wax.state.continuity_models import ConversationRecord
@@ -29,7 +29,7 @@ class ConversationRepository:
         principal_id: str,
         interface_kind: str,
     ) -> ConversationRecord:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = ConversationRecord(
             id=str(ULID()),
             principal_id=principal_id,
@@ -82,7 +82,7 @@ class ConversationRepository:
         execution_id: str | None = None,
     ) -> bool:
         """Update last_message_at + message_count for a conversation."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = await self.get(conversation_id)
         if record is None:
             return False
@@ -107,7 +107,7 @@ class ConversationRepository:
         Returns the count of archived conversations. Called by a periodic
         background task; safe to call repeatedly.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         idle_cutoff = now - idle_timeout
         archive_cutoff = now - archive_after_idle
 

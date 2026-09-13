@@ -29,9 +29,9 @@ from wax.media.contracts import (
 from wax.media.pipeline import MediaPipeline
 
 __all__ = [
-    "MediaKind",
-    "MediaSource",
-    "MediaExtractor",
     "MediaExtractionResult",
+    "MediaExtractor",
+    "MediaKind",
     "MediaPipeline",
+    "MediaSource",
 ]

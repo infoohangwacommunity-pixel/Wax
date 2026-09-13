@@ -19,10 +19,9 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import StrEnum
 from threading import Lock
-from typing import Any
 
-from wax.security.input_sanitizer import InjectionRisk, SanitizerResult
 from wax.runtime.logging import get_logger
+from wax.security.input_sanitizer import InjectionRisk, SanitizerResult
 
 log = get_logger(__name__)
 

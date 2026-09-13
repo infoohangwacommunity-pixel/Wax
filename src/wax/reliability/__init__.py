@@ -14,28 +14,28 @@ INVARIANTS:
 - The runtime never silently swallows failures (Directive §142)
 """
 
-from wax.reliability.retry import (
-    RetryConfig,
-    RetryExhaustedError,
-    retry_with_backoff,
-)
 from wax.reliability.circuit_breaker import (
     CircuitBreaker,
-    CircuitState,
     CircuitOpenError,
+    CircuitState,
 )
 from wax.reliability.dead_letter import (
     DeadLetterEntry,
     DeadLetterRepository,
 )
+from wax.reliability.retry import (
+    RetryConfig,
+    RetryExhaustedError,
+    retry_with_backoff,
+)
 
 __all__ = [
+    "CircuitBreaker",
+    "CircuitOpenError",
+    "CircuitState",
+    "DeadLetterEntry",
+    "DeadLetterRepository",
     "RetryConfig",
     "RetryExhaustedError",
     "retry_with_backoff",
-    "CircuitBreaker",
-    "CircuitState",
-    "CircuitOpenError",
-    "DeadLetterEntry",
-    "DeadLetterRepository",
 ]

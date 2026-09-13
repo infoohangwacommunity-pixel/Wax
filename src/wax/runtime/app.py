@@ -120,6 +120,23 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         # capability registry in create_app, roles are seeded above, and the
         # registry is reachable through services.invoker(session).)
 
+        # Phase R/V: the background work runtime — durable work that
+        # survives restarts. In-process asyncio worker (single-process
+        # deployment today; the lease design admits replicas later).
+        from wax.runtime.work import WorkRunner, capability_handler
+
+        work_runner = WorkRunner(
+            services,
+            poll_interval_seconds=settings.work_poll_interval_seconds,
+        )
+        work_runner.register_handler("capability", capability_handler)
+        services.work_runner = work_runner
+        recovered = await work_runner.recover_orphans()
+        if recovered["failed_executions"]:
+            log.warning("work.startup_recovery", **recovered)
+        work_runner.start()
+        lifecycle.on_shutdown("work_runner", work_runner.stop())
+
         try:
             yield
         finally:

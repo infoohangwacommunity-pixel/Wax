@@ -30,8 +30,8 @@ from wax.execution.repository import ExecutionRepository
 __all__ = [
     "Execution",
     "ExecutionKind",
+    "ExecutionRepository",
     "ExecutionStatus",
     "ExecutionStep",
     "StepStatus",
-    "ExecutionRepository",
 ]

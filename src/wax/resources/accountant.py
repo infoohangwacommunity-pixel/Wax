@@ -11,12 +11,10 @@ The AI cannot grant itself more resources by producing text.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from threading import Lock
 
 from wax.resources.contracts import (
     BudgetAllocation,
-    ResourceBudget,
     ResourceKind,
     ResourceUsage,
 )

@@ -18,7 +18,7 @@ Resumability pattern:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -121,7 +121,7 @@ class ExecutionRepository:
             return False
 
         execution.status = ExecutionStatus.RUNNING.value
-        execution.started_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
         await self._session.flush()
         log.info("execution.started", execution_id=execution_id)
         return True
@@ -135,7 +135,7 @@ class ExecutionRepository:
         if ExecutionStatus.SUCCEEDED.value not in allowed:
             return False
         execution.status = ExecutionStatus.SUCCEEDED.value
-        execution.ended_at = datetime.now(timezone.utc)
+        execution.ended_at = datetime.now(UTC)
         if checkpoint is not None:
             execution.checkpoint = checkpoint
         await self._session.flush()
@@ -151,7 +151,7 @@ class ExecutionRepository:
         if ExecutionStatus.FAILED.value not in allowed:
             return False
         execution.status = ExecutionStatus.FAILED.value
-        execution.ended_at = datetime.now(timezone.utc)
+        execution.ended_at = datetime.now(UTC)
         execution.error = error
         await self._session.flush()
         log.warning("execution.failed", execution_id=execution_id, error=error)
@@ -166,7 +166,7 @@ class ExecutionRepository:
         if ExecutionStatus.CANCELLED.value not in allowed:
             return False
         execution.status = ExecutionStatus.CANCELLED.value
-        execution.ended_at = datetime.now(timezone.utc)
+        execution.ended_at = datetime.now(UTC)
         await self._session.flush()
         log.info("execution.cancelled", execution_id=execution_id)
         return True

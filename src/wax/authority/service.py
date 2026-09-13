@@ -16,16 +16,14 @@ Architectural rules:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from ulid import ULID
 
-from wax.authority.models import PrincipalRole, Role
+from wax.authority.models import PrincipalRole
 from wax.authority.permissions import is_permission_granted
 from wax.runtime.logging import get_logger
 from wax.state.audit_models import AuditEvent
-from ulid import ULID
 
 log = get_logger(__name__)
 
@@ -114,6 +112,8 @@ class AuthorizationService:
         """Return all permissions granted to `principal_id` via their roles."""
         from wax.state.authority_models import (
             PrincipalRole as PR,
+        )
+        from wax.state.authority_models import (
             Role as R,
         )
 

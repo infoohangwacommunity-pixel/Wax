@@ -21,14 +21,14 @@ from wax.capabilities.contracts import (
     CapabilityInvocationResult,
     CapabilityStatus,
 )
-from wax.capabilities.registry import CapabilityRegistry
 from wax.capabilities.invoker import CapabilityInvoker
+from wax.capabilities.registry import CapabilityRegistry
 
 __all__ = [
     "CapabilityDescriptor",
     "CapabilityInvocationRequest",
     "CapabilityInvocationResult",
-    "CapabilityStatus",
-    "CapabilityRegistry",
     "CapabilityInvoker",
+    "CapabilityRegistry",
+    "CapabilityStatus",
 ]

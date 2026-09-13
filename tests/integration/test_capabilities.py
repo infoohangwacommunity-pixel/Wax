@@ -92,7 +92,7 @@ class TestRegistry:
         assert registry.get_status("echo") == CapabilityStatus.DEGRADED
 
 
-async def echo_impl_replacement(inputs: dict) -> dict:
+async def echo_impl_replacement(inputs: dict, ctx: object = None) -> dict:
     return {"echo": inputs}
 
 
@@ -357,10 +357,10 @@ class TestInvokerAuthorization:
         assert result.outcome == "timeout"
 
 
-async def _failing_impl(inputs: dict) -> dict:
+async def _failing_impl(inputs: dict, ctx: object = None) -> dict:
     raise RuntimeError("intentional failure")
 
 
-async def _slow_impl(inputs: dict) -> dict:
+async def _slow_impl(inputs: dict, ctx: object = None) -> dict:
     await asyncio.sleep(2.0)
     return {"result": "should never reach here"}

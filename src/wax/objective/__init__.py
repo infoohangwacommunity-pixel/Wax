@@ -27,7 +27,7 @@ from wax.objective.service import ObjectiveService
 __all__ = [
     "Objective",
     "ObjectiveKind",
-    "ObjectiveStatus",
     "ObjectiveRepository",
     "ObjectiveService",
+    "ObjectiveStatus",
 ]
