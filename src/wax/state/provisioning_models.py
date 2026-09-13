@@ -34,7 +34,9 @@ class ProvisionedResourceRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # browser session, temp memory) need no migration.
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active"
+    )
 
     # Ownership: who asked, under which execution.
     principal_id: Mapped[str | None] = mapped_column(String(26), nullable=True)

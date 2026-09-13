@@ -58,7 +58,9 @@ class WorkItemRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Lifecycle: pending → leased → running → succeeded | failed(→pending)
     # | dead | cancelled
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
 
     # The human this work belongs to (identity continuity across time).
     principal_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
@@ -97,8 +99,12 @@ class WorkItemRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # semantics apply.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
 
     # Claim lease (crash safety across workers/restarts).
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)

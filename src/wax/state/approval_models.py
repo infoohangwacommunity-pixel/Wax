@@ -77,7 +77,9 @@ class PendingApprovalRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # same request (no scope creep via mutated inputs).
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default=STATUS_PENDING)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=STATUS_PENDING, server_default=STATUS_PENDING
+    )
 
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
