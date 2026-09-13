@@ -737,6 +737,12 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
     register_code_run_capability(registry, services)
 
+    # --- workspace.acquire: artifact acquisition into isolated workspaces
+    # (integrity-verified, allowlisted, cached, audited — ADR-0016).
+    from wax.capabilities.workspace_acquire import register_workspace_acquire_capability
+
+    register_workspace_acquire_capability(registry, services)
+
     # --- approval surface (the AI can inspect/cancel, never decide) ----
 
     async def approval_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
@@ -793,7 +799,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
     registry.register(MEMORY_CONSOLIDATE_DESCRIPTOR, memory_consolidate_impl)
-    log.info("capability.runtime_registered", count=14)
+    log.info("capability.runtime_registered", count=15)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
