@@ -74,9 +74,7 @@ async def _store(
 
 
 class TestRelevanceRetrieval:
-    async def test_relevant_old_memory_beats_irrelevant_new_one(
-        self, principal_id
-    ) -> None:
+    async def test_relevant_old_memory_beats_irrelevant_new_one(self, principal_id) -> None:
         await _store(
             principal_id,
             summary="User is preparing for the WAEC physics exam in June",
@@ -120,9 +118,7 @@ class TestRelevanceRetrieval:
     async def test_garbage_query_returns_empty(self, principal_id) -> None:
         await _store(principal_id, summary="something", content={"a": 1})
         async with db_session() as session:
-            results = await MemoryRepository(session).search_relevant(
-                principal_id, "??!"
-            )
+            results = await MemoryRepository(session).search_relevant(principal_id, "??!")
         assert results == []
 
     async def test_zero_overlap_excluded(self, principal_id) -> None:
@@ -139,9 +135,7 @@ class TestRelevanceRetrieval:
 
 
 class TestContextComposition:
-    async def test_context_merges_recency_and_relevance_with_reasons(
-        self, principal_id
-    ) -> None:
+    async def test_context_merges_recency_and_relevance_with_reasons(self, principal_id) -> None:
         from wax.continuity.service import ContinuityService
 
         await _store(
@@ -256,9 +250,7 @@ class TestMemoryCapabilities:
         assert found["count"] >= 1
         assert any("Tunde" in m["summary"] for m in found["memories"])
 
-        forgotten = await memory_forget_impl(
-            {"memory_id": stored["memory_id"]}, ctx
-        )
+        forgotten = await memory_forget_impl({"memory_id": stored["memory_id"]}, ctx)
         assert forgotten["forgotten"] is True
 
         after = await memory_search_impl({"query": "brother Tunde"}, ctx)
@@ -283,9 +275,7 @@ class TestMemoryCapabilities:
             execution_id="e2",
             request_id="r2",
         )
-        stored = await memory_store_impl(
-            {"content": {"secret": "diary entry"}}, owner_ctx
-        )
+        stored = await memory_store_impl({"content": {"secret": "diary entry"}}, owner_ctx)
         with pytest.raises(ValueError, match="different principal"):
             await memory_forget_impl({"memory_id": stored["memory_id"]}, attacker_ctx)
 
@@ -304,6 +294,180 @@ class TestMemoryCapabilities:
         with pytest.raises(ValueError, match="kind"):
             await memory_store_impl({"content": {"a": 1}, "kind": "nostalgic"}, ctx)
         with pytest.raises(ValueError, match="expires_at"):
+            await memory_store_impl({"content": {"a": 1}, "expires_at": "not-a-date"}, ctx)
+
+
+class TestMemoryRevisionAndConsolidation:
+    """Memory lifecycle completion (ADR-0012): revision via supersedes,
+    consolidation of transient evidence into durable representations.
+    The runtime enforces ownership + lifecycle; the intelligence decides
+    meaning. Superseded evidence is retained for audit, excluded from
+    retrieval."""
+
+    def _ctx(self, principal: str, name: str = "memory.store"):
+        from wax.capabilities.contracts import InvocationContext
+
+        return InvocationContext(
+            principal_id=principal,
+            capability_name=name,
+            execution_id="exec-cons",
+            request_id="req-cons",
+        )
+
+    async def test_store_with_supersedes_revises_and_links(self) -> None:
+        from wax.capabilities.runtime_capabilities import memory_store_impl
+
+        ctx = self._ctx("p-revise")
+        old = await memory_store_impl(
+            {"content": {"fact": "user lives in Lagos"}, "summary": "Lives in Lagos"},
+            ctx,
+        )
+        new = await memory_store_impl(
+            {
+                "content": {"fact": "user moved to Abuja"},
+                "summary": "Lives in Abuja",
+                "supersedes": old["memory_id"],
+            },
+            ctx,
+        )
+
+        async with db_session() as session:
+            repo = MemoryRepository(session)
+            old_rec = await repo.get(old["memory_id"])
+            new_rec = await repo.get(new["memory_id"])
+            assert old_rec.status == "superseded"
+            assert old_rec.superseded_by == new_rec.id
+            assert new_rec.status == "active"
+            active = await repo.list_active_for_principal("p-revise")
+        assert [m.id for m in active] == [new_rec.id]
+
+    async def test_supersedes_is_ownership_checked(self) -> None:
+        from wax.capabilities.runtime_capabilities import memory_store_impl
+
+        owner = self._ctx("p-owner2")
+        attacker = self._ctx("p-attacker2")
+        old = await memory_store_impl({"content": {"fact": "private note"}}, owner)
+        with pytest.raises(ValueError, match="another principal"):
             await memory_store_impl(
-                {"content": {"a": 1}, "expires_at": "not-a-date"}, ctx
+                {"content": {"fact": "forged"}, "supersedes": old["memory_id"]},
+                attacker,
             )
+
+    async def test_supersedes_rejects_non_active_targets(self) -> None:
+        from wax.capabilities.runtime_capabilities import memory_store_impl
+
+        ctx = self._ctx("p-revise2")
+        forgotten = await memory_store_impl({"content": {"x": 1}}, ctx)
+        await memory_store_impl({"content": {"x": 2}, "supersedes": forgotten["memory_id"]}, ctx)
+        # The target is now superseded — a second revision against it must
+        # fail honestly (it is no longer an active memory).
+        with pytest.raises(ValueError, match="No active memory"):
+            await memory_store_impl(
+                {"content": {"x": 3}, "supersedes": forgotten["memory_id"]}, ctx
+            )
+
+    async def test_consolidation_supersedes_sources_and_links_provenance(self) -> None:
+        from wax.capabilities.runtime_capabilities import (
+            memory_consolidate_impl,
+            memory_search_impl,
+            memory_store_impl,
+        )
+
+        pid = "p-consolidate"
+        ctx_store = self._ctx(pid)
+        s1 = await memory_store_impl(
+            {"kind": "episodic", "content": {"note": "failed WAEC physics mock 1"}},
+            ctx_store,
+        )
+        s2 = await memory_store_impl(
+            {"kind": "episodic", "content": {"note": "failed mock 2, weak on optics"}},
+            ctx_store,
+        )
+        s3 = await memory_store_impl(
+            {"kind": "episodic", "content": {"note": "improved after practice set"}},
+            ctx_store,
+        )
+
+        ctx_cons = self._ctx(pid, "memory.consolidate")
+        result = await memory_consolidate_impl(
+            {
+                "source_ids": [s1["memory_id"], s2["memory_id"], s3["memory_id"]],
+                "content": {"finding": "optics is the recurring weak area"},
+                "summary": "Optics is the weak area across physics mocks",
+                "kind": "semantic",
+                "confidence": 0.85,
+            },
+            ctx_cons,
+        )
+        assert result["consolidated_count"] == 3
+        assert sorted(result["superseded_ids"]) == sorted(
+            [s1["memory_id"], s2["memory_id"], s3["memory_id"]]
+        )
+
+        async with db_session() as session:
+            repo = MemoryRepository(session)
+            record = await repo.get(result["memory_id"])
+            assert record.provenance == "consolidation"
+            assert record.status == "active"
+            for sid in result["superseded_ids"]:
+                src = await repo.get(sid)
+                assert src.status == "superseded"
+                assert src.superseded_by == record.id
+
+        # Retrieval: the sources left context; the consolidated note is
+        # what remains relevant.
+        from wax.capabilities.runtime_capabilities import memory_search_impl
+
+        found = await memory_search_impl({"query": "optics weak area"}, ctx_store)
+        assert any(m["id"] == record.id for m in found["memories"])
+        assert all(m["id"] not in result["superseded_ids"] for m in found["memories"])
+
+    async def test_consolidation_refuses_foreign_or_inactive_sources(self) -> None:
+        from wax.capabilities.runtime_capabilities import (
+            memory_consolidate_impl,
+            memory_store_impl,
+        )
+
+        owner = self._ctx("p-owner3")
+        foreign = await memory_store_impl({"content": {"secret": "x"}}, owner)
+
+        ctx = self._ctx("p-attacker3", "memory.consolidate")
+        with pytest.raises(ValueError, match="different principal"):
+            await memory_consolidate_impl(
+                {"source_ids": [foreign["memory_id"]], "content": {"steal": True}},
+                ctx,
+            )
+
+        # Nonexistent source: honest refusal, nothing created.
+        with pytest.raises(ValueError, match="not an active memory"):
+            await memory_consolidate_impl({"source_ids": ["01NOPE"], "content": {"x": 1}}, ctx)
+
+    async def test_consolidation_can_keep_sources_active(self) -> None:
+        from wax.capabilities.runtime_capabilities import (
+            memory_consolidate_impl,
+            memory_store_impl,
+        )
+
+        pid = "p-keep"
+        ctx_store = self._ctx(pid)
+        s1 = await memory_store_impl({"content": {"note": "likes summaries"}}, ctx_store)
+        s2 = await memory_store_impl({"content": {"note": "prefers voice notes"}}, ctx_store)
+
+        ctx = self._ctx(pid, "memory.consolidate")
+        result = await memory_consolidate_impl(
+            {
+                "source_ids": [s1["memory_id"], s2["memory_id"]],
+                "content": {"pattern": "prefers concise, rich-media replies"},
+                "supersede_sources": False,
+            },
+            ctx,
+        )
+        assert result["superseded_ids"] == []
+
+        async with db_session() as session:
+            repo = MemoryRepository(session)
+            record = await repo.get(result["memory_id"])
+            # Provenance link lives in the content when sources stay active.
+            assert record.content["consolidated_from"] == [s1["memory_id"], s2["memory_id"]]
+            for sid in (s1["memory_id"], s2["memory_id"]):
+                assert (await repo.get(sid)).status == "active"

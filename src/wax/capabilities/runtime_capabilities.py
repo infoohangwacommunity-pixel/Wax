@@ -631,7 +631,8 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(MEMORY_STORE_DESCRIPTOR, memory_store_impl)
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
-    log.info("capability.runtime_registered", count=10)
+    registry.register(MEMORY_CONSOLIDATE_DESCRIPTOR, memory_consolidate_impl)
+    log.info("capability.runtime_registered", count=11)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -649,8 +650,10 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
     name="memory.store",
     description="Persist a memory for the current principal (structured "
     "evidence, not a frozen category). Pass expires_at for anything that "
-    "should be forgotten automatically.",
-    version="1.0.0",
+    "should be forgotten automatically. Pass supersedes=<memory_id> when "
+    "this record REPLACES an older active memory of the same principal "
+    "(revision: the old record stays for audit but leaves retrieval).",
+    version="1.1.0",
     input_schema={
         "type": "object",
         "properties": {
@@ -669,12 +672,20 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
                 "description": "ISO-8601 datetime; after this the runtime forgets it",
             },
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "supersedes": {
+                "type": "string",
+                "description": "memory_id this record replaces (ownership-checked)",
+            },
         },
         "required": ["content"],
     },
     output_schema={
         "type": "object",
-        "properties": {"memory_id": {"type": "string"}, "kind": {"type": "string"}},
+        "properties": {
+            "memory_id": {"type": "string"},
+            "kind": {"type": "string"},
+            "superseded": {"type": "string"},
+        },
     },
     required_permission="capability.invoke:built_in",
     timeout_seconds=5.0,
@@ -728,6 +739,69 @@ MEMORY_FORGET_DESCRIPTOR = CapabilityDescriptor(
     is_destructive=True,  # crosses the destructive agency gate
 )
 
+# Consolidation bounds: at most this many sources per consolidated record
+# (keeps the operation bounded and the provenance chain inspectable).
+MAX_CONSOLIDATION_SOURCES = 20
+
+MEMORY_CONSOLIDATE_DESCRIPTOR = CapabilityDescriptor(
+    name="memory.consolidate",
+    description=(
+        "Consolidate several of the principal's memories into ONE durable "
+        "representation (e.g. transient session evidence into a stable "
+        "fact). The runtime verifies every source, links provenance, and "
+        "by default supersedes the sources (they stay queryable for audit "
+        "but leave retrieval). You interpret the meaning; the runtime "
+        "enforces the lifecycle."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "source_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": MAX_CONSOLIDATION_SOURCES,
+                "description": "Active memories of this principal to consolidate",
+            },
+            "content": {
+                "type": "object",
+                "description": "The consolidated evidence (JSON object)",
+            },
+            "summary": {"type": "string", "maxLength": 2000},
+            "kind": {
+                "type": "string",
+                "enum": list(MEMORY_KINDS),
+                "default": "semantic",
+                "description": "Durable representation kind",
+            },
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "expires_at": {
+                "type": "string",
+                "description": "Optional retention for the consolidated record",
+            },
+            "supersede_sources": {
+                "type": "boolean",
+                "default": True,
+                "description": "Mark sources superseded by the new record",
+            },
+        },
+        "required": ["source_ids", "content"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string"},
+            "consolidated_count": {"type": "integer"},
+            "superseded_ids": {"type": "array"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
 
 async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
     from datetime import datetime
@@ -759,8 +833,23 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
     if confidence is not None and not (0.0 <= float(confidence) <= 1.0):
         raise ValueError("confidence must be between 0 and 1")
 
+    supersedes_id = inputs.get("supersedes")
+    if supersedes_id is not None and not (isinstance(supersedes_id, str) and supersedes_id):
+        raise ValueError("supersedes must be a memory_id string")
+
     async with db_session() as session:
-        record = await MemoryRepository(session).create(
+        repo = MemoryRepository(session)
+
+        # Revision path: verify the target BEFORE creating the replacement
+        # so a bad supersedes request creates nothing (no orphan evidence).
+        if supersedes_id:
+            old = await repo.get(supersedes_id)
+            if old is None or old.status != "active":
+                raise ValueError(f"No active memory {supersedes_id} to supersede")
+            if old.principal_id != ctx.principal_id:
+                raise ValueError("supersedes targets another principal's memory")
+
+        record = await repo.create(
             MemoryCreate(
                 principal_id=ctx.principal_id,
                 kind=MemoryKind(kind),
@@ -772,9 +861,15 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
                 summary=summary[:2000] if summary else None,
             )
         )
+        if supersedes_id:
+            await repo.supersede(supersedes_id, record.id)
         await session.commit()
 
-    return {"memory_id": record.id, "kind": record.kind}
+    return {
+        "memory_id": record.id,
+        "kind": record.kind,
+        "superseded": supersedes_id,
+    }
 
 
 async def memory_search_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
@@ -826,3 +921,109 @@ async def memory_forget_impl(inputs: dict[str, Any], ctx: InvocationContext) -> 
         await session.commit()
 
     return {"memory_id": memory_id, "forgotten": forgotten}
+
+
+async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    """Consolidate transient evidence into one durable representation.
+
+    The intelligence performs the interpretation (it writes the new
+    content/summary); the runtime enforces the lifecycle mechanics: every
+    source must be an ACTIVE memory of the calling principal, provenance
+    records the operation, and sources are (by default) superseded by the
+    new record — retained for audit, excluded from retrieval. This is the
+    WAX shape of memory consolidation: evidence → evaluation (the model's)
+    → durable representation → supersession — with NO hardcoded rule
+    engine deciding WHAT the durable meaning is.
+    """
+    from datetime import datetime
+
+    from wax.memory.contracts import MemoryCreate, MemoryKind
+    from wax.memory.repository import MemoryRepository
+    from wax.state.engine import db_session
+
+    source_ids = inputs.get("source_ids")
+    if (
+        not isinstance(source_ids, list)
+        or not source_ids
+        or len(source_ids) > MAX_CONSOLIDATION_SOURCES
+        or not all(isinstance(s, str) and s for s in source_ids)
+    ):
+        raise ValueError(
+            f"source_ids must be a non-empty list of memory ids (max {MAX_CONSOLIDATION_SOURCES})"
+        )
+    if len(set(source_ids)) != len(source_ids):
+        raise ValueError("source_ids must be distinct")
+
+    content = inputs.get("content")
+    if not isinstance(content, dict) or not content:
+        raise ValueError("content must be a non-empty JSON object")
+
+    kind = inputs.get("kind", "semantic")
+    if kind not in MEMORY_KINDS:
+        raise ValueError(f"kind must be one of {list(MEMORY_KINDS)}")
+
+    summary = inputs.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        raise ValueError("summary must be a string")
+
+    confidence = inputs.get("confidence")
+    if confidence is not None and not (0.0 <= float(confidence) <= 1.0):
+        raise ValueError("confidence must be between 0 and 1")
+
+    expires_at = None
+    if inputs.get("expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(str(inputs["expires_at"]).replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(f"expires_at is not a valid ISO-8601 datetime: {e}") from e
+
+    supersede_sources = inputs.get("supersede_sources", True)
+    if not isinstance(supersede_sources, bool):
+        raise ValueError("supersede_sources must be a boolean")
+
+    async with db_session() as session:
+        repo = MemoryRepository(session)
+
+        # Verify EVERY source before creating anything: a consolidation
+        # that would partially fail must not leave partial state.
+        sources = []
+        for sid in source_ids:
+            memory = await repo.get(sid)
+            if memory is None or memory.status != "active":
+                raise ValueError(f"Source {sid} is not an active memory")
+            if memory.principal_id != ctx.principal_id:
+                raise ValueError(f"Source {sid} belongs to a different principal")
+            sources.append(memory)
+
+        # Provenance: when sources stay active (no supersession), the link
+        # to them lives in the content itself; when superseded, the
+        # superseded_by chain is the audit trail.
+        stored_content = dict(content)
+        if not supersede_sources:
+            stored_content["consolidated_from"] = source_ids
+
+        record = await repo.create(
+            MemoryCreate(
+                principal_id=ctx.principal_id,
+                kind=MemoryKind(kind),
+                content=stored_content,
+                provenance="consolidation",
+                source_execution_id=ctx.execution_id,
+                confidence=float(confidence) if confidence is not None else None,
+                expires_at=expires_at,
+                summary=summary[:2000] if summary else None,
+            )
+        )
+
+        superseded_ids: list[str] = []
+        if supersede_sources:
+            for sid in source_ids:
+                if await repo.supersede(sid, record.id):
+                    superseded_ids.append(sid)
+        await session.commit()
+
+    return {
+        "memory_id": record.id,
+        "consolidated_count": len(source_ids),
+        "superseded_ids": superseded_ids,
+    }
