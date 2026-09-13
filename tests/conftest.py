@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 from uuid import uuid4
@@ -17,6 +18,25 @@ from wax.runtime.app import create_app
 def anyio_backend() -> str:
     """Use asyncio for anyio-driven tests."""
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _ensure_fresh_stdout(_isolate_env: Iterator[None]) -> Iterator[None]:
+    """Ensure structlog writes to a fresh sys.stdout on every test.
+
+    Some tests use capsys which replaces sys.stdout; structlog caches a
+    reference to the captured stream, which gets closed when capsys tears
+    down. Rebinding sys.stdout to the real stdout before each test avoids
+    "I/O operation on closed file" errors.
+    """
+    import structlog
+
+    # Force structlog to rebind to the current (fresh) sys.stdout.
+    structlog.reset_defaults()
+    from wax.runtime.logging import configure_logging
+
+    configure_logging(settings_for_testing())
+    yield
 
 
 @pytest.fixture
