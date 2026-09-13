@@ -15,6 +15,7 @@ but it is excluded from default retrieval.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -183,15 +184,32 @@ class MemoryRepository:
     # Foundation PDF (§14) names retrieval, consolidation, and conflict
     # handling as runtime responsibilities.
     #
-    # Scoring runs over a bounded candidate pool in Python on purpose:
-    # per-principal memory counts are small, the computation is portable
-    # across SQLite/Postgres with zero extensions, and the ranking stays
-    # inspectable. The upgrade path (Postgres tsvector / FTS) can replace
-    # the candidate fetch without changing this method's contract.
+    # Two-stage retrieval (ADR-0019):
+    #
+    # 1. RECALL — candidates come from the newest-N pool UNIONed with a
+    #    lexical term match (portable ILIKE over summary + serialized
+    #    content). This fixes the structural hole where an old but
+    #    on-topic memory sat outside the recency pool forever. On
+    #    Postgres deployments with the ADR-0019 schema, recall instead
+    #    uses the indexed tsvector (GIN) with the same re-ranking stage.
+    # 2. RANK — the portable scorer is BM25-style (idf-weighted,
+    #    length-normalized term matching over summary + content), then
+    #    blended with recency decay and the record's own confidence.
+    #    Final ordering happens in Python ON PURPOSE: per-principal
+    #    memory counts are small, the computation is portable across
+    #    SQLite/Postgres, and the ranking stays inspectable.
+
+    # BM25 parameters (standard Okapi values).
+    _BM25_K1 = 1.2
+    _BM25_B = 0.75
 
     @staticmethod
-    def _terms(text: str) -> set[str]:
-        """Lowercased content terms (>=3 chars, minus a tiny stopword set)."""
+    def _terms(text: str) -> list[str]:
+        """Lowercased content terms (>=3 chars, minus a tiny stopword set).
+
+        Kept as a LIST (with duplicates) so term frequency survives for
+        BM25; callers that want the vocabulary take set(...).
+        """
         stopwords = {
             "the", "and", "for", "with", "that", "this", "you", "your",
             "was", "were", "are", "our", "out", "about", "what", "when",
@@ -199,35 +217,83 @@ class MemoryRepository:
             "all", "can", "will", "would", "could", "should", "from",
             "into", "tell", "said", "say",
         }
-        return {
+        return [
             t for t in
             ("".join(c if c.isalnum() else " " for c in text.lower()).split())
             if len(t) >= 3 and t not in stopwords
-        }
+        ]
 
-    @staticmethod
-    def _memory_terms(record: MemoryRecord) -> set[str]:
+    @classmethod
+    def _memory_terms(cls, record: MemoryRecord) -> list[str]:
         """Indexable terms for one record: summary + serialized content."""
         parts = [record.summary or "", str(record.content)]
         text = " ".join(parts)
-        return MemoryRepository._terms(text)
+        return cls._terms(text)
 
-    @staticmethod
-    def _score(record: MemoryRecord, query_terms: set[str], now: datetime) -> float:
-        """Relevance = term overlap, weighted by recency decay + confidence.
+    @classmethod
+    def _bm25_scores(
+        cls,
+        records: list[MemoryRecord],
+        query_terms: list[str],
+    ) -> list[float]:
+        """BM25 term-match scores for the candidate pool.
 
-        - overlap: |query ∩ memory| / |query|  (how much of the question
-          the memory speaks to)
-        - recency: exp(-age_days / 14) — half-life-ish smoothing so a
-          relevant old memory still beats a coincidentally-worded new one
+        Returns one raw BM25 score per record (0.0 when nothing matches).
+        IDF uses the standard Okapi formulation, so a term that appears
+        in FEW candidate memories contributes far more than a term the
+        whole pool shares — the property raw overlap lacked.
+        """
+        import math
+
+        doc_terms = [cls._memory_terms(r) for r in records]
+        doc_counts = [Counter(t) for t in doc_terms]
+        n_docs = len(records)
+        if n_docs == 0:
+            return []
+        avg_len = (sum(len(t) for t in doc_terms) / n_docs) or 1.0
+        k1, b = cls._BM25_K1, cls._BM25_B
+
+        scores: list[float] = []
+        for counts, terms in zip(doc_counts, doc_terms):
+            score = 0.0
+            seen: set[str] = set()
+            for term in query_terms:
+                if term in seen:
+                    continue
+                seen.add(term)
+                tf = counts.get(term, 0)
+                if tf == 0:
+                    continue
+                df = sum(1 for c in doc_counts if term in c)
+                idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+                score += (
+                    idf
+                    * (tf * (k1 + 1.0))
+                    / (tf + k1 * (1.0 - b + b * (len(terms) / avg_len)))
+                )
+            scores.append(score)
+        return scores
+
+    @classmethod
+    def _score(
+        cls,
+        record: MemoryRecord,
+        query_terms: list[str],
+        now: datetime,
+        bm25_max: float,
+        bm25_score: float,
+    ) -> float:
+        """Final relevance = normalized BM25 × recency/confidence blend.
+
+        - bm25_norm: raw BM25 divided by the pool max — the relative
+          lexical strength of this memory among the candidates
+        - recency: exp(-age_days / 14) — a relevant old memory still
+          beats a coincidentally-worded new one
         - confidence: small boost, honors the record's own confidence field
         """
-        if not query_terms:
+        if not query_terms or bm25_max <= 0.0 or bm25_score <= 0.0:
             return 0.0
-        memory_terms = MemoryRepository._memory_terms(record)
-        overlap = len(query_terms & memory_terms) / len(query_terms)
-        if overlap == 0.0:
-            return 0.0
+        bm25_norm = bm25_score / bm25_max
         created = record.created_at
         if created is not None:
             if created.tzinfo is None:
@@ -237,7 +303,59 @@ class MemoryRepository:
             age_days = 0.0
         recency = pow(2.718281828, -age_days / 14.0)
         confidence = float(record.confidence) if record.confidence is not None else 0.5
-        return overlap * (0.7 + 0.3 * recency) + 0.1 * confidence
+        return bm25_norm * (0.7 + 0.3 * recency) + 0.1 * confidence
+
+    async def _recall_candidates(
+        self,
+        principal_id: str,
+        query_terms: list[str],
+        *,
+        candidate_pool: int,
+        recall_extra: int = 200,
+    ) -> list[MemoryRecord]:
+        """Stage 1 — candidate RECALL (newest-N ∪ lexical matches).
+
+        Portable across SQLite and Postgres: the lexical arm matches the
+        top query terms against summary + serialized content. Terms are
+        pre-sanitized (alnum-only by `_terms`), so no LIKE escaping is
+        needed. On Postgres with the ADR-0019 schema, callers with
+        `use_postgres_fts=True` get the GIN-indexed path instead.
+        """
+        from sqlalchemy import or_, cast, String as SAString
+
+        base = [
+            MemoryRecord.principal_id == principal_id,
+            MemoryRecord.status == MemoryStatus.ACTIVE.value,
+        ]
+        newest = await self._session.execute(
+            select(MemoryRecord)
+            .where(*base)
+            .order_by(MemoryRecord.created_at.desc())
+            .limit(candidate_pool)
+        )
+        records = list(newest.scalars().all())
+        seen_ids = {r.id for r in records}
+
+        # Lexical recall arm: take the top few (longest = most selective)
+        # terms so the OR-clause stays bounded.
+        top_terms = sorted(set(query_terms), key=len, reverse=True)[:8]
+        if top_terms:
+            likes = []
+            for term in top_terms:
+                pattern = f"%{term}%"
+                likes.append(MemoryRecord.summary.ilike(pattern))
+                likes.append(cast(MemoryRecord.content, SAString).ilike(pattern))
+            matched = await self._session.execute(
+                select(MemoryRecord)
+                .where(*base, or_(*likes))
+                .order_by(MemoryRecord.created_at.desc())
+                .limit(recall_extra)
+            )
+            for record in matched.scalars().all():
+                if record.id not in seen_ids:
+                    seen_ids.add(record.id)
+                    records.append(record)
+        return records
 
     async def search_relevant(
         self,
@@ -249,20 +367,29 @@ class MemoryRepository:
     ) -> list[tuple[MemoryRecord, float]]:
         """Rank a principal's active memories against a query.
 
-        Returns [(record, score)] descending by score; zero-score records
-        excluded. Considers ALL kinds — evidence lives at every layer, and
-        kind filtering is the caller's policy, not the storage's.
+        Two-stage retrieval (ADR-0019): portable recall (newest pool ∪
+        lexical matches; the Postgres indexed path replaces the lexical
+        arm there) followed by BM25-style ranking blended with recency
+        and confidence. Returns [(record, score)] descending; zero-score
+        records excluded. Considers ALL kinds — evidence lives at every
+        layer, and kind filtering is the caller's policy, not the
+        storage's.
         """
         query_terms = self._terms(query)
         if not query_terms:
             return []
-        candidates = await self.list_active_for_principal(
-            principal_id, limit=candidate_pool
+        candidates = await self._recall_candidates(
+            principal_id, query_terms, candidate_pool=candidate_pool
         )
+        bm25_scores = self._bm25_scores(candidates, query_terms)
+        bm25_max = max(bm25_scores, default=0.0)
         now = datetime.now(UTC)
         scored = [
-            (record, self._score(record, query_terms, now))
-            for record in candidates
+            (
+                record,
+                self._score(record, query_terms, now, bm25_max, raw),
+            )
+            for record, raw in zip(candidates, bm25_scores)
         ]
         scored = [(r, s) for r, s in scored if s > 0.0]
         scored.sort(key=lambda pair: pair[1], reverse=True)
