@@ -32,6 +32,7 @@ INVARIANTS:
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from wax.authority.seed import DEFAULT_ROLE_FOR_NEW_PRINCIPALS, ensure_principal_role
+from wax.capabilities.contracts import CapabilityInvocationResult
 from wax.continuity.contracts import ContinuityContext
 from wax.continuity.service import ContinuityService, ConversationService
 from wax.core.exceptions import WaxStateConflictError
@@ -49,7 +51,13 @@ from wax.execution.contracts import ExecutionKind
 from wax.execution.repository import ExecutionRepository
 from wax.identity.contracts import ALLOWED_CREDENTIAL_KINDS
 from wax.identity.repository import PrincipalRepository
-from wax.intelligence.contracts import LLMMessage, LLMRequest, MessageRole
+from wax.intelligence.contracts import (
+    LLMMessage,
+    LLMRequest,
+    MessageRole,
+    ToolCall,
+    ToolSpec,
+)
 from wax.intelligence.service import IntelligenceService
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
@@ -283,6 +291,7 @@ class RuntimeBridge:
         # after a rollback these ORM attributes are expired and accessing
         # them would trigger synchronous IO (MissingGreenlet).
         principal_id = principal.id
+        principal_display = principal.display_name
         execution_id = execution.id
         objective_id = objective.id
 
@@ -323,7 +332,13 @@ class RuntimeBridge:
         # 8. Intelligence + persistence — the transactional unit of work
         try:
             response_text = await self._run_intelligence(
-                session, execution.id, principal, request, context, sanitizer_result
+                session,
+                execution_id,
+                principal_id,
+                principal_display,
+                request,
+                context,
+                sanitizer_result,
             )
 
             # 9. Memory of the exchange
@@ -396,73 +411,269 @@ class RuntimeBridge:
         self,
         session: AsyncSession,
         execution_id: str,
-        principal: Principal,
+        principal_id: str,
+        principal_display: str | None,
         request: RuntimeRequest,
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
     ) -> str:
-        """Run the intelligence step and return the response text.
+        """Run the intelligence loop and return the final response text.
 
-        Consumes the execution's LLM budget and records usage to the cost
-        protector + metrics. Raises on failure — the caller owns the
-        failure semantics.
+        The model may request capabilities via tool calls. Every request
+        passes: agency gate (policy + audit) → authority check → budget
+        consumption → CapabilityInvoker (the sole effect enforcement
+        point). Results return to the model as tool messages; the loop is
+        bounded by settings.max_tool_rounds.
+
+        Raises on failure — the caller owns the failure semantics.
         """
         accountant = self._services.resource_accountant
-        if not accountant.try_consume(
-            ResourceUsage(execution_id, ResourceKind.LLM_CALLS, 1.0, notes="bridge")
-        ):
-            raise WaxStateConflictError(
-                f"Resource budget exhausted before LLM call (execution={execution_id})"
+        metrics = self._services.metrics
+        exec_repo = ExecutionRepository(session)
+
+        messages = self._build_messages(principal_display, request, context, sanitizer_result)
+        tools = self._capability_tools()
+        max_rounds = max(0, int(self._services.settings.max_tool_rounds))
+
+        final_text = ""
+        last_content = ""
+        for round_index in range(max_rounds + 1):
+            if not accountant.try_consume(
+                ResourceUsage(execution_id, ResourceKind.LLM_CALLS, 1.0, notes="bridge")
+            ):
+                raise WaxStateConflictError(f"LLM call budget exhausted (execution={execution_id})")
+
+            started = time.perf_counter()
+            llm_response = await self._intelligence.complete(
+                LLMRequest(messages=messages, tools=tools, request_id=execution_id)
+            )
+            duration_ms = (time.perf_counter() - started) * 1000
+
+            provider = llm_response.provider.value
+            model = llm_response.model
+            metrics.observe_llm_latency(duration_ms, provider=provider, model=model)
+            tokens_total = int(llm_response.usage.get("tokens_total", 0))
+            accountant.try_consume(
+                ResourceUsage(execution_id, ResourceKind.LLM_TOKENS, float(tokens_total))
+            )
+            metrics.add_llm_tokens(provider=provider, model=model, tokens_total=tokens_total)
+            self._services.cost_protector.check_and_record(
+                principal_id, tokens=tokens_total, messages=0
+            )
+            last_content = llm_response.content or last_content
+
+            if not llm_response.tool_calls:
+                await exec_repo.record_step(
+                    execution_id,
+                    kind="llm.complete",
+                    inputs={"message_count": len(messages), "round": round_index},
+                    outputs={
+                        "chars": len(llm_response.content),
+                        "finish_reason": llm_response.finish_reason,
+                        "tokens_total": tokens_total,
+                        "latency_ms": round(duration_ms, 2),
+                    },
+                )
+                final_text = llm_response.content
+                break
+
+            if round_index == max_rounds:
+                # The last allowed LLM call requested MORE tools. The round
+                # budget is spent: do not execute, and be honest about it.
+                break
+
+            # Replay the assistant's tool-call turn verbatim for the provider.
+            messages.append(
+                LLMMessage(
+                    role=MessageRole.ASSISTANT,
+                    content=llm_response.content,
+                    tool_calls=llm_response.tool_calls,
+                )
             )
 
-        messages = self._build_messages(principal, request, context, sanitizer_result)
+            for call in llm_response.tool_calls:
+                result = await self._invoke_capability_with_gates(
+                    session,
+                    execution_id=execution_id,
+                    principal_id=principal_id,
+                    call=call,
+                )
+                result_payload: dict[str, Any] = {"outcome": result.outcome}
+                if result.outputs is not None:
+                    result_payload["outputs"] = result.outputs
+                if result.error:
+                    result_payload["error"] = result.error
+                messages.append(
+                    LLMMessage(
+                        role=MessageRole.TOOL,
+                        content=json.dumps(result_payload, default=str)[:8000],
+                        tool_call_id=call.id,
+                        name=call.name,
+                    )
+                )
 
-        started = time.perf_counter()
-        llm_response = await self._intelligence.complete(
-            LLMRequest(messages=messages, request_id=execution_id)
-        )
-        duration_ms = (time.perf_counter() - started) * 1000
-
-        metrics = self._services.metrics
-        provider = llm_response.provider.value
-        model = llm_response.model
-        metrics.observe_llm_latency(duration_ms, provider=provider, model=model)
-
-        tokens_total = int(llm_response.usage.get("tokens_total", 0))
-        accountant.try_consume(
-            ResourceUsage(execution_id, ResourceKind.LLM_TOKENS, float(tokens_total))
-        )
-        metrics.add_llm_tokens(provider=provider, model=model, tokens_total=tokens_total)
-        self._services.cost_protector.check_and_record(
-            principal.id, tokens=tokens_total, messages=0
-        )
-
-        exec_repo = ExecutionRepository(session)
-        await exec_repo.record_step(
-            execution_id,
-            kind="llm.complete",
-            inputs={"message_count": len(messages)},
-            outputs={
-                "chars": len(llm_response.content),
-                "finish_reason": llm_response.finish_reason,
-                "tokens_total": tokens_total,
-                "latency_ms": round(duration_ms, 2),
-            },
-        )
+        if not final_text:
+            # Loop exhausted while the model kept requesting tools. Be honest
+            # about the boundary instead of fabricating an answer.
+            final_text = last_content or (
+                "I could not complete this objective within the allowed number of tool rounds."
+            )
 
         # Truncate for interface limits
-        return llm_response.content[: self._max_response_chars]
+        return final_text[: self._max_response_chars]
+
+    def _capability_tools(self) -> list[ToolSpec] | None:
+        """Capability discovery: offer the registry's AVAILABLE capabilities
+        to the model as tools. The model sees names/descriptions/schemas —
+        never implementations, and never a guarantee of execution."""
+        from wax.capabilities.contracts import CapabilityStatus
+
+        specs: list[ToolSpec] = []
+        for descriptor in self._services.capability_registry.list_capabilities():
+            if (
+                self._services.capability_registry.get_status(descriptor.name)
+                is not CapabilityStatus.AVAILABLE
+            ):
+                continue
+            note = " (destructive - requires human approval)" if descriptor.is_destructive else ""
+            specs.append(
+                ToolSpec(
+                    name=descriptor.name,
+                    description=f"{descriptor.description}{note}",
+                    parameters=descriptor.input_schema,
+                )
+            )
+        return specs or None
+
+    async def _invoke_capability_with_gates(
+        self,
+        session: AsyncSession,
+        *,
+        execution_id: str,
+        principal_id: str,
+        call: ToolCall,
+    ) -> CapabilityInvocationResult:
+        """Agency gate → budget → authority → invoker, with an execution
+        step recorded for every attempt. Never raises: failures come back
+        as structured results the model can reason about."""
+        from datetime import datetime
+
+        from wax.agency.contracts import AgencyDecision, AgencyDecisionKind
+        from wax.capabilities.contracts import (
+            CapabilityInvocationRequest,
+            CapabilityInvocationResult,
+            CapabilityStatus,
+        )
+        from wax.execution.contracts import StepStatus
+
+        exec_repo = ExecutionRepository(session)
+
+        def _structured_failure(outcome: str, error: str) -> CapabilityInvocationResult:
+            now = datetime.now(UTC)
+            return CapabilityInvocationResult(
+                capability_name=call.name,
+                outcome=outcome,
+                error=error,
+                execution_id=execution_id,
+                started_at=now,
+                ended_at=now,
+                duration_ms=0.0,
+            )
+
+        async def _finalize(
+            result: CapabilityInvocationResult,
+        ) -> CapabilityInvocationResult:
+            await exec_repo.record_step(
+                execution_id,
+                kind="capability.invoke",
+                inputs=dict(call.arguments),
+                outputs=result.outputs,
+                status=(StepStatus.SUCCEEDED if result.outcome == "success" else StepStatus.FAILED),
+                capability_name=call.name,
+                error=result.error,
+            )
+            self._services.metrics.capability_invoked(result.outcome, call.name)
+            return result
+
+        # 1. Existence + status
+        try:
+            descriptor, _impl = self._services.capability_registry.get(call.name)
+        except Exception:
+            return await _finalize(
+                _structured_failure("not_found", f"No such capability: {call.name}")
+            )
+        if (
+            self._services.capability_registry.get_status(call.name)
+            is not CapabilityStatus.AVAILABLE
+        ):
+            return await _finalize(
+                _structured_failure(
+                    "denied",
+                    f"Capability {call.name} is not currently available",
+                )
+            )
+
+        # 2. Agency gate - the runtime decides, the AI requests (INV-04)
+        agency = self._services.agency(session)
+        decision = AgencyDecision(
+            principal_id=principal_id,
+            kind=(
+                AgencyDecisionKind.DESTRUCTIVE_ACTION
+                if descriptor.is_destructive
+                else AgencyDecisionKind.INVOKE_CAPABILITY
+            ),
+            description=f"Invoke capability {call.name}",
+            capability_name=call.name,
+            inputs_summary={k: str(v)[:120] for k, v in list(call.arguments.items())[:5]},
+        )
+        verdict = await agency.evaluate(decision)
+        if not verdict.approved or verdict.requires_human_approval:
+            return await _finalize(
+                _structured_failure(
+                    "denied",
+                    f"Runtime gate: {verdict.reason}. No human-approval "
+                    "workflow exists yet, so this action cannot proceed.",
+                )
+            )
+
+        # 3. Budget
+        if not self._services.resource_accountant.try_consume(
+            ResourceUsage(
+                execution_id,
+                ResourceKind.CAPABILITY_INVOCATIONS,
+                1.0,
+                notes=call.name,
+            )
+        ):
+            return await _finalize(
+                _structured_failure(
+                    "denied",
+                    "Resource budget exhausted for capability invocations",
+                )
+            )
+
+        # 4. Authority + execution via the invoker (the SOLE effect point)
+        invoker = self._services.invoker(session)
+        result = await invoker.invoke(
+            CapabilityInvocationRequest(
+                capability_name=call.name,
+                principal_id=principal_id,
+                inputs=call.arguments,
+                request_id=execution_id,
+            )
+        )
+        return await _finalize(result)
 
     def _build_messages(
         self,
-        principal: Principal,
+        principal_display: str | None,
         request: RuntimeRequest,
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
     ) -> list[LLMMessage]:
         """Assemble the LLM message list from continuity context."""
         system_prompt = self._build_system_prompt(
-            principal_display=principal.display_name,
+            principal_display=principal_display,
             memory_count=len(context.recent_memories),
         )
         messages: list[LLMMessage] = [

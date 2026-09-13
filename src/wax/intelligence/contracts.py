@@ -36,16 +36,48 @@ class MessageRole(StrEnum):
 
 
 @dataclass
+class ToolSpec:
+    """A capability offered to the model as a callable tool.
+
+    Built from a CapabilityDescriptor by the runtime (capability
+    discovery). The model sees name + description + JSON-schema
+    parameters; it NEVER sees implementations.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
+
+
+@dataclass
+class ToolCall:
+    """A tool invocation requested by the model.
+
+    The runtime validates and (maybe) executes it — a tool call is a
+    REQUEST, never an effect. Effects happen only through the
+    CapabilityInvoker after agency + authority gates.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class LLMMessage:
     """A single message in a conversation.
 
-    Content is a string for now; future versions may support structured
-    content (images, tool calls, etc.).
+    Content is a string; tool plumbing is carried in the optional fields:
+    - tool_calls: set on ASSISTANT messages that request tool execution
+      (needed so providers can replay the conversation verbatim).
+    - tool_call_id: set on TOOL messages carrying a tool result.
     """
 
     role: MessageRole
     content: str
     name: str | None = None  # for tool messages
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,7 +93,8 @@ class LLMRequest:
     temperature: float = 0.7
     max_tokens: int | None = None
     stream: bool = False
-    # Tool calling will be added in Phase M (AI/Runtime Contract)
+    # Capability discovery: tools the model may request. None = no tools.
+    tools: list[ToolSpec] | None = None
     request_id: str | None = None
 
 
@@ -75,6 +108,7 @@ class LLMResponse:
     finish_reason: str  # stop | length | tool_call | error
     usage: dict[str, int]  # tokens_prompt, tokens_completion, tokens_total
     request_id: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
     raw_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -100,8 +134,6 @@ class LLMProvider(Protocol):
 
     async def complete(self, request: LLMRequest) -> LLMResponse: ...
 
-    async def stream(
-        self, request: LLMRequest
-    ) -> AsyncIterator[LLMStreamChunk]: ...
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]: ...
 
     async def close(self) -> None: ...

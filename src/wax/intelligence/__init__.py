@@ -26,11 +26,11 @@ from wax.intelligence.contracts import (
 from wax.intelligence.service import IntelligenceService
 
 __all__ = [
+    "IntelligenceService",
     "LLMMessage",
     "LLMProvider",
     "LLMRequest",
     "LLMResponse",
     "LLMStreamChunk",
     "ProviderKind",
-    "IntelligenceService",
 ]

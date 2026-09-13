@@ -49,3 +49,25 @@ Audit source: WAX_Current_Repository_Reality_Report.pdf (41-page forensic audit)
   provisioning_root, provisioning_max_active_per_principal.
 - Tests: +12 wiring-proof tests (test_runtime_wiring.py) each pinning a
   previously-false audit claim. 322 → 334 passing.
+
+## Task 3 — Tool-calling: Intelligence → Capability invocation (commit 3)
+
+- LLM contract: ToolSpec + ToolCall dataclasses; LLMRequest.tools;
+  LLMResponse.tool_calls; LLMMessage.tool_calls/tool_call_id for verbatim
+  conversation replay. Backward compatible.
+- OpenAI adapter: emits tools[] + tool_choice=auto; parses tool_calls
+  (JSON-argument tolerant); translates assistant-tool-turns and tool
+  results to the OpenAI wire format.
+- Mock provider: explicit scripted_tool_calls test seam (deque of batches)
+  - documented as test infrastructure, never production behavior.
+- Bridge: bounded agentic loop (max_tool_rounds) replacing the single LLM
+  call. Each tool request passes: agency gate (INVOKE_CAPABILITY→reversible
+  auto-approve; is_destructive→DESTRUCTIVE_ACTION→human approval required →
+  denied honestly, since no approval workflow exists yet) → capability
+  budget consumption → CapabilityInvoker (authority + audit) → structured
+  result back to the model as a tool message. Every attempt records an
+  execution step (capability.invoke) and a metric.
+- IntelligenceService.from_settings now passes llm_base_url + llm_model
+  from configuration (audit §14: base_url was unreachable via config).
+- 334 → 340 tests (test_tool_calling.py: full-gate echo invocation, honest
+  not_found, destructive-denial, loop bound, OpenAI wire format).

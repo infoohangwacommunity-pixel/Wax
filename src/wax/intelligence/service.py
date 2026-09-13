@@ -19,13 +19,13 @@ from typing import Any
 
 from wax.core.config import WaxSettings
 from wax.core.exceptions import WaxConfigurationError
+from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.intelligence.contracts import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
     ProviderKind,
 )
-from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
@@ -64,12 +64,18 @@ class IntelligenceService:
             from wax.intelligence.adapters.openai_provider import OpenAIProvider
 
             return cls(
-                OpenAIProvider(api_key=settings.openai_api_key)
+                OpenAIProvider(
+                    api_key=settings.openai_api_key,
+                    # Configurable base URL keeps the runtime model-agnostic
+                    # by configuration: any OpenAI-compatible endpoint works
+                    # (vLLM, Together, OpenRouter, ...) without code changes.
+                    base_url=settings.llm_base_url or "https://api.openai.com/v1",
+                    default_model=settings.llm_model or "gpt-4o-mini",
+                )
             )
 
         raise WaxConfigurationError(
-            f"Unknown LLM provider: {provider_kind!r}. "
-            f"Supported: mock, openai"
+            f"Unknown LLM provider: {provider_kind!r}. Supported: mock, openai"
         )
 
     @property

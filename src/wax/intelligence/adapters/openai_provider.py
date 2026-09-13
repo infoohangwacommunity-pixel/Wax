@@ -10,18 +10,19 @@ architecture test will enforce this.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 import httpx
 
 from wax.intelligence.contracts import (
     LLMMessage,
-    LLMProvider,
     LLMRequest,
     LLMResponse,
     LLMStreamChunk,
     MessageRole,
     ProviderKind,
+    ToolCall,
 )
 
 
@@ -59,8 +60,30 @@ class OpenAIProvider:
         data = response.json()
 
         choice = data["choices"][0]
+        message = choice.get("message", {})
+
+        # Parse tool calls (finish_reason == "tool_calls"). A tool call is
+        # a REQUEST from the model — the runtime decides whether it executes.
+        tool_calls: list[ToolCall] = []
+        for raw_call in message.get("tool_calls", []) or []:
+            fn = raw_call.get("function", {})
+            try:
+                arguments = json.loads(fn.get("arguments") or "{}")
+                if not isinstance(arguments, dict):
+                    arguments = {"_raw": arguments}
+            except json.JSONDecodeError:
+                arguments = {"_unparseable": str(fn.get("arguments"))[:500]}
+            tool_calls.append(
+                ToolCall(
+                    id=raw_call.get("id", ""),
+                    name=fn.get("name", ""),
+                    arguments=arguments,
+                )
+            )
+
+        content = message.get("content") or ""
         return LLMResponse(
-            content=choice["message"]["content"],
+            content=content,
             model=data.get("model", request.model or self._default_model),
             provider=ProviderKind.OPENAI,
             finish_reason=choice.get("finish_reason", "stop"),
@@ -70,6 +93,7 @@ class OpenAIProvider:
                 "tokens_total": data.get("usage", {}).get("total_tokens", 0),
             },
             request_id=request.request_id,
+            tool_calls=tool_calls,
             raw_metadata={"id": data.get("id")},
         )
 
@@ -100,13 +124,49 @@ class OpenAIProvider:
         await self._client.aclose()
 
     def _build_payload(self, request: LLMRequest, *, stream: bool) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "model": request.model or self._default_model,
-            "messages": [
-                {"role": m.role.value, "content": m.content}
-                for m in request.messages
-            ],
+            "messages": [self._message_to_wire(m) for m in request.messages],
             "temperature": request.temperature,
             "stream": stream,
             **({"max_tokens": request.max_tokens} if request.max_tokens else {}),
         }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in request.tools
+            ]
+            payload["tool_choice"] = "auto"
+        return payload
+
+    def _message_to_wire(self, m: LLMMessage) -> dict[str, object]:
+        if m.role == MessageRole.ASSISTANT and m.tool_calls:
+            return {
+                "role": "assistant",
+                "content": m.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in m.tool_calls
+                ],
+            }
+        if m.role == MessageRole.TOOL:
+            return {
+                "role": "tool",
+                "tool_call_id": m.tool_call_id or "",
+                "content": m.content,
+            }
+        return {"role": m.role.value, "content": m.content}

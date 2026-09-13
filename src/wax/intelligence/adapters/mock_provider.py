@@ -9,17 +9,16 @@ INVARIANT INV-10: No mock may be claimed as production infrastructure.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator
-from typing import Any
 
 from wax.intelligence.contracts import (
-    LLMMessage,
-    LLMProvider,
     LLMRequest,
     LLMResponse,
     LLMStreamChunk,
     MessageRole,
     ProviderKind,
+    ToolCall,
 )
 
 
@@ -28,11 +27,23 @@ class MockLLMProvider:
 
     Produces an echo of the last user message with a fixed prefix.
     NOT a real LLM — never use in production.
+
+    Test seam: `scripted_tool_calls` is an ordered list of tool-call batches.
+    While non-empty, each complete() call pops the leftmost batch and returns
+    it as the response (finish_reason="tool_calls") instead of echoing. This
+    lets tests drive the runtime's tool-calling loop deterministically — it
+    is explicitly test infrastructure, never production behavior.
     """
 
-    def __init__(self, *, default_model: str = "mock-1.0") -> None:
+    def __init__(
+        self,
+        *,
+        default_model: str = "mock-1.0",
+        scripted_tool_calls: list[list[ToolCall]] | None = None,
+    ) -> None:
         self._default_model = default_model
         self._call_count = 0
+        self._script: deque[list[ToolCall]] = deque(scripted_tool_calls or [])
 
     @property
     def kind(self) -> ProviderKind:
@@ -40,6 +51,20 @@ class MockLLMProvider:
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self._call_count += 1
+
+        if self._script:
+            batch = self._script.popleft()
+            return LLMResponse(
+                content="",
+                model=request.model or self._default_model,
+                provider=ProviderKind.MOCK,
+                finish_reason="tool_calls",
+                usage={"tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0},
+                request_id=request.request_id,
+                tool_calls=batch,
+                raw_metadata={"mock": True, "call_count": self._call_count},
+            )
+
         # Find last user message
         last_user = ""
         for msg in reversed(request.messages):
@@ -69,7 +94,7 @@ class MockLLMProvider:
         response = await self.complete(request)
         # Stream word-by-word
         words = response.content.split()
-        for i, word in enumerate(words):
+        for _i, word in enumerate(words):
             yield LLMStreamChunk(content=word + " ")
         yield LLMStreamChunk(
             content="",
