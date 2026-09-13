@@ -76,12 +76,22 @@ class AnthropicProvider:
         return 200_000
 
     def estimate_tokens(self, text: str) -> int:
-        """Conservative Anthropic-side estimate (~3.5 chars/token for the
-        Claude tokenizers; we round to a safe 3.5 → use 4 to stay portable
-        and never over-claim capacity)."""
+        """Conservative Anthropic-side estimate (~4 chars/token).
+
+        Anthropic publishes no offline tokenizer, and the count_tokens
+        API is a network round-trip that MUST NOT sit in the budget
+        hot path. The estimator's error is on the safe side (it
+        over-counts tokens for typical English prose, shrinking rather
+        than overflowing the window). See ADR-0018.
+        """
         if not text:
             return 0
         return max(1, int(len(text) / 4))
+
+    @property
+    def token_counter(self) -> str:
+        """Provenance of this adapter's token accounting (ADR-0018)."""
+        return "estimate:4chars"
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = self._build_payload(request, stream=False)

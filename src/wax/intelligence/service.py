@@ -145,11 +145,20 @@ class IntelligenceService:
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Send a non-streaming completion request."""
+        from wax.intelligence.context_limits import provider_estimate_messages_tokens
+
         log.info(
             "intelligence.complete.start",
             provider=self._provider.kind.value,
             model=request.model,
             message_count=len(request.messages),
+            # Provider-aware input accounting: uses the adapter's own
+            # token counter when it has one (exact for tiktoken-backed
+            # adapters), so the log records the request's token cost by
+            # the same math the budget was built with.
+            estimated_input_tokens=provider_estimate_messages_tokens(
+                self._provider, request.messages
+            ),
         )
         try:
             response = await self._provider.complete(request)

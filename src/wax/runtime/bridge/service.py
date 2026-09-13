@@ -471,6 +471,8 @@ class RuntimeBridge:
             source=budget.source,
             budget_chars=budget.budget_chars,
             context_limit_tokens=budget.context_limit_tokens,
+            chars_per_token=round(budget.chars_per_token, 3),
+            token_counter=budget.counter,
         )
 
         messages = self._build_messages(

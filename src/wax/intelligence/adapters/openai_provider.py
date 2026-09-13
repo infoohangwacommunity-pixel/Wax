@@ -68,6 +68,67 @@ class OpenAIProvider:
     }
     _DEFAULT_CONTEXT_LIMIT = 128_000
 
+    # Tokenizer-exact accounting (ADR-0018): the adapter owns the real
+    # tokenizer for its model families. tiktoken is an OPTIONAL
+    # dependency — deployments that install it get EXACT token counts;
+    # deployments that don't get the documented estimator. Load is lazy
+    # and cached per encoding; ANY failure (not installed, model files
+    # unavailable) degrades to the estimator, never breaks accounting.
+    _MODEL_ENCODINGS: dict[str, str] = {
+        "gpt-4o": "o200k_base",
+        "o1": "o200k_base",
+        "o3": "o200k_base",
+        "o4": "o200k_base",
+        "gpt-4-turbo": "cl100k_base",
+        "gpt-4": "cl100k_base",
+        "gpt-3.5-turbo": "cl100k_base",
+    }
+    _encodings: dict[str, object] = {}  # encoding name -> loaded object (class-level cache)
+
+    @property
+    def token_counter(self) -> str:
+        """Provenance of this adapter's token accounting.
+
+        "tiktoken:<encoding>" = exact counts; "estimate:4chars" = the
+        conservative fallback. The runtime records this in budget
+        provenance instead of guessing which one it got.
+        """
+        enc = self._encoding_for_model()
+        return f"tiktoken:{enc.name}" if enc is not None else "estimate:4chars"
+
+    def _encoding_for_model(self):
+        """Resolve + lazily load the tiktoken encoding for this model.
+
+        Returns the encoding object, or None when tiktoken is absent or
+        the model has no registered encoding. Never raises.
+        """
+        model = (self._default_model or "").lower()
+        name = None
+        for prefix, enc_name in self._MODEL_ENCODINGS.items():
+            if model.startswith(prefix):
+                name = enc_name
+                break
+        if name is None:
+            return None
+        cached = self._encodings.get(name)
+        if cached is False:  # previously failed to load
+            return None
+        if cached is not None:
+            return cached
+        try:  # pragma: no cover - import path exercised via fallback test
+            import tiktoken
+
+            enc = tiktoken.get_encoding(name)
+            self._encodings[name] = enc
+            return enc
+        except Exception:
+            # Not installed, or the encoding files can't be fetched in
+            # this deployment. The failure is cached for this process —
+            # deterministic, and it avoids re-attempting a failed load on
+            # every call. A restart (or new process) retries.
+            self._encodings[name] = False
+            return None
+
     @property
     def context_limit_tokens(self) -> int:
         """The advertised context window for the configured model."""
@@ -78,10 +139,19 @@ class OpenAIProvider:
         return self._DEFAULT_CONTEXT_LIMIT
 
     def estimate_tokens(self, text: str) -> int:
-        """Portable estimator (~4 chars/token). A real tokenizer (tiktoken)
-        may replace this INSIDE this adapter file without contract change."""
+        """Count tokens for text under THIS model family.
+
+        Exact when the tiktoken encoding for the model is available
+        (offline, no API call); otherwise the conservative estimator.
+        The accounting error is always on the SAFE side: the estimator
+        (4 chars/token) over-counts tokens for typical English prose,
+        shrinking rather than overflowing the window.
+        """
         if not text:
             return 0
+        enc = self._encoding_for_model()
+        if enc is not None:
+            return len(enc.encode(text, disallowed_special=()))
         return max(1, int(len(text) / 4))
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
