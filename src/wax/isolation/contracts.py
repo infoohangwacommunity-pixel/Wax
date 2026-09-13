@@ -23,6 +23,7 @@ class IsolationKind(StrEnum):
     """Discriminator for the type of isolation a boundary provides."""
 
     SUBPROCESS = "subprocess"  # separate process, restricted env
+    NAMESPACE = "namespace"  # user-namespace sandbox (kernel-enforced)
     NOOP = "noop"  # in-process (testing only — NO real isolation)
     CONTAINER = "container"  # future — Docker/containerd
     MICROVM = "microvm"  # future — Firecracker
@@ -42,6 +43,12 @@ class IsolationRequest:
     max_output_bytes: int = 1_000_000  # 1 MiB cap on stdout+stderr
     env: dict[str, str] | None = None  # additional env vars for the isolated process
     working_dir: str | None = None  # override working directory
+    # Resource-governance rlimits (enforced by boundaries that can).
+    # These are anti-abuse budgets (fork/memory/disk/CPU bombs), NOT the
+    # security boundary — that is the namespace/contract itself.
+    memory_limit_mb: int = 512  # RLIMIT_AS; 0 disables
+    max_processes: int = 64  # RLIMIT_NPROC; 0 disables
+    max_file_bytes: int = 16_000_000  # RLIMIT_FSIZE; 0 disables
 
 
 @dataclass
@@ -59,6 +66,9 @@ class ExecutionResult:
     truncated: bool = False
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    # Which boundary actually ran this — action-level evidence for the
+    # audit trail. None for results produced before this field existed.
+    isolation_kind: str | None = None
 
 
 class IsolationBoundary(ABC):

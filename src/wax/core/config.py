@@ -97,6 +97,12 @@ class WaxSettings(BaseSettings):
     # runtime bounds how many request/result exchanges one message may spawn.
     max_tool_rounds: int = 5
 
+    # --- Code execution isolation ---
+    # Which sandbox boundary runs code.run: "auto" (namespace sandbox when
+    # the host supports unprivileged user namespaces, else subprocess —
+    # LOUD fallback), "namespace" (require it), "subprocess" (legacy).
+    isolation_backend: str = "auto"
+
     # --- Runtime mechanisms ---
     # Poll interval for the in-process background work runner (Phase V).
     work_poll_interval_seconds: float = 2.0

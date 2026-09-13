@@ -93,6 +93,16 @@ class RuntimeMetrics:
     def signals_pruned(self, count: float) -> None:
         self._registry.counter("runtime_signals_pruned_total").inc(count)
 
+    # --- Isolation ----------------------------------------------------------
+
+    def isolation_fallback(self) -> None:
+        """The configured sandbox grade degraded (namespace unavailable)."""
+        self._registry.counter("isolation_fallback_total").inc()
+
+    def code_executed(self, *, isolation: str) -> None:
+        """A code execution ran under the given isolation kind."""
+        self._registry.counter("code_executions_total", isolation=isolation).inc()
+
     # --- Approvals (authority boundary) ------------------------------------
 
     def approval_requested(self) -> None:

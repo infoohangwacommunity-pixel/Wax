@@ -1,19 +1,26 @@
 """code.run — isolated code execution capability (Phase U).
 
 Everything dangerous crosses explicit runtime authority. This capability
-wraps the IsolationService/SubprocessBoundary so the AI can RUN code in an
-ephemeral, environment-scrubbed subprocess with timeout + output caps.
+runs code inside the boundary selected by the ISOLATION SERVICE:
 
-Trust boundary (honest, stated in the descriptor the model sees):
-- A subprocess is NOT a sandbox against malicious code. It isolates against
-  accidents (crashes, hangs, env leakage). The permission
-  `capability.invoke:code_run` is deliberately NOT in the member role —
-  code execution is opt-in per deployment via role assignment, and the
-  descriptor documents the boundary to the model.
+- namespace sandbox (default, when the host supports unprivileged user
+  namespaces): kernel-enforced no-network, read-only filesystem, masked
+  /proc+/sys, size-capped private /tmp, rlimits — container-grade
+  isolation built from container primitives (ADR-0016).
+- subprocess fallback (or explicit configuration): scrubbed environment,
+  hard timeout, output caps, process-group kill. Isolates against
+  ACCIDENTS, not adversaries.
+
+The grade actually used is returned as `isolation` in the result and
+logged/metered — never silently degraded. The permission
+`capability.invoke:code_run` is deliberately NOT in the member role —
+code execution is opt-in per deployment via role assignment, and the
+descriptor documents the boundary to the model.
 
 Optional integration with Phase S: pass workspace_resource_id (from
 scratch.workspace) to run inside a provisioned ephemeral directory — the
-resource is verified as owned by the caller before use.
+resource is verified as owned by the caller before use, and the sandbox
+re-exposes exactly that directory read-write.
 """
 
 from __future__ import annotations
@@ -34,10 +41,12 @@ MAX_TIMEOUT_SECONDS = 30.0
 CODE_RUN_DESCRIPTOR = CapabilityDescriptor(
     name="code.run",
     description=(
-        "Run Python or shell code in an isolated subprocess (scrubbed "
-        "environment, hard timeout, output caps). NOTE: a subprocess is "
-        "isolation against accidents, not a sandbox against malicious "
-        "code. Requires the code_run permission."
+        "Run Python or shell code in the runtime's isolation boundary. "
+        "When the namespace sandbox is active the kernel enforces: no "
+        "network, read-only filesystem (only the chosen workspace is "
+        "writable), no host process visibility, and resource limits. "
+        "Otherwise the fallback is a scrubbed subprocess (accident "
+        "isolation only). Requires the code_run permission."
     ),
     version="1.0.0",
     input_schema={
@@ -67,6 +76,10 @@ CODE_RUN_DESCRIPTOR = CapabilityDescriptor(
             "timed_out": {"type": "boolean"},
             "truncated": {"type": "boolean"},
             "duration_ms": {"type": "number"},
+            "isolation": {
+                "type": "string",
+                "description": "Which isolation boundary actually ran the code",
+            },
         },
     },
     required_permission="capability.invoke:code_run",
@@ -136,9 +149,13 @@ def register_code_run_capability(registry: CapabilityRegistry, services: Runtime
                 )
             working_dir = resource.uri
 
-        from wax.isolation.contracts import IsolationKind
-
-        boundary = IsolationService.for_kind(IsolationKind.SUBPROCESS).boundary
+        # The isolation grade is a RUNTIME decision from configuration —
+        # never the caller's, never the model's. `auto` prefers the
+        # namespace sandbox and degrades loudly when the host can't run it.
+        service, isolation_kind = IsolationService.select(
+            services.settings.isolation_backend
+        )
+        boundary = service.boundary
         result = await boundary.execute(
             IsolationRequest(
                 code=code,
@@ -147,6 +164,7 @@ def register_code_run_capability(registry: CapabilityRegistry, services: Runtime
                 working_dir=working_dir,
             )
         )
+        services.metrics.code_executed(isolation=isolation_kind)
 
         # Account the CPU/execution time actually spent.
         services.resource_accountant.try_consume(
@@ -165,6 +183,7 @@ def register_code_run_capability(registry: CapabilityRegistry, services: Runtime
             "timed_out": result.timed_out,
             "truncated": result.truncated,
             "duration_ms": result.duration_ms,
+            "isolation": result.isolation_kind or isolation_kind,
         }
 
     registry.register(CODE_RUN_DESCRIPTOR, code_run_impl)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import time
 from datetime import UTC, datetime
 
@@ -50,6 +51,10 @@ class SubprocessBoundary(IsolationBoundary):
         # Build the command based on language
         cmd, env = self._prepare_command(request)
 
+        # The child gets its own session so a timeout can kill the whole
+        # process GROUP. proc.kill() alone orphans grandchildren spawned by
+        # the code (e.g. `sleep 1000 &` in shell) — a resource leak the
+        # code could weaponize.
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -57,6 +62,7 @@ class SubprocessBoundary(IsolationBoundary):
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=request.working_dir,
+                start_new_session=True,
             )
         except FileNotFoundError as e:
             return ExecutionResult(
@@ -76,9 +82,10 @@ class SubprocessBoundary(IsolationBoundary):
             timed_out = False
             exit_code = proc.returncode if proc.returncode is not None else -1
         except TimeoutError:
-            # Kill the process if it times out
+            # Kill the process GROUP if it times out — reaps descendants
+            # spawned by the executed code, not just the direct child.
             try:
-                proc.kill()
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 await proc.wait()
             except ProcessLookupError:
                 pass
@@ -118,6 +125,7 @@ class SubprocessBoundary(IsolationBoundary):
             truncated=truncated,
             started_at=started_at,
             ended_at=ended_at,
+            isolation_kind=self.kind.value,
         )
 
     def _prepare_command(
