@@ -440,4 +440,201 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
     registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
-    log.info("capability.runtime_registered", count=6)
+    registry.register(MEMORY_STORE_DESCRIPTOR, memory_store_impl)
+    registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
+    registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
+    log.info("capability.runtime_registered", count=9)
+
+
+# --- memory.* (memory as a mechanism, not an AI chore) --------------------
+#
+# The runtime owns memory storage; the AI owns interpretation. Before
+# these capabilities existed, the AI could not deliberately persist a
+# fact ("user is preparing for WAEC physics"), search its own evidence,
+# or honor a withdrawal request ("forget that") — only implicit episodic
+# writes happened. Memory operations now cross the SAME gate chain as
+# every other effect: agency → budget → authority → invoker → audit.
+
+MEMORY_KINDS = ("episodic", "semantic", "procedural", "contextual", "external")
+
+MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
+    name="memory.store",
+    description="Persist a memory for the current principal (structured "
+    "evidence, not a frozen category). Pass expires_at for anything that "
+    "should be forgotten automatically.",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": list(MEMORY_KINDS),
+                "default": "semantic",
+            },
+            "content": {
+                "type": "object",
+                "description": "Structured evidence (JSON object)",
+            },
+            "summary": {"type": "string", "maxLength": 2000},
+            "expires_at": {
+                "type": "string",
+                "description": "ISO-8601 datetime; after this the runtime forgets it",
+            },
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["content"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {"memory_id": {"type": "string"}, "kind": {"type": "string"}},
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+MEMORY_SEARCH_DESCRIPTOR = CapabilityDescriptor(
+    name="memory.search",
+    description="Search the principal's active memories by relevance to a "
+    "query. Returns evidence (id, kind, summary, score) — never authority.",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+        },
+        "required": ["query"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer"},
+            "memories": {"type": "array"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+MEMORY_FORGET_DESCRIPTOR = CapabilityDescriptor(
+    name="memory.forget",
+    description="Forget one of the principal's own memories by id (soft "
+    "delete: record retained for audit, excluded from retrieval).",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"memory_id": {"type": "string"}},
+        "required": ["memory_id"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {"memory_id": {"type": "string"}, "forgotten": {"type": "boolean"}},
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=True,  # crosses the destructive agency gate
+)
+
+
+async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from datetime import datetime
+
+    from wax.memory.contracts import MemoryCreate, MemoryKind
+    from wax.memory.repository import MemoryRepository
+    from wax.state.engine import db_session
+
+    content = inputs.get("content")
+    if not isinstance(content, dict) or not content:
+        raise ValueError("content must be a non-empty JSON object")
+
+    kind = inputs.get("kind", "semantic")
+    if kind not in MEMORY_KINDS:
+        raise ValueError(f"kind must be one of {list(MEMORY_KINDS)}")
+
+    summary = inputs.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        raise ValueError("summary must be a string")
+
+    expires_at = None
+    if inputs.get("expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(str(inputs["expires_at"]).replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(f"expires_at is not a valid ISO-8601 datetime: {e}") from e
+
+    confidence = inputs.get("confidence")
+    if confidence is not None and not (0.0 <= float(confidence) <= 1.0):
+        raise ValueError("confidence must be between 0 and 1")
+
+    async with db_session() as session:
+        record = await MemoryRepository(session).create(
+            MemoryCreate(
+                principal_id=ctx.principal_id,
+                kind=MemoryKind(kind),
+                content=content,
+                provenance="model_observation",
+                source_execution_id=ctx.execution_id,
+                confidence=float(confidence) if confidence is not None else None,
+                expires_at=expires_at,
+                summary=summary[:2000] if summary else None,
+            )
+        )
+        await session.commit()
+
+    return {"memory_id": record.id, "kind": record.kind}
+
+
+async def memory_search_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from wax.memory.repository import MemoryRepository
+    from wax.state.engine import db_session
+
+    query = inputs.get("query")
+    if not query or not isinstance(query, str):
+        raise ValueError("query is required")
+    limit = int(inputs.get("limit", 5) or 5)
+
+    async with db_session() as session:
+        results = await MemoryRepository(session).search_relevant(
+            ctx.principal_id, query, limit=limit
+        )
+
+    return {
+        "count": len(results),
+        "memories": [
+            {
+                "id": record.id,
+                "kind": record.kind,
+                "summary": record.summary or str(record.content)[:200],
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+                "score": round(score, 4),
+            }
+            for record, score in results
+        ],
+    }
+
+
+async def memory_forget_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from wax.memory.repository import MemoryRepository
+    from wax.state.engine import db_session
+
+    memory_id = inputs.get("memory_id")
+    if not memory_id or not isinstance(memory_id, str):
+        raise ValueError("memory_id is required")
+
+    async with db_session() as session:
+        repo = MemoryRepository(session)
+        memory = await repo.get(memory_id)
+        if memory is None or memory.status != "active":
+            raise ValueError(f"No active memory {memory_id}")
+        if memory.principal_id != ctx.principal_id:
+            # Ownership boundary: a principal cannot forget another's memory.
+            raise ValueError("memory_id belongs to a different principal")
+        forgotten = await repo.forget(memory_id)
+        await session.commit()
+
+    return {"memory_id": memory_id, "forgotten": forgotten}

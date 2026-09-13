@@ -77,6 +77,11 @@ class RuntimeMetrics:
     def work_inflight(self, count: float) -> None:
         self._registry.gauge("work_items_inflight").set(count)
 
+    # --- Memory lifecycle -------------------------------------------------
+
+    def memory_expired(self, kind: str) -> None:
+        self._registry.counter("memory_expired_total", kind=kind).inc()
+
     # --- Provisioning (Phase S) ------------------------------------------
 
     def resource_provisioned(self, kind: str) -> None:

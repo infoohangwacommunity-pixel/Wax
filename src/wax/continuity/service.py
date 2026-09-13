@@ -8,6 +8,7 @@ ContinuityService: top-level "what context should the AI see?" — composes
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,9 +90,12 @@ class ContinuityService:
         self,
         principal_id: str,
         interface_kind: str,
+        current_message: str | None = None,
     ) -> tuple[ContinuityContext, str | None]:
         """Build the continuity context for a principal.
 
+        `current_message` (when provided) drives relevance-based memory
+        retrieval: the AI sees what is RELEVANT, not merely what is recent.
         Returns (context, conversation_id). If conversation_id is None, a
         new conversation will need to be opened by the caller.
         """
@@ -105,7 +109,9 @@ class ContinuityService:
                 ContinuityContext(
                     principal_id=principal_id,
                     is_new_conversation=True,
-                    recent_memories=await self._fetch_recent_memories(principal_id),
+                    recent_memories=await self._fetch_context_memories(
+                        principal_id, current_message
+                    ),
                 ),
                 None,
             )
@@ -118,8 +124,9 @@ class ContinuityService:
         delta = now - last_msg
         days_since = delta.total_seconds() / 86400.0
 
-        # Fetch recent memories
-        recent_memories = await self._fetch_recent_memories(principal_id)
+        # Fetch memories: relevance pool (against the current message) merged
+        # with the recency pool, deduplicated, capped.
+        recent_memories = await self._fetch_context_memories(principal_id, current_message)
 
         # Fetch active objective (if any)
         active_objective = None
@@ -151,19 +158,65 @@ class ContinuityService:
             conversation.id,
         )
 
-    async def _fetch_recent_memories(
-        self, principal_id: str, limit: int = 5
+    async def _fetch_context_memories(
+        self,
+        principal_id: str,
+        current_message: str | None = None,
+        *,
+        recency_limit: int = 5,
+        relevance_limit: int = 5,
+        max_total: int = 8,
     ) -> list[dict]:
-        """Fetch recent episodic memories for context."""
-        memories = await self._memory_repo.list_active_for_principal(
-            principal_id, kind="episodic", limit=limit
+        """Compose the memory context: relevance + recency, deduplicated.
+
+        - Recency pool: the newest memories regardless of wording (the
+          conversation's immediate past).
+        - Relevance pool: what speaks to the CURRENT message, across all
+          kinds and ages — the reason "what did I tell you about my
+          exam?" can resurface a weeks-old exam memory.
+        Each entry carries `reason` so the model can weigh the evidence;
+        the runtime never silently rewrites what the AI sees.
+        """
+        recent = await self._memory_repo.list_active_for_principal(
+            principal_id, limit=recency_limit
         )
-        return [
-            {
-                "id": m.id,
-                "summary": m.summary or str(m.content)[:200],
-                "kind": m.kind,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            }
-            for m in memories
-        ]
+        relevant: list[tuple[Any, float]] = []
+        if current_message:
+            relevant = await self._memory_repo.search_relevant(
+                principal_id, current_message, limit=relevance_limit
+            )
+
+        merged: dict[str, dict] = {}
+        for m in recent:
+            merged.setdefault(
+                m.id,
+                {
+                    "id": m.id,
+                    "summary": m.summary or str(m.content)[:200],
+                    "kind": m.kind,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "reason": "recent",
+                },
+            )
+        for m, score in relevant:
+            entry = merged.get(m.id)
+            if entry is not None:
+                entry["reason"] = "recent+relevant"
+                entry["score"] = round(score, 4)
+            else:
+                merged[m.id] = {
+                    "id": m.id,
+                    "summary": m.summary or str(m.content)[:200],
+                    "kind": m.kind,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "reason": "relevant",
+                    "score": round(score, 4),
+                }
+
+        # Newest first within the merged pool (stable conversational order).
+        entries = sorted(
+            merged.values(),
+            key=lambda e: e["created_at"] or "",
+            reverse=True,
+        )
+        return entries[:max_total]

@@ -149,6 +149,17 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         )
         lifecycle.on_shutdown("provisioning_reaper", stop_maintenance(provisioning_task))
 
+        # Memory lifecycle: expired memories are forgotten by the runtime
+        # (retention is a mechanism, never an AI chore).
+        from wax.memory.lifecycle import memory_maintenance_loop
+        from wax.memory.lifecycle import stop_maintenance as stop_memory_maintenance
+
+        memory_task = asyncio.create_task(
+            memory_maintenance_loop(settings, interval_seconds=300.0),
+            name="wax-memory-reaper",
+        )
+        lifecycle.on_shutdown("memory_reaper", stop_memory_maintenance(memory_task))
+
         try:
             yield
         finally:

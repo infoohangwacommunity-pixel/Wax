@@ -159,7 +159,7 @@ class MemoryRepository:
         """Find active memories whose expires_at has passed.
 
         Returns them; caller decides whether to forget, archive, or extend.
-        This is the entry point for the future "forgetting" worker.
+        The runtime lifecycle worker (memory/lifecycle.py) forgets them.
         """
         if now is None:
             now = datetime.now(UTC)
@@ -172,3 +172,98 @@ class MemoryRepository:
             )
         )
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Relevance retrieval
+    # ------------------------------------------------------------------
+    #
+    # The bridge used to show the AI only the LAST FIVE EPISODIC memories.
+    # That is a telephone-book of recency, not memory: "what did I tell
+    # you about my exam?" retrieved whatever happened to be newest. The
+    # Foundation PDF (§14) names retrieval, consolidation, and conflict
+    # handling as runtime responsibilities.
+    #
+    # Scoring runs over a bounded candidate pool in Python on purpose:
+    # per-principal memory counts are small, the computation is portable
+    # across SQLite/Postgres with zero extensions, and the ranking stays
+    # inspectable. The upgrade path (Postgres tsvector / FTS) can replace
+    # the candidate fetch without changing this method's contract.
+
+    @staticmethod
+    def _terms(text: str) -> set[str]:
+        """Lowercased content terms (>=3 chars, minus a tiny stopword set)."""
+        stopwords = {
+            "the", "and", "for", "with", "that", "this", "you", "your",
+            "was", "were", "are", "our", "out", "about", "what", "when",
+            "how", "did", "does", "had", "has", "have", "not", "but",
+            "all", "can", "will", "would", "could", "should", "from",
+            "into", "tell", "said", "say",
+        }
+        return {
+            t for t in
+            ("".join(c if c.isalnum() else " " for c in text.lower()).split())
+            if len(t) >= 3 and t not in stopwords
+        }
+
+    @staticmethod
+    def _memory_terms(record: MemoryRecord) -> set[str]:
+        """Indexable terms for one record: summary + serialized content."""
+        parts = [record.summary or "", str(record.content)]
+        text = " ".join(parts)
+        return MemoryRepository._terms(text)
+
+    @staticmethod
+    def _score(record: MemoryRecord, query_terms: set[str], now: datetime) -> float:
+        """Relevance = term overlap, weighted by recency decay + confidence.
+
+        - overlap: |query ∩ memory| / |query|  (how much of the question
+          the memory speaks to)
+        - recency: exp(-age_days / 14) — half-life-ish smoothing so a
+          relevant old memory still beats a coincidentally-worded new one
+        - confidence: small boost, honors the record's own confidence field
+        """
+        if not query_terms:
+            return 0.0
+        memory_terms = MemoryRepository._memory_terms(record)
+        overlap = len(query_terms & memory_terms) / len(query_terms)
+        if overlap == 0.0:
+            return 0.0
+        created = record.created_at
+        if created is not None:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            age_days = max(0.0, (now - created).total_seconds() / 86400.0)
+        else:
+            age_days = 0.0
+        recency = pow(2.718281828, -age_days / 14.0)
+        confidence = float(record.confidence) if record.confidence is not None else 0.5
+        return overlap * (0.7 + 0.3 * recency) + 0.1 * confidence
+
+    async def search_relevant(
+        self,
+        principal_id: str,
+        query: str,
+        *,
+        limit: int = 5,
+        candidate_pool: int = 200,
+    ) -> list[tuple[MemoryRecord, float]]:
+        """Rank a principal's active memories against a query.
+
+        Returns [(record, score)] descending by score; zero-score records
+        excluded. Considers ALL kinds — evidence lives at every layer, and
+        kind filtering is the caller's policy, not the storage's.
+        """
+        query_terms = self._terms(query)
+        if not query_terms:
+            return []
+        candidates = await self.list_active_for_principal(
+            principal_id, limit=candidate_pool
+        )
+        now = datetime.now(UTC)
+        scored = [
+            (record, self._score(record, query_terms, now))
+            for record in candidates
+        ]
+        scored = [(r, s) for r, s in scored if s > 0.0]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]

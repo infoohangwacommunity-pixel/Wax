@@ -315,10 +315,12 @@ class RuntimeBridge:
         # the recovery scan can reconcile and Meta redelivery can retry.
         await session.commit()
 
-        # 6. Context assembly via ContinuityService (single composer)
+        # 6. Context assembly via ContinuityService (single composer).
+        # The current message drives relevance retrieval: the AI sees what
+        # is RELEVANT, not merely what is recent.
         continuity = ContinuityService(session)
         context, conversation_id = await continuity.build_context(
-            principal.id, request.interface_kind.value
+            principal.id, request.interface_kind.value, request.effective_text
         )
         conversations = ConversationService(session)
         if conversation_id is None:
