@@ -214,3 +214,24 @@ Stage Summary:
 - Live probe: PROBE PASS (exit 0) — every claim in audit-response.md §5 is backed by the probe or a named test file
 - ReminderService/TimerService/domain modes remain permanently absent (INV-01 enforced)
 - 7 commits in the audit-response series on main; ready to push
+
+---
+Task ID: CONTINUATION-RECONCILIATION
+Agent: main (Super Z)
+Task: Principal-engineer continuation — full repository reconciliation, close all verified architectural gaps, prove, document, push.
+
+Work Log:
+- Reconciled repository vs Foundation PDF vs audit vs ADRs vs runtime wiring; produced 7-gap internal list
+- Gap SSRF: http.get could reach loopback/RFC1918/metadata/file:; built wax.security.network (address-truth validation, redirect re-validation, byte cap); 14 tests (commit 0e86946)
+- Gap unwired-reliability: CircuitBreaker+retry existed tested but unused; built ResilientProvider (classified retry inside, breaker outside); wired into every from_settings selection (commit 490aa8c)
+- Gap model independence: added AnthropicProvider (real /v1/messages wire: system top-level, tool_use/tool_result blocks, input_schema tools); zero changes outside the adapter; 10 tests (commit 490aa8c)
+- Gap memory retrieval: last-5-episodic-only replaced by relevance+recency composition with per-entry reasons; bridge passes current message (commit 292be68)
+- Gap memory lifecycle: expire_due had no caller; lifespan worker now forgets expired memories (soft delete + audit + metric) (commit 292be68)
+- Gap memory agency: memory.store/search/forget capabilities through the full gate chain, ownership-checked, forget destructive-gated; 11 tests (commit 292be68)
+- Gap docs: real README (OS mental model, run/deploy, invariants); ADR-0008/0009/0010; audit-response addendum with 7-gap table
+- Probe extended: /readyz, /metrics liveness, and post-message counter proof; PROBE PASS exit 0
+
+Stage Summary:
+- 408 tests passing (session baseline 373, original audit baseline 312)
+- Live probe: 7/7 PASS over real HTTP (healthz, readyz, metrics, Meta handshake, signed POST full chain, metrics-recording, signature rejection)
+- Deliberate non-goals recorded: multi-replica workers, tsvector/embedding upgrade, human-approval workflow (all evidence-based)

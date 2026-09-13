@@ -96,6 +96,21 @@ async def probe() -> int:
         if not ok:
             failures.append("health")
 
+        # -- 1b. Readiness (DB + intelligence + interface) ----------------
+        r = await http.get("/readyz")
+        ready_ok = r.status_code == 200
+        print(f"[{'PASS' if ready_ok else 'FAIL'}] GET /readyz -> {r.status_code} {r.text[:120]}")
+        if not ready_ok:
+            failures.append("readyz")
+
+        # -- 1c. Metrics registry live (endpoint liveness; counters
+        #       materialize lazily, so presence is asserted after the POST) --
+        r = await http.get("/metrics")
+        metrics_ok = r.status_code == 200 and '"counters"' in r.text
+        print(f"[{'PASS' if metrics_ok else 'FAIL'}] GET /metrics -> {r.status_code}")
+        if not metrics_ok:
+            failures.append("metrics")
+
         # -- 2. Meta verification handshake (GET) ------------------------
         challenge = "1158201444"
         r = await http.get(
@@ -166,6 +181,15 @@ async def probe() -> int:
         )
         if not ok:
             failures.append("signed-post")
+
+        # -- 3b. Metrics recorded the live message ------------------------
+        r = await http.get("/metrics")
+        recorded = "bridge_messages_started_total" in r.text
+        print(
+            f"[{'PASS' if recorded else 'FAIL'}] /metrics shows the processed message"
+        )
+        if not recorded:
+            failures.append("metrics-recording")
 
         # -- 4. Invalid signature not processed (security live path) -----
         # Contract: respond 200 (do not leak validity to probes / avoid

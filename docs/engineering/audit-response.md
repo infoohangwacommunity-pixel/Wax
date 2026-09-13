@@ -128,3 +128,35 @@ over real HTTP:
 | `b3ecb43` | feat(capabilities): code.run behind explicit authority (Phase U) |
 | `29cdc77` | feat(interfaces): WhatsApp delivery intelligence (Phase W) |
 | (this commit) | docs: ADRs + audit response + live probe |
+
+---
+
+# Addendum — Continuation Reconciliation (second principal-engineer pass)
+
+A full reconciliation (repository ↔ Foundation PDF ↔ forensic audit ↔
+ADRs ↔ tests ↔ live wiring) produced seven verified gaps. All are now
+closed; each entry names its proof.
+
+| # | Gap found | Category | Fix + proof |
+|---|---|---|---|
+| 1 | `CircuitBreaker` + `retry_with_backoff` implemented-but-unwired: LLM calls had no retry/breaker | reliability | `intelligence/resilience.py`; `tests/unit/test_provider_resilience.py` (blip-recovery, fail-fast, half-open, no-retry-on-401) |
+| 2 | `http.get` had no network boundary: loopback / RFC1918 / metadata (169.254.169.254) / file:// reachable; unbounded body reads | security | `security/network.py` (address-truth validation, per-hop redirect re-validation, byte cap); `tests/unit/test_network_boundary.py` (14 tests) |
+| 3 | Memory context = last-5-episodic-only (recency without relevance) | memory | `MemoryRepository.search_relevant` + ContinuityService relevance+recency composition with per-entry reasons; `tests/integration/test_memory_mechanisms.py::TestContextComposition` |
+| 4 | Memory expiry never fired (`expire_due` had no caller) | cleanup | `memory/lifecycle.py` lifespan worker (soft delete + audit + metric); `TestLifecycleWorker` |
+| 5 | AI had no gated memory agency (store/search/forget) | capability lifecycle | `memory.store` / `memory.search` / `memory.forget` capabilities through agency → budget → authority → invoker → audit; `TestMemoryCapabilities` (incl. cross-principal denial) |
+| 6 | Model independence asserted but unproven (anthropic raised "not implemented") | model abstraction | `AnthropicProvider` (real /v1/messages wire format incl. tool_use/tool_result) + `ResilientProvider` on every selection; `TestAnthropicWire`, `TestFromSettings` |
+| 7 | README was a 5-byte placeholder (audit: REFACTOR) | docs | Real README: OS-mental-model map, run/deploy, invariants, verification guide |
+
+Commit series: `0e86946` (network boundary) → `490aa8c` (resilience +
+anthropic) → `292be68` (memory cluster) → this commit (docs + probe
+extension). Test count after this series: 408 (baseline at session
+start: 373; original audit baseline: 312).
+
+Open gaps intentionally NOT closed (evidence-based non-goals):
+- Multi-replica work workers (lease design admits it; single-instance
+  Railway deployment is the current honest scope — ADR-0004).
+- Postgres tsvector/embedding retrieval upgrades (contract absorbs them;
+  portable scorer is correct at current scale — ADR-0010).
+- Human-approval workflow for agency-gated destructive actions
+  (denial path is honest today; the workflow is a product decision
+  requiring an approver identity story).
