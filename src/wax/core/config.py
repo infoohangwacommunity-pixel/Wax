@@ -104,6 +104,10 @@ class WaxSettings(BaseSettings):
     provisioning_root: str = "./wax-resources"
     # Maximum active provisioned resources per principal (Phase S limit).
     provisioning_max_active_per_principal: int = 5
+    # Character budget for evidence assembly (~4 chars/token). The runtime
+    # fills objective > conversation > memory evidence up to this budget
+    # and announces truncation honestly (ADR-0012).
+    context_char_budget: int = 24000
 
     # --- WhatsApp (Phase Q — Interface) ---
     whatsapp_access_token: str = ""

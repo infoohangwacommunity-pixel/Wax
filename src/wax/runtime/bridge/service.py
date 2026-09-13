@@ -690,23 +690,27 @@ class RuntimeBridge:
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
     ) -> list[LLMMessage]:
-        """Assemble the LLM message list from continuity context."""
-        system_prompt = self._build_system_prompt(
-            principal_display=principal_display,
-            memory_count=len(context.recent_memories),
-        )
+        """Assemble the LLM message list.
+
+        Evidence assembly is a runtime mechanism (ADR-0012): the bridge
+        delivers the continuity context's evidence — objective, conver-
+        sation state, ranked memories — as labelled system evidence lines
+        within the configured budget. The runtime owns WHAT evidence is
+        delivered; the model interprets it.
+        """
+        from wax.continuity.assembly import assemble_evidence, build_evidence_sections
+
+        system_prompt = self._build_system_prompt(principal_display=principal_display)
         messages: list[LLMMessage] = [
             LLMMessage(role=MessageRole.SYSTEM, content=system_prompt),
         ]
 
-        for memory in reversed(context.recent_memories):
-            summary = memory.get("summary") or ""
-            messages.append(
-                LLMMessage(
-                    role=MessageRole.SYSTEM,
-                    content=f"[prior memory: {summary}]",
-                )
-            )
+        evidence_lines = assemble_evidence(
+            build_evidence_sections(context),
+            budget_chars=int(self._services.settings.context_char_budget),
+        )
+        for line in evidence_lines:
+            messages.append(LLMMessage(role=MessageRole.SYSTEM, content=line))
 
         user_text = request.effective_text
         if sanitizer_result is not None and sanitizer_result.risk != InjectionRisk.NONE:
@@ -992,23 +996,22 @@ class RuntimeBridge:
         )
         return principal, credential
 
-    def _build_system_prompt(self, *, principal_display: str | None, memory_count: int) -> str:
+    def _build_system_prompt(self, *, principal_display: str | None) -> str:
         """Build the system prompt for the LLM.
 
         This is intentionally minimal. WAX does NOT hardcode a tutor
         persona (Directive §5.1, §10). The AI determines its own behavior
-        based on the user's objective.
+        based on the user's objective. Contextual evidence (objective,
+        conversation state, memories) is NOT baked in here — it is
+        delivered as separate labelled evidence lines by the assembly
+        mechanism, so the runtime can budget, rank, and attribute it.
         """
         name_str = f" The user's name is {principal_display}." if principal_display else ""
-        memory_str = (
-            f" You have {memory_count} recent memories about this user." if memory_count > 0 else ""
-        )
         return (
             "You are an AI operating inside the WAX runtime. You are intelligent; "
             "WAX is the environment that holds memory, identity, capabilities, and "
             "authorization on your behalf."
             + name_str
-            + memory_str
             + " Help the user pursue their objective. Be concise and useful. If you "
             "need a capability you don't have, say so explicitly rather than "
             "fabricating."
