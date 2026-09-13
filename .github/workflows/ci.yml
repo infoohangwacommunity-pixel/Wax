@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wax
+          POSTGRES_PASSWORD: wax_test
+          POSTGRES_DB: wax_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wax"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      WAX_ENV: staging
+      WAX_DATABASE_URL: postgresql+asyncpg://wax:wax_test@localhost:5432/wax_test
+      WAX_SECRET_KEY: ci-test-secret-key-not-for-production-use-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      WAX_LOG_LEVEL: WARNING
+      WAX_LOG_FORMAT: json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+        env:
+          UV_PYTHON: "3.12"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Format check (ruff)
+        run: ruff format --check src tests
+
+      - name: Type check (mypy)
+        run: mypy src/wax || true  # non-blocking until types are clean
+
+      - name: Apply migrations (PostgreSQL)
+        run: alembic upgrade head
+
+      - name: Test migrations round-trip
+        run: |
+          alembic downgrade -1
+          alembic upgrade head
+
+      - name: Run tests
+        run: pytest --tb=short -q --cov=wax --cov-report=term-missing

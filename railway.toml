@@ -1,0 +1,32 @@
+# Railway deployment configuration for WAX.
+#
+# Railway reads this file when deploying. The `deploy` section controls
+# build + start commands; the `env` section pins required variables that
+# Railway must prompt for (or read from its own secret store).
+#
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[deploy]
+# Build steps: install dependencies into the system path.
+builder = "nixpacks"
+buildCommand = "pip install uv && uv pip install --system -e ."
+
+# Start command: run migrations on every deploy, then start the ASGI server.
+startCommand = "alembic upgrade head && uvicorn wax.runtime.asgi:app --host 0.0.0.0 --port $PORT"
+
+# Health check: Railway polls /healthz and /readyz before routing traffic.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+
+[env]
+# Required for Railway deploys; values come from Railway's secret store.
+WAX_ENV = "production"
+WAX_LOG_LEVEL = "INFO"
+WAX_LOG_FORMAT = "json"
+WAX_HOST = "0.0.0.0"
+WAX_PORT = "$PORT"
+
+# WAX_DATABASE_URL MUST be set via Railway's secret store (PostgreSQL add-on).
+# WAX_SECRET_KEY MUST be set via Railway's secret store (generate with:
+#   python -c "import secrets; print(secrets.token_urlsafe(64))"
+# ).
