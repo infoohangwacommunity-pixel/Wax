@@ -41,9 +41,11 @@ class OpenAIProvider:
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         default_model: str = "gpt-4o-mini",
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url,
+            transport=transport,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=httpx.Timeout(60.0, connect=10.0),
         )

@@ -49,12 +49,17 @@ class IntelligenceService:
         Provider selection:
         - If WAX_LLM_DEFAULT_PROVIDER is "mock" or empty → MockLLMProvider
         - If "openai" → OpenAIProvider (requires WAX_OPENAI_API_KEY)
+        - If "anthropic" → AnthropicProvider (requires WAX_ANTHROPIC_API_KEY)
         - Others raise WaxConfigurationError (not yet implemented)
+
+        Every provider is wrapped in ResilientProvider (classified retry +
+        per-provider circuit breaker) — the same contract regardless of
+        vendor, proving the model abstraction holds under failure.
         """
         provider_kind = settings.llm_default_provider.strip().lower()
         if not provider_kind or provider_kind == ProviderKind.MOCK.value:
             log.warning("intelligence.using_mock_provider")
-            return cls(MockLLMProvider())
+            return cls(cls._resilient(MockLLMProvider(), settings))
 
         if provider_kind == ProviderKind.OPENAI.value:
             if not settings.openai_api_key:
@@ -64,18 +69,67 @@ class IntelligenceService:
             from wax.intelligence.adapters.openai_provider import OpenAIProvider
 
             return cls(
-                OpenAIProvider(
-                    api_key=settings.openai_api_key,
-                    # Configurable base URL keeps the runtime model-agnostic
-                    # by configuration: any OpenAI-compatible endpoint works
-                    # (vLLM, Together, OpenRouter, ...) without code changes.
-                    base_url=settings.llm_base_url or "https://api.openai.com/v1",
-                    default_model=settings.llm_model or "gpt-4o-mini",
+                cls._resilient(
+                    OpenAIProvider(
+                        api_key=settings.openai_api_key,
+                        # Configurable base URL keeps the runtime model-agnostic
+                        # by configuration: any OpenAI-compatible endpoint works
+                        # (vLLM, Together, OpenRouter, ...) without code changes.
+                        base_url=settings.llm_base_url or "https://api.openai.com/v1",
+                        default_model=settings.llm_model or "gpt-4o-mini",
+                    ),
+                    settings,
+                )
+            )
+
+        if provider_kind == ProviderKind.ANTHROPIC.value:
+            if not settings.anthropic_api_key:
+                raise WaxConfigurationError(
+                    "WAX_LLM_DEFAULT_PROVIDER=anthropic requires WAX_ANTHROPIC_API_KEY"
+                )
+            from wax.intelligence.adapters.anthropic_provider import AnthropicProvider
+
+            return cls(
+                cls._resilient(
+                    AnthropicProvider(
+                        api_key=settings.anthropic_api_key,
+                        base_url=settings.llm_base_url
+                        or "https://api.anthropic.com/v1",
+                        default_model=settings.llm_model
+                        or "claude-3-5-haiku-latest",
+                    ),
+                    settings,
                 )
             )
 
         raise WaxConfigurationError(
-            f"Unknown LLM provider: {provider_kind!r}. Supported: mock, openai"
+            f"Unknown LLM provider: {provider_kind!r}. Supported: mock, openai, anthropic"
+        )
+
+    @staticmethod
+    def _resilient(provider: LLMProvider, settings: WaxSettings) -> LLMProvider:
+        """Wrap a provider with classified retry + circuit breaker.
+
+        All providers get the same resilience contract from configuration —
+        replacing a vendor never re-opens the failure-mode question.
+        """
+        from wax.intelligence.resilience import ResilientProvider, TransientLLMError
+        from wax.reliability.circuit_breaker import CircuitBreaker
+        from wax.reliability.retry import RetryConfig
+
+        return ResilientProvider(
+            provider,
+            retry=RetryConfig(
+                max_attempts=max(1, int(settings.llm_retry_max_attempts)),
+                base_delay=0.5,
+                max_delay=8.0,
+                retryable_exceptions=(TransientLLMError,),
+            ),
+            breaker=CircuitBreaker(
+                name=f"llm-{provider.kind.value}",
+                failure_threshold=max(1, int(settings.llm_breaker_failure_threshold)),
+                recovery_timeout=max(1.0, float(settings.llm_breaker_recovery_seconds)),
+            ),
         )
 
     @property

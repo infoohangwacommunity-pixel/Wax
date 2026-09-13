@@ -89,6 +89,10 @@ class WaxSettings(BaseSettings):
     llm_base_url: str = ""
     # Default model override (provider-specific name).
     llm_model: str = ""
+    # Provider resilience (wired via intelligence.resilience.ResilientProvider).
+    llm_retry_max_attempts: int = 3
+    llm_breaker_failure_threshold: int = 5
+    llm_breaker_recovery_seconds: float = 30.0
     # Tool-calling rounds per message. The AI may request capabilities; the
     # runtime bounds how many request/result exchanges one message may spawn.
     max_tool_rounds: int = 5
