@@ -107,7 +107,7 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             lifecycle.on_shutdown("whatsapp.close", wa_client.close())
             # Register the WhatsApp sender with the runtime's delivery router
             # (Phase W: interfaces attach to the runtime, never own it).
-            services.delivery.register("whatsapp", wa_client.send_text)
+            services.delivery.register("whatsapp", wa_client.send_long_text)
             log.info(
                 "whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id
             )

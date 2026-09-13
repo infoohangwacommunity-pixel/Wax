@@ -159,7 +159,9 @@ MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
         "type": "object",
         "properties": {
             "recipient_id": {"type": "string"},
-            "text": {"type": "string", "maxLength": 4000},
+            "text": {"type": "string", "maxLength": 12000,
+                            "description": "Chunks over 4096 chars are "
+                            "delivered as marked parts"},
             "interface_kind": {"type": "string", "default": "whatsapp"},
         },
         "required": ["recipient_id", "text"],
@@ -335,8 +337,8 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             raise ValueError("recipient_id is required")
         if not text or not isinstance(text, str):
             raise ValueError("text is required")
-        if len(text) > 4000:
-            raise ValueError("text exceeds 4000 characters")
+        if len(text) > 12000:
+            raise ValueError("text exceeds 12000 characters")
 
         delivery = services.delivery
         if not delivery.has(interface_kind):

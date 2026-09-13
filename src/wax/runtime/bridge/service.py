@@ -156,7 +156,8 @@ class RuntimeBridge:
     ) -> None:
         self._intelligence = intelligence
         self._services = services or RuntimeServices.build(None)
-        # WhatsApp text messages are limited to 4096 chars; we cap conservatively.
+        # An interface-agnostic ceiling; the interface owns its own wire
+        # limits (WhatsApp chunking lives in the WhatsApp client, Phase W).
         self._max_response_chars = max_response_chars
 
     # -------------------------------------------------------------------

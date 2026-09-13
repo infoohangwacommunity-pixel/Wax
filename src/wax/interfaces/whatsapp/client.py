@@ -77,6 +77,49 @@ class WhatsAppClient:
             }
         )
 
+    WHATSAPP_TEXT_LIMIT = 4096
+
+    async def send_long_text(self, to_phone: str, text: str) -> list[dict[str, Any]]:
+        """Send text of ANY length by chunking to WhatsApp's 4096-char limit.
+
+        This is interface intelligence (Phase W): the delivery constraint
+        lives HERE — in the interface that owns it — not in the runtime.
+        Chunk boundaries prefer paragraph/line breaks; multi-part replies
+        carry explicit "(part i/n)" markers so the conversation reads
+        coherently. Single-shot messages under the limit are sent verbatim
+        with zero transformation.
+        """
+        limit = self.WHATSAPP_TEXT_LIMIT - 32  # room for part markers
+        if len(text) <= self.WHATSAPP_TEXT_LIMIT:
+            return [await self.send_text(to_phone, text)]
+
+        chunks = self._chunk_text(text, limit)
+        results: list[dict[str, Any]] = []
+        total = len(chunks)
+        for i, chunk in enumerate(chunks, start=1):
+            marked = f"({i}/{total})\n\n{chunk}" if total > 1 else chunk
+            results.append(await self.send_text(to_phone, marked))
+        return results
+
+    @staticmethod
+    def _chunk_text(text: str, limit: int) -> list[str]:
+        """Split into <=limit chunks, preferring paragraph then line breaks."""
+        if len(text) <= limit:
+            return [text]
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+            window = remaining[: limit + 1]
+            cut = max(window.rfind("\n\n"), window.rfind("\n"), window.rfind(" "))
+            if cut < limit // 2:  # no reasonable boundary — hard split
+                cut = limit
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip("\n")
+        return [c for c in chunks if c]
+
     async def send_message(self, msg: WhatsAppOutgoingMessage) -> dict[str, Any]:
         """Send a structured message."""
         payload = self._build_payload(msg)
