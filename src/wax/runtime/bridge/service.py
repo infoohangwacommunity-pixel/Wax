@@ -372,6 +372,22 @@ class RuntimeBridge:
             record.response_text = response_text
             record.processed_at = datetime.now(UTC)
 
+            # Announce the fact on the runtime event ledger: "this human
+            # interacted with the runtime now". Durable work waiting on
+            # interface.message:<principal> (continue-when-the-user-replies)
+            # is satisfied by the NEXT runner pass. The interface namespace
+            # is runtime-owned — intelligence can wait on it, never emit it.
+            from wax.runtime.work.signals import SignalRepository
+
+            await SignalRepository(session).emit(
+                f"interface.message:{principal.id}",
+                payload={
+                    "interface": request.interface_kind.value,
+                    "message_id": request.interface_message_id,
+                },
+                emitted_by="bridge",
+            )
+
             await record_audit_event(
                 session,
                 actor_principal_id=principal.id,

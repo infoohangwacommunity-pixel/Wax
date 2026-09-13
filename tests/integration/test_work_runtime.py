@@ -667,3 +667,325 @@ class TestOpenWorldComposition:
             "interface": "whatsapp",
             "recipient_id": "+2348000000000",
         }
+
+
+class TestEventWakeConditions:
+    """Durable waiting beyond time (ADR-0011).
+
+    Work can wait for a CONDITION — a named runtime signal in the event
+    ledger — not only for a clock time. The runtime owns the ledger and
+    the namespaces; the intelligence decides what to wait for. A reminder
+    is still just the time-wake composition; "continue when the user
+    replies" and "run when that work finishes" are event-wake compositions
+    of the SAME mechanism. No feature was added; the primitive was
+    generalized.
+    """
+
+    async def _schedule(self, services, principal_id: str, inputs: dict, capability: str = "echo"):
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        async with db_session() as session:
+            invoker = services.invoker(session)
+            result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="work.schedule",
+                    principal_id=principal_id,
+                    inputs={
+                        "payload": {"capability_name": capability, "inputs": {}},
+                        **inputs,
+                    },
+                )
+            )
+            await session.commit()
+        assert result.outcome == "success", result.error
+        return result.outputs["work_id"]
+
+    async def _principal(self, services) -> str:
+        bridge = RuntimeBridge(
+            intelligence=IntelligenceService(MockLLMProvider()), services=services
+        )
+        async with db_session() as session:
+            response = await bridge.process(session, _request())
+        return response.principal_id
+
+    async def test_event_work_does_not_wake_on_time_alone(self, fresh_db, services, runner) -> None:
+        """An event-wake item whose floor time has passed but whose signal
+        never fired stays pending — time alone does not satisfy a
+        condition."""
+        from wax.runtime.work.signals import SignalRepository
+
+        pid = await self._principal(services)
+        work_id = await self._schedule(services, pid, {"wake_event": "test.never.fired"})
+
+        await asyncio.sleep(0.05)
+        ran = await runner.run_once()
+        assert ran == 0
+        item = await _get_work(work_id)
+        assert item.status == "pending"
+
+        # And the ledger is empty for that name.
+        async with db_session() as session:
+            assert (
+                await SignalRepository(session).has_signal_since(
+                    "test.never.fired", after=datetime.now(UTC) - timedelta(seconds=1)
+                )
+                is None
+            )
+
+    async def test_event_work_wakes_when_signal_emitted(self, fresh_db, services, runner) -> None:
+        from wax.runtime.work.signals import SignalRepository
+
+        pid = await self._principal(services)
+        work_id = await self._schedule(services, pid, {"wake_event": "test.go"})
+
+        ran = await runner.run_once()
+        assert ran == 0  # no signal yet
+
+        async with db_session() as session:
+            await SignalRepository(session).emit(
+                "test.go", payload={"reason": "condition met"}, emitted_by="test"
+            )
+            await session.commit()
+
+        ran = await runner.run_once()
+        assert ran == 1
+        item = await _get_work(work_id)
+        assert item.status == "succeeded"
+        assert item.result == {"echo": {}}
+
+    async def test_signal_broadcast_wakes_all_waiters(self, fresh_db, services, runner) -> None:
+        """Signals are broadcast facts: every waiter on the name wakes, each
+        consuming the event independently via its own watermark."""
+        from wax.runtime.work.signals import SignalRepository
+
+        pid = await self._principal(services)
+        a = await self._schedule(services, pid, {"wake_event": "test.broadcast"})
+        b = await self._schedule(services, pid, {"wake_event": "test.broadcast"})
+
+        async with db_session() as session:
+            await SignalRepository(session).emit("test.broadcast", emitted_by="test")
+            await session.commit()
+
+        ran = await runner.run_once()
+        assert ran == 2
+        assert (await _get_work(a)).status == "succeeded"
+        assert (await _get_work(b)).status == "succeeded"
+
+    async def test_watermark_prevents_retroactive_wake(self, fresh_db, services, runner) -> None:
+        """A signal emitted BEFORE the wait began never fires it. Waiting
+        starts at scheduling time; old facts are not new conditions."""
+        from wax.runtime.work.signals import SignalRepository
+
+        pid = await self._principal(services)
+
+        # A signal arrives first...
+        async with db_session() as session:
+            await SignalRepository(session).emit("test.stale", emitted_by="test")
+            await session.commit()
+
+        # ...then work starts waiting for it. The stale fact must NOT wake it.
+        work_id = await self._schedule(services, pid, {"wake_event": "test.stale"})
+        ran = await runner.run_once()
+        assert ran == 0
+        assert (await _get_work(work_id)).status == "pending"
+
+        # A NEW emission (strictly after the watermark) does wake it.
+        await asyncio.sleep(0.01)
+        async with db_session() as session:
+            await SignalRepository(session).emit("test.stale", emitted_by="test")
+            await session.commit()
+        ran = await runner.run_once()
+        assert ran == 1
+        assert (await _get_work(work_id)).status == "succeeded"
+
+    async def test_retry_reconsumes_same_signal_at_least_once(
+        self, fresh_db, services, runner
+    ) -> None:
+        """Handler failure after a legitimate wake retries on the SAME
+        signal (at-least-once, consistent with lease-reclaim semantics)."""
+        from wax.capabilities.contracts import CapabilityDescriptor
+        from wax.runtime.work.signals import SignalRepository
+
+        calls = {"n": 0}
+
+        async def flaky(inputs, ctx):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient failure")
+            return {"attempt": calls["n"]}
+
+        services.capability_registry.register(
+            CapabilityDescriptor(
+                name="test.flaky",
+                description="fails once",
+                version="1.0.0",
+                input_schema={"type": "object", "properties": {}},
+                required_permission="capability.invoke:built_in",
+                timeout_seconds=5.0,
+                idempotent=False,
+                is_destructive=False,
+            ),
+            flaky,
+        )
+
+        pid = await self._principal(services)
+        work_id = await self._schedule(
+            services, pid, {"wake_event": "test.flaky.go"}, capability="test.flaky"
+        )
+
+        async with db_session() as session:
+            await SignalRepository(session).emit("test.flaky.go", emitted_by="test")
+            await session.commit()
+
+        assert await runner.run_once() == 1  # attempt 1 fails
+        item = await _get_work(work_id)
+        assert item.status == "pending"  # backoff (0s in fixture) → retryable
+        assert "transient failure" in (item.last_error or "")
+
+        assert await runner.run_once() == 1  # attempt 2 on the SAME signal
+        item = await _get_work(work_id)
+        assert item.status == "succeeded"
+        assert item.result == {"attempt": 2}
+
+    async def test_wait_deadline_expires_honestly(self, fresh_db, services, runner) -> None:
+        """A condition that never fires and has a deadline dies with an
+        honest 'condition not met' — not silently, not fabricated. This is
+        a lifecycle outcome, not an execution failure: no dead-letter row."""
+        from wax.reliability.dead_letter import DeadLetterRepository
+
+        pid = await self._principal(services)
+        work_id = await self._schedule(
+            services, pid, {"wake_event": "test.deadline", "expires_in_seconds": 0.05}
+        )
+
+        await asyncio.sleep(0.1)
+        assert await runner.run_once() == 0  # sweeps the expired wait
+        item = await _get_work(work_id)
+        assert item.status == "dead"
+        assert "condition not met" in (item.last_error or "")
+
+        # A lifecycle outcome, not an execution failure: no dead-letter row.
+        async with db_session() as session:
+            rows = await DeadLetterRepository(session).list_recent(limit=10)
+        assert all(
+            letter.payload is None or letter.payload.get("work_id") != work_id for letter in rows
+        )
+
+    async def test_dependency_chain_via_work_succeeded_signal(
+        self, fresh_db, services, runner
+    ) -> None:
+        """'Run B when A finishes' is a composition: B waits on
+        work.succeeded:<A>; the runner announces A's terminal state on the
+        ledger; the next pass wakes B. No workflow engine, no new feature."""
+        pid = await self._principal(services)
+        a = await self._schedule(
+            services,
+            pid,
+            {
+                "payload": {"capability_name": "echo", "inputs": {"message": "A"}},
+                "delay_seconds": 0.05,
+            },
+        )
+        b = await self._schedule(services, pid, {"wake_event": f"work.succeeded:{a}"})
+
+        # Pass 1: A wakes and succeeds (announcing its signal in the same
+        # transaction as the status change).
+        await asyncio.sleep(0.1)  # let A's delay elapse
+        assert await runner.run_once() == 1
+        assert (await _get_work(a)).status == "succeeded"
+        assert (await _get_work(b)).status == "pending"  # not yet — signal
+        # was emitted during pass 1, but B's claim query in that pass ran
+        # before A ran. One more pass:
+        assert await runner.run_once() == 1
+        assert (await _get_work(b)).status == "succeeded"
+
+    async def test_signal_emit_capability_gates_and_reserved_namespaces(
+        self, fresh_db, services
+    ) -> None:
+        """signal.emit crosses the full gate chain; runtime-owned
+        namespaces cannot be forged by the intelligence (they can only be
+        waited on)."""
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        pid = await self._principal(services)
+
+        async with db_session() as session:
+            invoker = services.invoker(session)
+
+            ok = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="signal.emit",
+                    principal_id=pid,
+                    inputs={"name": "external.payment.received", "payload": {"amount": 1}},
+                )
+            )
+            assert ok.outcome == "success", ok.error
+            assert ok.outputs["name"] == "external.payment.received"
+
+            for forged in ("interface.message:someone", "work.succeeded:xyz"):
+                bad = await invoker.invoke(
+                    CapabilityInvocationRequest(
+                        capability_name="signal.emit",
+                        principal_id=pid,
+                        inputs={"name": forged},
+                    )
+                )
+                assert bad.outcome == "failure", forged
+                assert "runtime-owned" in bad.error
+
+            malformed = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="signal.emit",
+                    principal_id=pid,
+                    inputs={"name": "bad name with spaces!"},
+                )
+            )
+            assert malformed.outcome == "failure"
+
+    async def test_scheduled_work_carries_execution_traceability(self, fresh_db, services) -> None:
+        """G4 fix: work scheduled during an execution links back to it
+        (execution → objective traceability), instead of dropping the
+        context on the floor."""
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+
+        pid = await self._principal(services)
+        async with db_session() as session:
+            invoker = services.invoker(session)
+            result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="work.schedule",
+                    principal_id=pid,
+                    inputs={
+                        "payload": {"capability_name": "echo", "inputs": {}},
+                        "delay_seconds": 60,
+                    },
+                    request_id="01EXECUTIONTRACE01",
+                )
+            )
+            await session.commit()
+        assert result.outcome == "success"
+        item = await _get_work(result.outputs["work_id"])
+        assert item.execution_id == "01EXECUTIONTRACE01"
+
+    async def test_bridge_emits_interface_message_signal(self, fresh_db, services) -> None:
+        """A processed inbound message announces
+        interface.message:<principal> on the ledger — the runtime-owned
+        fact 'this human interacted now' that continue-on-reply work waits
+        for."""
+        from wax.runtime.work.signals import SignalRepository
+
+        bridge = RuntimeBridge(
+            intelligence=IntelligenceService(MockLLMProvider()), services=services
+        )
+        async with db_session() as session:
+            response = await bridge.process(session, _request())
+        assert response.status is RuntimeResponseStatus.SUCCESS
+
+        async with db_session() as session:
+            hit = await SignalRepository(session).has_signal_since(
+                f"interface.message:{response.principal_id}",
+                after=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        assert hit is not None
+        assert hit.payload["interface"] == "whatsapp"
+        assert hit.emitted_by == "bridge"

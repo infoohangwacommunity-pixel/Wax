@@ -86,6 +86,37 @@ def _parse_wake_time(inputs: dict[str, Any]) -> datetime:
     raise ValueError("Provide wake_at (ISO 8601) or delay_seconds (number)")
 
 
+def _parse_optional_deadline(inputs: dict[str, Any]) -> datetime | None:
+    """Resolve the optional wait deadline: expires_at (ISO 8601) or
+    expires_in_seconds. A waiting item whose condition is not met by the
+    deadline dies honestly instead of waiting forever."""
+    raw_at = inputs.get("expires_at")
+    raw_in = inputs.get("expires_in_seconds")
+    if raw_at is not None and raw_in is not None:
+        raise ValueError("Provide either expires_at or expires_in_seconds, not both")
+    if raw_at is None and raw_in is None:
+        return None
+    if raw_at is not None:
+        if not isinstance(raw_at, str):
+            raise ValueError("expires_at must be an ISO 8601 string")
+        try:
+            deadline = datetime.fromisoformat(raw_at.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(f"expires_at is not valid ISO 8601: {e}") from e
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        return deadline
+    try:
+        seconds = float(raw_in)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as e:
+        raise ValueError("expires_in_seconds must be a number") from e
+    if seconds <= 0:
+        raise ValueError("expires_in_seconds must be > 0")
+    if seconds > MAX_WORK_DELAY.total_seconds():
+        raise ValueError("expires_in_seconds exceeds the 30-day maximum")
+    return datetime.now(UTC) + timedelta(seconds=seconds)
+
+
 # ---------------------------------------------------------------------------
 # Descriptor shapes (shared by registration; implementations are closures)
 # ---------------------------------------------------------------------------
@@ -93,11 +124,15 @@ def _parse_wake_time(inputs: dict[str, Any]) -> datetime:
 WORK_SCHEDULE_DESCRIPTOR = CapabilityDescriptor(
     name="work.schedule",
     description=(
-        "Schedule durable work that wakes at a future time and invokes a "
-        "capability. Survives restarts. payload.capability_name plus "
-        "wake_at (ISO 8601) or delay_seconds."
+        "Schedule durable work that survives restarts. Two wake shapes: "
+        "TIME (wake_at or delay_seconds) or EVENT (wake_event: the name of "
+        "a runtime signal to wait for, e.g. work.succeeded:<work_id> to run "
+        "when that work finishes, or interface.message:<principal_id> to "
+        "run when the user next messages). Optional deadline via "
+        "expires_at/expires_in_seconds. payload.capability_name plus "
+        "payload.inputs define WHAT runs on wake."
     ),
-    version="1.0.0",
+    version="2.0.0",
     input_schema={
         "type": "object",
         "properties": {
@@ -106,8 +141,22 @@ WORK_SCHEDULE_DESCRIPTOR = CapabilityDescriptor(
                 "description": "Must include capability_name; may include inputs",
             },
             "kind": {"type": "string", "default": "capability"},
-            "wake_at": {"type": "string", "description": "ISO 8601 datetime"},
+            "wake_at": {"type": "string", "description": "ISO 8601 datetime (time wake)"},
             "delay_seconds": {"type": "number"},
+            "wake_event": {
+                "type": "string",
+                "description": "Signal name to wait for (event wake). Mutually "
+                "exclusive with wake_at/delay_seconds.",
+            },
+            "not_before": {
+                "type": "string",
+                "description": "ISO 8601; earliest claim time for event wakes",
+            },
+            "expires_at": {
+                "type": "string",
+                "description": "ISO 8601; if the condition is unmet by then the work dies honestly",
+            },
+            "expires_in_seconds": {"type": "number"},
             "max_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
         },
         "required": ["payload"],
@@ -159,9 +208,11 @@ MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
         "type": "object",
         "properties": {
             "recipient_id": {"type": "string"},
-            "text": {"type": "string", "maxLength": 12000,
-                            "description": "Chunks over 4096 chars are "
-                            "delivered as marked parts"},
+            "text": {
+                "type": "string",
+                "maxLength": 12000,
+                "description": "Chunks over 4096 chars are delivered as marked parts",
+            },
             "interface_kind": {"type": "string", "default": "whatsapp"},
         },
         "required": ["recipient_id", "text"],
@@ -199,6 +250,44 @@ SCRATCH_WORKSPACE_DESCRIPTOR = CapabilityDescriptor(
 )
 
 
+SIGNAL_EMIT_DESCRIPTOR = CapabilityDescriptor(
+    name="signal.emit",
+    description=(
+        "Emit a named runtime signal onto the persistent event ledger. "
+        "Waiting work whose wake_event matches wakes on the next runner "
+        "pass. Runtime-owned namespaces (interface.*, work.*) cannot be "
+        "emitted by the intelligence — only waited on."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Signal name, e.g. 'external.payment.received'",
+                "maxLength": 160,
+            },
+            "payload": {
+                "type": "object",
+                "description": "Optional JSON evidence about the fact",
+            },
+        },
+        "required": ["name"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "signal_id": {"type": "string"},
+            "name": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+
 def register_runtime_capabilities(registry: CapabilityRegistry, services: RuntimeServices) -> None:
     """Register the runtime-mechanism capabilities bound to THIS container."""
 
@@ -206,6 +295,11 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
     async def work_schedule_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
         from wax.runtime.work.repository import WorkRepository
+        from wax.runtime.work.signals import (
+            SignalNameError,
+            validate_signal_name,
+        )
+        from wax.state.work_models import WAKE_KIND_EVENT, WAKE_KIND_TIME
 
         payload = inputs.get("payload")
         if not isinstance(payload, dict):
@@ -225,7 +319,14 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         if kind != "capability":
             raise ValueError(f"Unsupported work kind: {kind!r} (only 'capability')")
 
-        wake_at = _parse_wake_time(inputs)
+        # Wake condition: TIME (wake_at/delay_seconds) or EVENT (wake_event).
+        wake_event_raw = inputs.get("wake_event")
+        has_time = inputs.get("wake_at") is not None or inputs.get("delay_seconds") is not None
+        if wake_event_raw is not None and has_time:
+            raise ValueError(
+                "wake_event is mutually exclusive with wake_at/delay_seconds: "
+                "wait for a condition OR a time, not both"
+            )
         try:
             max_attempts = int(inputs.get("max_attempts", 3))
         except (TypeError, ValueError) as e:
@@ -241,6 +342,37 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 "human-approval workflow exists yet"
             )
 
+        expires_at = _parse_optional_deadline(inputs)
+
+        if wake_event_raw is not None:
+            # Event wake. The intelligence may wait on ANY signal name —
+            # including runtime-owned ones (work.succeeded:<id>,
+            # interface.message:<principal>) — but only the runtime can
+            # EMIT those. Validation is format-only here.
+            try:
+                wake_event = validate_signal_name(str(wake_event_raw), allow_reserved=True)
+            except SignalNameError as e:
+                raise ValueError(str(e)) from e
+            wake_kind = WAKE_KIND_EVENT
+            # Floor: not_before if given, else now (claimable as soon as
+            # the condition is met).
+            if inputs.get("not_before") is not None:
+                raw = str(inputs["not_before"])
+                try:
+                    wake_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError as e:
+                    raise ValueError(f"not_before is not valid ISO 8601: {e}") from e
+                if wake_at.tzinfo is None:
+                    wake_at = wake_at.replace(tzinfo=UTC)
+            else:
+                wake_at = datetime.now(UTC)
+            if expires_at is not None and expires_at <= wake_at:
+                raise ValueError("expires_at must be after not_before")
+        else:
+            wake_kind = WAKE_KIND_TIME
+            wake_event = None
+            wake_at = _parse_wake_time(inputs)
+
         async with db_session() as session:
             repo = WorkRepository(session)
             item = await repo.schedule(
@@ -251,15 +383,26 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 },
                 wake_at=wake_at,
                 principal_id=ctx.principal_id,
-                execution_id=None,
+                # Traceability: link the work back to WHO called for it.
+                # On the live bridge path ctx.request_id IS the bridge
+                # execution id (execution → objective); from durable work
+                # it is the parent work item. The invoker-internal
+                # execution id is the fallback for direct calls.
+                execution_id=ctx.request_id or ctx.execution_id or None,
                 max_attempts=max_attempts,
+                wake_kind=wake_kind,
+                wake_event=wake_event,
+                expires_at=expires_at,
             )
             await session.commit()
 
         return {
             "work_id": item.id,
             "status": item.status,
+            "wake_kind": item.wake_kind,
+            "wake_event": item.wake_event,
             "wake_at": item.wake_at.isoformat(),
+            "expires_at": item.expires_at.isoformat() if item.expires_at else None,
             "capability_name": capability_name,
         }
 
@@ -311,7 +454,10 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     "work_id": i.id,
                     "kind": i.kind,
                     "status": i.status,
+                    "wake_kind": i.wake_kind,
+                    "wake_event": i.wake_event,
                     "wake_at": i.wake_at.isoformat(),
+                    "expires_at": i.expires_at.isoformat() if i.expires_at else None,
                     "attempts": i.attempts,
                     "last_error": (i.last_error or "")[:200] or None,
                     "payload": i.payload,
@@ -390,6 +536,47 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "recipient_id": recipient_id,
         }
 
+    # --- signal.emit: gated emission onto the runtime event ledger ------
+
+    async def signal_emit_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.signals import (
+            SignalNameError,
+            SignalRepository,
+            validate_signal_name,
+        )
+
+        name_raw = inputs.get("name")
+        if not name_raw or not isinstance(name_raw, str):
+            raise ValueError("name is required")
+        try:
+            # The runtime owns interface.*/work.* signals: the intelligence
+            # may WAIT on "the user replied" or "that work finished", but
+            # emitting those facts itself would forge runtime boundaries.
+            name = validate_signal_name(name_raw, allow_reserved=False)
+        except SignalNameError as e:
+            raise ValueError(str(e)) from e
+
+        signal_payload = inputs.get("payload")
+        if signal_payload is not None and not isinstance(signal_payload, dict):
+            raise ValueError("payload must be an object")
+        if signal_payload is not None and len(str(signal_payload)) > 8000:
+            raise ValueError("payload is too large (8000 chars serialized max)")
+
+        async with db_session() as session:
+            record = await SignalRepository(session).emit(
+                name,
+                payload=signal_payload,
+                emitted_by=f"principal:{ctx.principal_id}",
+            )
+            await session.commit()
+
+        services.metrics.signal_emitted(name)
+        return {
+            "signal_id": record.id,
+            "name": record.name,
+            "emitted_at": record.emitted_at.isoformat(),
+        }
+
     # --- scratch.workspace (Phase S) ----------------------------------
 
     async def scratch_workspace_impl(
@@ -440,10 +627,11 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
     registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
+    registry.register(SIGNAL_EMIT_DESCRIPTOR, signal_emit_impl)
     registry.register(MEMORY_STORE_DESCRIPTOR, memory_store_impl)
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
-    log.info("capability.runtime_registered", count=9)
+    log.info("capability.runtime_registered", count=10)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------

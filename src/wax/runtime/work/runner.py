@@ -6,10 +6,15 @@ the app lifespan (no second process needed at this scale; the lease design
 admits multiple workers/replicas later without schema change).
 
 Loop:
-1. claim_due(): take leased ownership of due items (crash-safe).
+1. claim_due(): take leased ownership of due or condition-satisfied items
+   (crash-safe; event-wake items are correlated against the signal ledger).
 2. dispatch each to its registered handler.
 3. success → mark_succeeded; failure → mark_failed with backoff; exhausted
    attempts → dead + dead-letter row.
+4. Terminal states are ANNOUNCED: the runner appends a runtime signal
+   (work.succeeded:<id> / work.dead:<id>) to the event ledger, so other
+   work can wait on "this work finished" — dependency composition without
+   any workflow engine.
 
 Recovery scan (on startup): executions left "running" by a previous process
 and processed_messages left "pending" are reconciled to failed/retryable so
@@ -133,6 +138,7 @@ class WorkRunner:
         return len(items)
 
     async def _process_item(self, item: WorkItemRecord) -> None:
+        from wax.runtime.work.signals import SignalRepository
         from wax.state.engine import db_session
 
         handler = self._handlers.get(item.kind)
@@ -148,6 +154,13 @@ class WorkRunner:
 
             async with db_session() as session:
                 await WorkRepository(session).mark_succeeded(item.id, result)
+                # Announce the terminal state on the event ledger: other
+                # work may be waiting for THIS work to finish.
+                await SignalRepository(session).emit(
+                    f"work.succeeded:{item.id}",
+                    payload={"work_id": item.id, "kind": kind},
+                    emitted_by="work_runner",
+                )
                 await session.commit()
             self._services.metrics.work_woken("succeeded", kind)
         except Exception as e:
@@ -156,6 +169,7 @@ class WorkRunner:
 
     async def _fail_item(self, item: WorkItemRecord, error: Exception) -> None:
         from wax.reliability.dead_letter import DeadLetterRepository
+        from wax.runtime.work.signals import SignalRepository
         from wax.state.engine import db_session
 
         try:
@@ -175,6 +189,17 @@ class WorkRunner:
                         error_message=str(error)[:5000],
                         attempts=item.attempts,
                         payload=item.payload,
+                    )
+                    # Dead is terminal too — announce it so dependents can
+                    # react honestly (retry, compensate, notify the human).
+                    await SignalRepository(session).emit(
+                        f"work.dead:{item.id}",
+                        payload={
+                            "work_id": item.id,
+                            "kind": item.kind,
+                            "error": str(error)[:500],
+                        },
+                        emitted_by="work_runner",
                     )
                 await session.commit()
         except Exception as finalize_error:

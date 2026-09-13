@@ -77,6 +77,11 @@ class RuntimeMetrics:
     def work_inflight(self, count: float) -> None:
         self._registry.gauge("work_items_inflight").set(count)
 
+    # --- Event ledger (durable waiting) ------------------------------------
+
+    def signal_emitted(self, signal: str) -> None:
+        self._registry.counter("runtime_signals_total", signal=signal).inc()
+
     # --- Memory lifecycle -------------------------------------------------
 
     def memory_expired(self, kind: str) -> None:
