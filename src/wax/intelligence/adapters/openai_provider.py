@@ -55,6 +55,35 @@ class OpenAIProvider:
     def kind(self) -> ProviderKind:
         return ProviderKind.OPENAI
 
+    # Conservative context windows per model family (adapter knowledge —
+    # the runtime reads this through capability negotiation, never via an
+    # SDK here). Keys are lowercase model prefixes.
+    _CONTEXT_LIMITS: dict[str, int] = {
+        "gpt-4o": 128_000,
+        "gpt-4-turbo": 128_000,
+        "gpt-4": 8_192,
+        "gpt-3.5-turbo": 16_385,
+        "o1": 128_000,
+        "o3": 200_000,
+    }
+    _DEFAULT_CONTEXT_LIMIT = 128_000
+
+    @property
+    def context_limit_tokens(self) -> int:
+        """The advertised context window for the configured model."""
+        model = (self._default_model or "").lower()
+        for prefix, limit in self._CONTEXT_LIMITS.items():
+            if model.startswith(prefix):
+                return limit
+        return self._DEFAULT_CONTEXT_LIMIT
+
+    def estimate_tokens(self, text: str) -> int:
+        """Portable estimator (~4 chars/token). A real tokenizer (tiktoken)
+        may replace this INSIDE this adapter file without contract change."""
+        if not text:
+            return 0
+        return max(1, int(len(text) / 4))
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = self._build_payload(request, stream=False)
         response = await self._client.post("/chat/completions", json=payload)

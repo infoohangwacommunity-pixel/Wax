@@ -19,9 +19,11 @@ weigh them.
 Budget accounting is character-based (≈4 chars per token) on purpose:
 it is provider-independent, requires no tokenizer dependency in the
 runtime core, and errs on the safe side for modern context windows.
-Model-advertised context limits can replace the configured constant
-without changing this module's contract (capability negotiation is a
-recorded follow-up in ADR-0012).
+The budget itself is NEGOTIATED (wax.intelligence.context_limits):
+when the selected provider advertises a context limit, the budget is
+derived from it (limit − reserved output tokens); otherwise the
+configured `context_char_budget` fallback applies. This module's
+contract is unchanged — it fills whatever budget it is given.
 """
 
 from __future__ import annotations
@@ -85,8 +87,19 @@ def build_evidence_sections(context: ContinuityContext) -> list[EvidenceSection]
             )
 
     for memory in context.recent_memories:
+        # Malformed evidence must never break assembly: non-dict entries
+        # and entries without a usable summary are skipped (the runtime
+        # delivers what it can verify, nothing else).
+        if not isinstance(memory, dict):
+            continue
         reason = memory.get("reason", "context")
         summary = memory.get("summary") or ""
+        if not isinstance(summary, str):
+            # A non-string summary is still evidence — coerce it rather
+            # than silently dropping it.
+            summary = str(summary)
+        if not summary:
+            summary = str(memory.get("content") or "")[:200]
         if not summary:
             continue
         sections.append(

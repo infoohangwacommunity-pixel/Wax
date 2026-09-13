@@ -103,6 +103,13 @@ class ResilientProvider:
         return self._inner.kind
 
     @property
+    def inner_provider(self):
+        """The wrapped provider — read-only access for capability
+        negotiation (context limits, estimators). Never a second invoke
+        path; complete/stream still flow through retry + breaker."""
+        return self._inner
+
+    @property
     def breaker_state(self) -> str:
         return self._breaker.state.value
 

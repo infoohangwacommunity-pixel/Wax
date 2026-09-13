@@ -68,6 +68,21 @@ class AnthropicProvider:
     def kind(self) -> ProviderKind:
         return ProviderKind.ANTHROPIC
 
+    @property
+    def context_limit_tokens(self) -> int:
+        """Advertised context window for the Claude 3 family. The runtime
+        uses this to derive its evidence budget (capability negotiation);
+        there is no SDK import here — this is adapter knowledge."""
+        return 200_000
+
+    def estimate_tokens(self, text: str) -> int:
+        """Conservative Anthropic-side estimate (~3.5 chars/token for the
+        Claude tokenizers; we round to a safe 3.5 → use 4 to stay portable
+        and never over-claim capacity)."""
+        if not text:
+            return 0
+        return max(1, int(len(text) / 4))
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = self._build_payload(request, stream=False)
         response = await self._client.post("/messages", json=payload)

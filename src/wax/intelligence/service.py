@@ -42,6 +42,13 @@ class IntelligenceService:
     def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
+    @property
+    def inner_provider(self) -> LLMProvider:
+        """The underlying provider (ResilientProvider wrapping the adapter,
+        or a bare adapter). Read-only access for capability negotiation —
+        never a second invocation path."""
+        return self._provider
+
     @classmethod
     def from_settings(cls, settings: WaxSettings) -> IntelligenceService:
         """Build the service from WaxSettings.

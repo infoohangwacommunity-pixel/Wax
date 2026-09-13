@@ -454,8 +454,32 @@ class RuntimeBridge:
         metrics = self._services.metrics
         exec_repo = ExecutionRepository(session)
 
+        # Context-budget negotiation (ADR-0015): the evidence budget is
+        # derived from the provider's advertised context limit when it
+        # exposes one; otherwise the configured character fallback applies.
+        from wax.intelligence.context_limits import derive_context_budget
+
+        budget = derive_context_budget(
+            self._intelligence.inner_provider,
+            fallback_char_budget=int(self._services.settings.context_char_budget),
+            output_reserve_tokens=int(
+                self._services.settings.llm_output_reserve_tokens
+            ),
+        )
+        log.info(
+            "context.budget",
+            source=budget.source,
+            budget_chars=budget.budget_chars,
+            context_limit_tokens=budget.context_limit_tokens,
+        )
+
         messages = self._build_messages(
-            principal_display, request, context, sanitizer_result, principal_id
+            principal_display,
+            request,
+            context,
+            sanitizer_result,
+            principal_id,
+            budget_chars=budget.budget_chars,
         )
         tools = self._capability_tools()
         max_rounds = max(0, int(self._services.settings.max_tool_rounds))
@@ -972,14 +996,16 @@ class RuntimeBridge:
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
         principal_id: str | None = None,
+        budget_chars: int | None = None,
     ) -> list[LLMMessage]:
         """Assemble the LLM message list.
 
         Evidence assembly is a runtime mechanism (ADR-0012): the bridge
         delivers the continuity context's evidence — objective, conver-
         sation state, ranked memories — as labelled system evidence lines
-        within the configured budget. The runtime owns WHAT evidence is
-        delivered; the model interprets it.
+        within the evidence budget. The runtime owns WHAT evidence is
+        delivered; the model interprets it. `budget_chars` comes from the
+        context-budget negotiation (provider limit or configured fallback).
         """
         from wax.continuity.assembly import assemble_evidence, build_evidence_sections
 
@@ -992,7 +1018,11 @@ class RuntimeBridge:
 
         evidence_lines = assemble_evidence(
             build_evidence_sections(context),
-            budget_chars=int(self._services.settings.context_char_budget),
+            budget_chars=(
+                int(budget_chars)
+                if budget_chars is not None
+                else int(self._services.settings.context_char_budget)
+            ),
         )
         for line in evidence_lines:
             messages.append(LLMMessage(role=MessageRole.SYSTEM, content=line))

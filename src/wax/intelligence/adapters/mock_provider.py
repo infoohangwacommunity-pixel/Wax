@@ -40,10 +40,15 @@ class MockLLMProvider:
         *,
         default_model: str = "mock-1.0",
         scripted_tool_calls: list[list[ToolCall]] | None = None,
+        context_limit_tokens: int | None = None,
     ) -> None:
         self._default_model = default_model
         self._call_count = 0
         self._script: deque[list[ToolCall]] = deque(scripted_tool_calls or [])
+        # Optional advertised limit — lets tests exercise the runtime's
+        # provider-context negotiation. None = provider advertises nothing
+        # and the runtime uses its configured fallback budget.
+        self.context_limit_tokens = context_limit_tokens
 
     @property
     def kind(self) -> ProviderKind:
