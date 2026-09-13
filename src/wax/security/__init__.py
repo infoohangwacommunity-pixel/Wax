@@ -1,24 +1,33 @@
-"""wax.security — runtime security: trust boundaries, prompt-injection defense.
+"""wax.security — runtime security: prompt injection, abuse, rate limits, costs.
 
-Security lives outside prompts (Directive §46, §141). The runtime enforces
-trust boundaries; prompts cannot grant authority.
+Phase W extends the Phase N/O security baseline with:
+- AbuseDetector: detects suspicious patterns (message flood, repeated
+  injection attempts, suspicious senders)
+- RateLimiter: per-principal + per-IP request rate limiting
+- CostProtector: caps LLM token spend per principal per day
+- MaliciousMediaDetector: flags media that exceeds size limits or has
+  suspicious mime types
 
-Architecture:
-- TrustBoundary: which actors are trusted at what level
-- InputSanitizer: detects + neutralizes prompt-injection patterns
-- CapabilityGuard: enforces that capability outputs are treated as data,
-  never as instructions (confused deputy defense)
-
-INVARIANT INV-04: AI-requested actions pass through runtime authorization.
-INVARIANT: External input (web content, tool output, files) is UNTRUSTED.
+INVARIANTS:
+- Security is enforced by the runtime, NEVER by the model (Directive §46)
+- Rate limits prevent abuse without locking out legitimate users
+- Cost caps prevent runaway spend (Directive §114, §115)
 """
 
-from wax.security.input_sanitizer import InputSanitizer, SanitizerResult
-from wax.security.trust import TrustBoundary, TrustLevel
+from wax.security.abuse import AbuseDetector, AbuseVerdict
+from wax.security.rate_limiter import (
+    RateLimitConfig,
+    RateLimitDecision,
+    RateLimiter,
+)
+from wax.security.cost_protection import CostProtector, CostLimitConfig
 
 __all__ = [
-    "TrustBoundary",
-    "TrustLevel",
-    "InputSanitizer",
-    "SanitizerResult",
+    "AbuseDetector",
+    "AbuseVerdict",
+    "RateLimitConfig",
+    "RateLimitDecision",
+    "RateLimiter",
+    "CostProtector",
+    "CostLimitConfig",
 ]
