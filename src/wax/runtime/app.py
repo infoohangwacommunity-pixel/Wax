@@ -140,4 +140,72 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             ),
         }
 
+    # -------------------------------------------------------------------
+    # WhatsApp webhook endpoints (Phase Q)
+    # -------------------------------------------------------------------
+    @app.get("/webhooks/whatsapp", tags=["webhook"])
+    async def whatsapp_verify(
+        mode: str | None = None,
+        token: str | None = None,
+        challenge: str | None = None,
+    ) -> JSONResponse:
+        """Meta's webhook verification endpoint.
+
+        Meta sends a GET request with hub.mode, hub.verify_token, hub.challenge.
+        If the token matches, we echo back the challenge.
+        """
+        whatsapp_client = getattr(app.state, "whatsapp_client", None)
+        if whatsapp_client is None:
+            return JSONResponse(status_code=503, content={"error": "whatsapp_not_configured"})
+
+        from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(client=whatsapp_client)
+        result = adapter.verify_webhook_token(mode, token, challenge)
+        if result is None:
+            return JSONResponse(status_code=403, content={"error": "verification_failed"})
+        # Meta expects the challenge echoed back as plain text body, not JSON
+        from fastapi import Response
+
+        return Response(content=result, media_type="text/plain")
+
+    @app.post("/webhooks/whatsapp", tags=["webhook"])
+    async def whatsapp_webhook(
+        request_body: bytes,
+        x_hub_signature_256: str = "",
+    ) -> dict[str, Any]:
+        """Receive WhatsApp webhook events.
+
+        Security: signature verified via HMAC-SHA256 of the raw body using
+        the WhatsApp app secret.
+        """
+        whatsapp_client = getattr(app.state, "whatsapp_client", None)
+        if whatsapp_client is None:
+            return {"status": "whatsapp_not_configured"}
+
+        from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(client=whatsapp_client)
+
+        async def _runtime_callback(message):  # type: ignore[no-untyped-def]
+            """Called for each incoming WhatsApp message.
+
+            For now, just log. Phase R (Runtime Composition) will wire this
+            to Objective + Intelligence + Execution.
+            """
+            log.info(
+                "whatsapp.runtime_callback.invoked",
+                from_phone=message.from_phone,
+                message_type=message.type.value,
+                text=message.effective_text[:200],
+            )
+            # Placeholder: echo back what we received
+            return f"WAX received your {message.type.value} message. (Runtime composition pending Phase R.)"
+
+        return await adapter.handle_webhook(
+            raw_body=request_body,
+            signature_header=x_hub_signature_256,
+            runtime_callback=_runtime_callback,
+        )
+
     return app
