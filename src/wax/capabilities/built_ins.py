@@ -30,28 +30,44 @@ async def echo_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str,
 
 
 async def http_get_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
-    """Perform an HTTP GET request.
+    """Perform an HTTP GET request inside the runtime's network boundary.
+
+    The boundary (wax.security.network) blocks private/loopback/metadata
+    addresses, non-http schemes, credential-bearing URLs, and re-validates
+    every redirect hop. Response bodies are streamed under a byte cap.
 
     Inputs:
-        url: required, the URL to fetch
+        url: required, the URL to fetch (public http/https only)
         timeout_seconds: optional, default 10.0
         headers: optional, dict of headers
+
+    Failures raise ValueError with caller-safe messages: the AI learns
+    the real constraint, never internal topology.
     """
+    from wax.security.network import (
+        FetchPolicy,
+        NetworkBoundaryError,
+        guarded_get,
+    )
+
     url = inputs.get("url")
     if not url:
         raise ValueError("Missing required input: url")
 
     timeout = float(inputs.get("timeout_seconds", 10.0))
     headers = inputs.get("headers", {}) or {}
+    policy = FetchPolicy(total_timeout=max(timeout, 5.0))
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(url, headers=headers)
-        text = response.text
+    try:
+        response = await guarded_get(url, headers=headers, policy=policy)
+    except NetworkBoundaryError as e:
+        raise ValueError(f"blocked by network boundary: {e}") from e
 
+    text = response.text
     return {
         "status_code": response.status_code,
         "headers": dict(response.headers),
-        "body": text[:10000],  # truncate to prevent OOM
+        "body": text[:10000],  # truncate to keep tool results bounded
         "body_truncated": len(text) > 10000,
     }
 
