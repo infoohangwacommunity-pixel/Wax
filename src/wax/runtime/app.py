@@ -160,6 +160,19 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         )
         lifecycle.on_shutdown("memory_reaper", stop_memory_maintenance(memory_task))
 
+        # Runtime maintenance: approval expiry + signal-ledger retention
+        # (lifecycle hygiene the runtime owns; ADR-0013/0015).
+        from wax.runtime.maintenance import maintenance_loop
+        from wax.runtime.maintenance import stop_maintenance as stop_runtime_maintenance
+
+        maintenance_task = asyncio.create_task(
+            maintenance_loop(settings, interval_seconds=300.0),
+            name="wax-maintenance",
+        )
+        lifecycle.on_shutdown(
+            "runtime_maintenance", stop_runtime_maintenance(maintenance_task)
+        )
+
         try:
             yield
         finally:
@@ -420,6 +433,19 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
                 text=message.effective_text,
                 received_at=message.timestamp or datetime.now(UTC),
             )
+
+            # Approval decisions are authority events, not conversation:
+            # if the human's message matches the generic decision grammar
+            # ('/approve <id>' / '/deny <id>'), it is routed to the human
+            # authority path and never reaches the intelligence. Any
+            # interface adapter can adopt the same one-line pattern.
+            from wax.runtime.bridge.contracts import RuntimeResponse as _RR
+
+            decision_response: _RR | None = None
+            async with db_session() as session:
+                decision_response = await bridge.match_approval_command(session, request)
+            if decision_response is not None:
+                return decision_response.text
 
             async with db_session() as session:
                 response = await bridge.process(session, request)

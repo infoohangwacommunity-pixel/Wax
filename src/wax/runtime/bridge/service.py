@@ -653,11 +653,133 @@ class RuntimeBridge:
         )
         verdict = await agency.evaluate(decision)
         if not verdict.approved or verdict.requires_human_approval:
+            return await self._approval_gate(
+                session,
+                execution_id=execution_id,
+                principal_id=principal_id,
+                descriptor=descriptor,
+                call=call,
+                verdict=verdict,
+                _finalize=_finalize,
+                _structured_failure=_structured_failure,
+            )
+
+        # 3. Budget
+        if not self._services.resource_accountant.try_consume(
+            ResourceUsage(
+                execution_id,
+                ResourceKind.CAPABILITY_INVOCATIONS,
+                1.0,
+                notes=call.name,
+            )
+        ):
             return await _finalize(
                 _structured_failure(
                     "denied",
-                    f"Runtime gate: {verdict.reason}. No human-approval "
-                    "workflow exists yet, so this action cannot proceed.",
+                    "Resource budget exhausted for capability invocations",
+                )
+            )
+
+        # 4. Authority + execution via the invoker (the SOLE effect point)
+        invoker = self._services.invoker(session)
+        result = await invoker.invoke(
+            CapabilityInvocationRequest(
+                capability_name=call.name,
+                principal_id=principal_id,
+                inputs=call.arguments,
+                request_id=execution_id,
+            )
+        )
+        return await _finalize(result)
+
+    # -------------------------------------------------------------------
+    # Human approval — the generic authority boundary (ADR-0013)
+    # -------------------------------------------------------------------
+
+    async def _approval_gate(
+        self,
+        session: AsyncSession,
+        *,
+        execution_id: str,
+        principal_id: str,
+        descriptor,
+        call: ToolCall,
+        verdict,
+        _finalize,
+        _structured_failure,
+    ) -> CapabilityInvocationResult:
+        """The approval path of the agency gate.
+
+        The runtime (never the model) decides which actions need explicit
+        human authorization. When one does:
+        - an approved, unconsumed approval matching this EXACT request
+          authorizes one attempt (consumed on use — replay impossible);
+        - an equivalent pending approval returns an honest "pending"
+          outcome (idempotent — no duplicate rows/notifications);
+        - otherwise a pending approval is created, the human is notified
+          through the delivery router, and the fact lands on the event
+          ledger (`approval.requested:<principal>`).
+        """
+        from wax.authority.approvals import (
+            ApprovalService,
+            fingerprint_request,
+        )
+        from wax.capabilities.contracts import CapabilityInvocationRequest
+        from wax.runtime.work.signals import SignalRepository
+
+        approvals = ApprovalService(session)
+        fp = fingerprint_request(principal_id, call.name, call.arguments)
+
+        # 1. An approved, unconsumed approval for this exact request?
+        approved = await approvals.find_approved_unconsumed(principal_id, fp)
+        if approved is not None:
+            consumed = await approvals.consume(approved.id, execution_id=execution_id)
+            if consumed:
+                log.info(
+                    "approval.authorized_attempt",
+                    approval_id=approved.id,
+                    capability=call.name,
+                    execution_id=execution_id,
+                )
+                # Fall through to budget + invoker below.
+            else:
+                return await _finalize(
+                    _structured_failure(
+                        "denied",
+                        "Approval was already used; request a new authorization.",
+                    )
+                )
+        else:
+            # 2. Pending? (idempotent) / 3. Create + notify.
+            record, created = await approvals.create_or_get_pending(
+                principal_id=principal_id,
+                capability_name=call.name,
+                action_kind=verdict.level.value,
+                inputs=dict(call.arguments),
+                requested_by_execution_id=execution_id,
+                expires_in_seconds=float(
+                    self._services.settings.approval_expiry_seconds
+                ),
+            )
+            if created:
+                await SignalRepository(session).emit(
+                    f"approval.requested:{principal_id}",
+                    payload={
+                        "approval_id": record.id,
+                        "capability": call.name,
+                    },
+                    emitted_by="bridge",
+                )
+                await self._notify_approval(session, record)
+            self._services.metrics.approval_requested()
+            return await _finalize(
+                _structured_failure(
+                    "pending_approval",
+                    f"This action requires human approval "
+                    f"(approval {record.id}, capability {call.name}). It is "
+                    f"pending until {record.expires_at.isoformat()}; inform "
+                    f"the human how to approve or deny it. Nothing was "
+                    f"executed.",
                 )
             )
 
@@ -688,6 +810,160 @@ class RuntimeBridge:
             )
         )
         return await _finalize(result)
+
+    async def _notify_approval(self, session: AsyncSession, record) -> None:
+        """Best-effort notification to the human through the delivery
+        router. The approval exists durably regardless; a failed
+        notification is logged and audited, never faked as success."""
+        from sqlalchemy import select
+
+        from wax.state.identity_models import PrincipalCredential
+
+        credential_kinds = {
+            "whatsapp_phone": "whatsapp",
+            "web_session": "web",
+            "telegram_chat": "telegram",
+        }
+        text = (
+            f"Action requires your approval: {record.capability_name} "
+            f"(approval {record.id}). Reply '/approve {record.id}' or "
+            f"'/deny {record.id}'. Expires {record.expires_at.isoformat()}."
+        )
+        result = await session.execute(
+            select(PrincipalCredential).where(
+                PrincipalCredential.principal_id == record.principal_id
+            )
+        )
+        delivered = False
+        for credential in result.scalars():
+            interface = credential_kinds.get(credential.kind)
+            if interface is None or not self._services.delivery.has(interface):
+                continue
+            try:
+                await self._services.delivery.send(
+                    interface, credential.value, text
+                )
+                delivered = True
+                break  # one channel is enough
+            except Exception as e:
+                log.warning(
+                    "approval.notification_failed",
+                    approval_id=record.id,
+                    interface=interface,
+                    error=str(e),
+                )
+        if not delivered:
+            log.warning(
+                "approval.notification_undelivered",
+                approval_id=record.id,
+                reason="no reachable delivery interface for principal",
+            )
+
+    async def submit_approval_decision(
+        self,
+        session: AsyncSession,
+        *,
+        interface_kind: InterfaceKind,
+        sender_interface_id: str,
+        approval_id: str,
+        approve: bool,
+        note: str | None = None,
+    ) -> tuple[bool, str]:
+        """The HUMAN authority path for approvals.
+
+        Interface adapters call this when their user expresses a decision.
+        The deciding principal is resolved from the interface credential —
+        the same identity path as inbound messages — so the runtime never
+        takes a decision from the AI or from an unauthenticated source.
+
+        Returns (ok, message). Never raises.
+        """
+        from wax.authority.approvals import ApprovalDecisionError, ApprovalService
+        from wax.runtime.work.signals import SignalRepository
+        from wax.state.identity_models import PrincipalCredential
+
+        credential_kind = _INTERFACE_CREDENTIAL_KIND.get(interface_kind)
+        if credential_kind is None:
+            return False, "unknown interface kind"
+
+        result = await session.execute(
+            select(PrincipalCredential).where(
+                PrincipalCredential.kind == credential_kind,
+                PrincipalCredential.value == sender_interface_id,
+            )
+        )
+        credential = result.scalar_one_or_none()
+        if credential is None:
+            return False, "unknown sender"
+        principal_id = credential.principal_id
+
+        approvals = ApprovalService(session)
+        try:
+            record = await approvals.decide(
+                approval_id, decided_by=principal_id, approve=approve, note=note
+            )
+        except ApprovalDecisionError as e:
+            return False, str(e)
+        await SignalRepository(session).emit(
+            f"approval.{'granted' if approve else 'denied'}:{record.id}",
+            payload={"approval_id": record.id, "capability": record.capability_name},
+            emitted_by=f"principal:{principal_id}",
+        )
+        self._services.metrics.approval_decided("approved" if approve else "denied")
+        return True, (
+            f"Approved: {record.capability_name} may be attempted once."
+            if approve
+            else f"Denied: {record.capability_name} will not run."
+        )
+
+    async def match_approval_command(
+        self,
+        session: AsyncSession,
+        request: RuntimeRequest,
+    ) -> RuntimeResponse | None:
+        """Match the generic approval decision grammar in an inbound message.
+
+        '/approve <id>' or '/deny <id>' (case-insensitive). Returns a
+        RuntimeResponse when the message IS a decision, None otherwise —
+        the message then flows to the normal pipeline. The grammar is
+        generic (no domain words); any interface adapter can adopt it by
+        calling this before `process`.
+        """
+        text = (request.text or "").strip()
+        lowered = text.lower()
+        for verb, approve in (("/approve", True), ("/deny", False)):
+            if lowered.startswith(verb):
+                parts = text.split(maxsplit=1)
+                if len(parts) != 2 or not parts[1].strip():
+                    return RuntimeResponse(
+                        status=RuntimeResponseStatus.SUCCESS,
+                        text="Usage: /approve <approval-id> or /deny <approval-id>",
+                        processed_at=datetime.now(UTC),
+                    )
+                approval_id = parts[1].strip()
+                from wax.state.engine import db_session
+
+                async with db_session() as decision_session:
+                    ok, message = await self.submit_approval_decision(
+                        decision_session,
+                        interface_kind=request.interface_kind,
+                        sender_interface_id=request.sender_interface_id,
+                        approval_id=approval_id,
+                        approve=approve,
+                    )
+                    await decision_session.commit()
+                log.info(
+                    "bridge.approval_command",
+                    verb=verb,
+                    approval_id=approval_id,
+                    ok=ok,
+                )
+                return RuntimeResponse(
+                    status=RuntimeResponseStatus.SUCCESS,
+                    text=message,
+                    processed_at=datetime.now(UTC),
+                )
+        return None
 
     def _build_messages(
         self,

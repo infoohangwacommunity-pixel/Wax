@@ -106,8 +106,34 @@ class WaxSettings(BaseSettings):
     provisioning_max_active_per_principal: int = 5
     # Character budget for evidence assembly (~4 chars/token). The runtime
     # fills objective > conversation > memory evidence up to this budget
-    # and announces truncation honestly (ADR-0012).
+    # and announces truncation honestly (ADR-0012). When the selected
+    # provider advertises a context limit, the budget is derived from it
+    # instead (see ADR-0015).
     context_char_budget: int = 24000
+    # Reserved output tokens subtracted from a provider-advertised context
+    # limit before the evidence budget is derived.
+    llm_output_reserve_tokens: int = 4096
+
+    # --- Human approval primitive (ADR-0013) ---
+    # How long a pending approval stays decidable before it honestly
+    # expires (swept by the maintenance loop).
+    approval_expiry_seconds: float = 86400.0
+
+    # --- Signal ledger retention (ADR-0015) ---
+    # Signals older than this are pruned by the maintenance loop — UNLESS
+    # some pending event-wake work item can still be woken by them.
+    signal_retention_seconds: float = 30 * 86400.0
+    # Bounded-storage bound: when the ledger exceeds this many rows, the
+    # oldest prune-safe rows beyond the bound are removed.
+    signal_max_ledger_rows: int = 100_000
+
+    # --- Artifact acquisition (ADR-0015) ---
+    # Comma-separated hostnames a workspace.acquire may download from.
+    # Empty list = acquisition disabled (honest refusal).
+    acquisition_allowed_hosts: str = "files.pythonhosted.org,github.com,objects.githubusercontent.com,raw.githubusercontent.com,registry.npmjs.org"
+    # Hard cap on artifact size and download time.
+    acquisition_max_bytes: int = 52_428_800  # 50 MiB
+    acquisition_timeout_seconds: float = 60.0
 
     # --- WhatsApp (Phase Q — Interface) ---
     whatsapp_access_token: str = ""

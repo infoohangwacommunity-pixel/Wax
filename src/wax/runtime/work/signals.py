@@ -22,7 +22,8 @@ it is given.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,10 +35,10 @@ from wax.state.work_models import RuntimeSignalRecord
 log = get_logger(__name__)
 
 # Namespaces the runtime owns. Intelligence may WAIT on these (waiting on
-# "the user replied" or "that work finished" is legitimate) but may never
-# EMIT them — forging them would let the model fake facts that belong to
-# the runtime's boundaries.
-RESERVED_SIGNAL_PREFIXES = ("interface.", "work.")
+# "the user replied", "that work finished", or "my approval was granted" is
+# legitimate) but may never EMIT them — forging them would let the model
+# fake facts that belong to the runtime's authority boundaries.
+RESERVED_SIGNAL_PREFIXES = ("interface.", "work.", "approval.")
 
 SIGNAL_NAME_MAX = 160
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$")
@@ -130,3 +131,108 @@ class SignalRepository:
             )
         )
         return len(result.all())
+
+    # --- Lifecycle: deterministic, waiter-safe retention (ADR-0015) -------
+
+    @staticmethod
+    def _needed_by_a_waiter():
+        """Correlated EXISTS: a PENDING event-wake item whose watermark
+        predates the signal can still be woken by it. The watermark lives
+        on the work item, so pruning never mutates wait semantics: a signal
+        that could fire an existing wait is NEVER deleted, and a waiter
+        created after a prune gets watermark=now (it could not have been
+        woken by the pruned rows anyway — waiting is never retroactive)."""
+        from wax.state.work_models import WAKE_KIND_EVENT, WorkItemRecord
+
+        return (
+            select(WorkItemRecord.id)
+            .where(
+                WorkItemRecord.status == "pending",
+                WorkItemRecord.wake_kind == WAKE_KIND_EVENT,
+                WorkItemRecord.wake_event == RuntimeSignalRecord.name,
+                WorkItemRecord.wake_watermark < RuntimeSignalRecord.emitted_at,
+            )
+            .exists()
+        )
+
+    async def prune(
+        self,
+        *,
+        retention_seconds: float,
+        max_rows: int,
+        max_delete_per_pass: int = 5000,
+    ) -> dict[str, Any]:
+        """One deterministic retention pass.
+
+        1. Retention: signals older than `retention_seconds` are deleted —
+           unless a pending waiter can still be woken by them.
+        2. Bounded storage: when the ledger exceeds `max_rows`, the oldest
+           prune-safe rows beyond the bound are deleted (same safety rule),
+           capped at `max_delete_per_pass` per pass.
+
+        Returns stats for the audit log. The operation never touches
+        signals a live wait still needs, never deletes newer-than-cutoff
+        rows beyond the bound arithmetic, and is idempotent per pass.
+        """
+        from sqlalchemy import delete, func
+
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(seconds=max(retention_seconds, 0.0))
+        stats: dict[str, Any] = {"retention_deleted": 0, "bound_deleted": 0}
+
+        # --- 1. Retention pass -------------------------------------------
+        count_result = await self._session.execute(
+            select(func.count())
+            .select_from(RuntimeSignalRecord)
+            .where(
+                RuntimeSignalRecord.emitted_at < cutoff,
+                ~self._needed_by_a_waiter(),
+            )
+        )
+        retention_count = int(count_result.scalar_one() or 0)
+        if retention_count:
+            n = min(retention_count, max_delete_per_pass)
+            oldest = (
+                await self._session.execute(
+                    select(RuntimeSignalRecord.id, RuntimeSignalRecord.emitted_at)
+                    .where(
+                        RuntimeSignalRecord.emitted_at < cutoff,
+                        ~self._needed_by_a_waiter(),
+                    )
+                    .order_by(RuntimeSignalRecord.emitted_at.asc())
+                    .limit(n)
+                )
+            ).all()
+            ids = [row.id for row in oldest]
+            await self._session.execute(
+                delete(RuntimeSignalRecord).where(RuntimeSignalRecord.id.in_(ids))
+            )
+            stats["retention_deleted"] = len(ids)
+            stats["retention_oldest"] = oldest[0].emitted_at.isoformat()
+            stats["retention_pending_total"] = retention_count
+
+        # --- 2. Bounded-storage pass ---------------------------------------
+        total_result = await self._session.execute(
+            select(func.count()).select_from(RuntimeSignalRecord)
+        )
+        total = int(total_result.scalar_one() or 0)
+        if total > max_rows:
+            excess = total - max_rows
+            n = min(excess, max_delete_per_pass)
+            oldest = (
+                await self._session.execute(
+                    select(RuntimeSignalRecord.id)
+                    .where(~self._needed_by_a_waiter())
+                    .order_by(RuntimeSignalRecord.emitted_at.asc())
+                    .limit(n)
+                )
+            ).all()
+            ids = [row.id for row in oldest]
+            if ids:
+                await self._session.execute(
+                    delete(RuntimeSignalRecord).where(RuntimeSignalRecord.id.in_(ids))
+                )
+            stats["bound_deleted"] = len(ids)
+            stats["ledger_total"] = total
+        stats["ledger_total_after"] = total - stats["retention_deleted"] - stats["bound_deleted"]
+        return stats

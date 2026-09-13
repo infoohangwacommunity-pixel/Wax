@@ -316,6 +316,51 @@ SIGNAL_EMIT_DESCRIPTOR = CapabilityDescriptor(
 )
 
 
+APPROVAL_LIST_DESCRIPTOR = CapabilityDescriptor(
+    name="approval.list",
+    description=(
+        "List the requesting principal's human-approval requests (default: "
+        "pending ones). Use this to check whether a requested authorization "
+        "has been granted or denied, or to see what is waiting for the human."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["pending", "approved", "denied", "expired", "cancelled"],
+                "description": "Filter by status (default: pending)",
+            },
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+APPROVAL_CANCEL_DESCRIPTOR = CapabilityDescriptor(
+    name="approval.cancel",
+    description=(
+        "Withdraw one of the requesting principal's own PENDING approval "
+        "requests (e.g. the plan changed before the human decided). "
+        "Approvals can never be granted by the intelligence — only "
+        "cancelled."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"approval_id": {"type": "string"}},
+        "required": ["approval_id"],
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+
 def register_runtime_capabilities(registry: CapabilityRegistry, services: RuntimeServices) -> None:
     """Register the runtime-mechanism capabilities bound to THIS container."""
 
@@ -692,6 +737,49 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
     register_code_run_capability(registry, services)
 
+    # --- approval surface (the AI can inspect/cancel, never decide) ----
+
+    async def approval_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.authority.approvals import ApprovalService
+
+        status = inputs.get("status") or "pending"
+        async with db_session() as session:
+            records = await ApprovalService(session).list_for_principal(
+                ctx.principal_id, status=status, limit=20
+            )
+            await session.commit()
+        return {
+            "status_filter": status,
+            "approvals": [
+                {
+                    "approval_id": r.id,
+                    "capability": r.capability_name,
+                    "status": r.status,
+                    "requested_at": r.requested_at.isoformat(),
+                    "expires_at": r.expires_at.isoformat(),
+                    "scope": r.scope_summary or {},
+                }
+                for r in records
+            ],
+        }
+
+    async def approval_cancel_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.authority.approvals import ApprovalDecisionError, ApprovalService
+
+        approval_id = inputs.get("approval_id")
+        if not approval_id or not isinstance(approval_id, str):
+            raise ValueError("approval_id is required")
+        async with db_session() as session:
+            try:
+                await ApprovalService(session).cancel(
+                    approval_id, by_principal_id=ctx.principal_id
+                )
+            except ApprovalDecisionError as e:
+                await session.rollback()
+                raise ValueError(str(e)) from e
+            await session.commit()
+        return {"approval_id": approval_id, "status": "cancelled"}
+
     registry.register(WORK_SCHEDULE_DESCRIPTOR, work_schedule_impl)
     registry.register(WORK_CANCEL_DESCRIPTOR, work_cancel_impl)
     registry.register(WORK_LIST_DESCRIPTOR, work_list_impl)
@@ -699,11 +787,13 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(MESSAGE_SEND_DESCRIPTOR, message_send_impl)
     registry.register(SCRATCH_WORKSPACE_DESCRIPTOR, scratch_workspace_impl)
     registry.register(SIGNAL_EMIT_DESCRIPTOR, signal_emit_impl)
+    registry.register(APPROVAL_LIST_DESCRIPTOR, approval_list_impl)
+    registry.register(APPROVAL_CANCEL_DESCRIPTOR, approval_cancel_impl)
     registry.register(MEMORY_STORE_DESCRIPTOR, memory_store_impl)
     registry.register(MEMORY_SEARCH_DESCRIPTOR, memory_search_impl)
     registry.register(MEMORY_FORGET_DESCRIPTOR, memory_forget_impl)
     registry.register(MEMORY_CONSOLIDATE_DESCRIPTOR, memory_consolidate_impl)
-    log.info("capability.runtime_registered", count=12)
+    log.info("capability.runtime_registered", count=14)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------

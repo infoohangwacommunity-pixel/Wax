@@ -62,7 +62,11 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
         ):
             raise WorkExecutionError(f"Capability {capability_name} is not currently available")
 
-        # Agency gate (same policy as the live path).
+        # Agency gate (same policy as the live path). Actions that require
+        # explicit human authorization enter the approval primitive: the
+        # pending approval is created/returned idempotently, and the attempt
+        # fails honestly — a later attempt (or a work.requeue after the
+        # human approves) consumes the approval exactly once.
         agency = services.agency(session)
         decision = AgencyDecision(
             principal_id=item.principal_id,
@@ -77,9 +81,34 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
         )
         verdict = await agency.evaluate(decision)
         if not verdict.approved or verdict.requires_human_approval:
+            from wax.authority.approvals import ApprovalService
+            from wax.runtime.work.signals import SignalRepository
+            from wax.state.approval_models import STATUS_PENDING
+
+            approvals = ApprovalService(session)
+            record, created = await approvals.create_or_get_pending(
+                principal_id=item.principal_id,
+                capability_name=capability_name,
+                action_kind=verdict.level.value,
+                inputs=inputs,
+                requested_by_execution_id=item.execution_id,
+                expires_in_seconds=float(
+                    services.settings.approval_expiry_seconds
+                ),
+            )
+            if created:
+                await SignalRepository(session).emit(
+                    f"approval.requested:{item.principal_id}",
+                    payload={"approval_id": record.id, "capability": capability_name},
+                    emitted_by="work_runner",
+                )
+            await session.commit()
+            services.metrics.approval_requested()
             raise WorkExecutionError(
-                f"Runtime gate: {verdict.reason}. This scheduled capability "
-                "cannot run without human approval."
+                f"This scheduled action requires explicit human authorization. "
+                f"Approval {record.id} for capability {capability_name} is "
+                f"{record.status} until {record.expires_at.isoformat()}. The "
+                f"human can decide; the work can then be requeued."
             )
 
         if not services.resource_accountant.try_consume(
