@@ -606,3 +606,22 @@ Stage Summary:
 - Audit verdict: spine constitutional (19 mechanisms, 0 features); drift
   was honesty-of-mechanism failures, now corrected or registered with
   designed fixes (CV-11..14) and 4 founder-level questions documented
+
+---
+Task ID: CONSTITUTIONAL-AUDIT-FOUNDER-PDF
+Agent: main (Super Z)
+Task: Founder-facing PDF report of the constitutional audit.
+
+Work Log:
+- Rendered via the pdf skill: cascade palette, HUD Template 01 cover
+  (poster_validate + cover_validate PASS, html2poster 794px), ReportLab
+  body (TocDocTemplate/multiBuild, FreeSerif, install_font_fallback),
+  pypdf merge normalized to A4, metadata branded
+- pdf_qa: 0 errors, 4 by-design warnings (asymmetric HUD cover; left-
+  anchored figure)
+- Delivered to download/ and committed in-repo at
+  docs/constitutional-audit/WAX_Constitutional_Audit_Founder_Report.pdf
+
+Stage Summary:
+- 7 pages, plain-English, before/after tables, mechanism/policy boundary
+  figure, real-world walkthrough, 4 founder decisions, verification table
