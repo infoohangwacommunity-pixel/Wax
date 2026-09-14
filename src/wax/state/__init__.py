@@ -30,10 +30,12 @@ __all__ = [
 # future tooling). Adding a model module here is mandatory.
 from wax.state import (  # noqa: F401
     approval_models,
+    artifact_models,
     audit_models,
     authority_models,
     bridge_models,
     continuity_models,
+    delivery_models,
     execution_models,
     identity_models,
     memory_models,

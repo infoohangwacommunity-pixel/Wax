@@ -482,3 +482,32 @@ Stage Summary:
   d6f8a2b4c9e1. Two fake-mechanism patterns eliminated during
   implementation (silent link skip; doomed edge ordering). Commits
   remain local pending fresh GitHub credentials (see BATCH-AB entry).
+
+---
+Task ID: PASS-7-BATCH-D
+Agent: main (Super Z)
+Task: Batch D of cycle 3 — Phase 5 context sections (active_work,
+artifacts, environment) + first-class artifact records (ADR-0023).
+
+Work Log:
+- artifacts table (migration e1a3c5e7b9d2): owner, workspace link,
+  workspace-relative path (no host-path leakage), sha256, size, source,
+  execution provenance, TTL mirroring the workspace — created at the
+  acquisition boundary where integrity is computed; workspace.acquire
+  now returns artifact_id
+- ContinuityContext gained active_work / recent_artifacts / environment;
+  ContinuityService fetches outstanding work (metadata only: capability,
+  status, wake, attempts — never payload contents) and newest artifacts
+  (filename + integrity PREFIX + size — never bytes)
+- assembler emits the new labelled sections with priorities
+  objective(0) > active_work(1) > conversation(2) > memory(3) >
+  artifacts(4) > environment(5); new conversations see outstanding work
+  too ("keep working while I am away" survives the boundary, mission 17)
+- Model-registration hygiene: wax/state/__init__ now imports
+  delivery_models + artifact_models (create_all/alembic completeness)
+- 5 tests in test_context_sections.py incl. degraded-budget survival
+  (mission 111)
+
+Stage Summary:
+- 625 tests passing (620 before batch); live probe PASS; chain head
+  e1a3c5e7b9d2. Commit local pending fresh GitHub credentials.

@@ -112,6 +112,14 @@ class ContinuityService:
                     recent_memories=await self._fetch_context_memories(
                         principal_id, current_message
                     ),
+                    # New conversations still see outstanding work and
+                    # artifacts: "keep working on this while I am away"
+                    # must survive a conversation boundary (mission §17).
+                    active_work=await self._fetch_active_work(principal_id),
+                    recent_artifacts=await self._fetch_recent_artifacts(
+                        principal_id
+                    ),
+                    environment={"interface": interface_kind},
                 ),
                 None,
             )
@@ -127,6 +135,16 @@ class ContinuityService:
         # Fetch memories: relevance pool (against the current message) merged
         # with the recency pool, deduplicated, capped.
         recent_memories = await self._fetch_context_memories(principal_id, current_message)
+
+        # Fetch active work + artifact evidence (ADR-0023, mission §99:
+        # a resumed objective reconstructs its pending actions and
+        # artifacts — metadata only, never payload bytes).
+        active_work = await self._fetch_active_work(principal_id)
+        recent_artifacts = await self._fetch_recent_artifacts(principal_id)
+        environment = {
+            "interface": conversation.interface_kind,
+            "active_work_count": len(active_work),
+        }
 
         # Fetch active objective (if any)
         active_objective = None
@@ -152,6 +170,9 @@ class ContinuityService:
                     last_execution.status if last_execution else None
                 ),
                 recent_memories=recent_memories,
+                active_work=active_work,
+                recent_artifacts=recent_artifacts,
+                environment=environment,
                 is_new_conversation=False,
                 days_since_last_message=days_since,
             ),
@@ -220,3 +241,69 @@ class ContinuityService:
             reverse=True,
         )
         return entries[:max_total]
+
+    async def _fetch_active_work(self, principal_id: str, *, limit: int = 5) -> list[dict]:
+        """The principal's outstanding durable work — ACTIVE_WORK evidence.
+
+        Metadata only: kind/status/wake facts, never payload contents
+        (payloads may carry arbitrary inputs; the work's own execution
+        trace is the place for those). This is what a resumed objective
+        needs to see: what is still pending, and when it wakes (mission
+        §99, §115: 'What remains? Why did WAX stop?').
+        """
+        from sqlalchemy import select
+
+        from wax.state.work_models import WorkItemRecord
+
+        result = await self._session.execute(
+            select(WorkItemRecord)
+            .where(
+                WorkItemRecord.principal_id == principal_id,
+                WorkItemRecord.status.in_(("pending", "leased", "running", "failed")),
+            )
+            .order_by(WorkItemRecord.wake_at.asc())
+            .limit(limit)
+        )
+        items = list(result.scalars().all())
+        entries = []
+        for item in items:
+            wake = item.wake_at.isoformat() if item.wake_at else None
+            entries.append(
+                {
+                    "work_id": item.id,
+                    "status": item.status,
+                    "wake_kind": item.wake_kind,
+                    "wake_at": wake,
+                    "attempts": item.attempts,
+                    "capability": (item.payload or {}).get("capability_name"),
+                }
+            )
+        return entries
+
+    async def _fetch_recent_artifacts(self, principal_id: str, *, limit: int = 5) -> list[dict]:
+        """The principal's newest artifacts — ARTIFACTS evidence.
+
+        Filename + integrity prefix + size only; never file bytes (the
+        model sees text, never bytes — the media invariant).
+        """
+        from sqlalchemy import select
+
+        from wax.state.artifact_models import ArtifactRecord
+
+        result = await self._session.execute(
+            select(ArtifactRecord)
+            .where(ArtifactRecord.principal_id == principal_id)
+            .order_by(ArtifactRecord.created_at.desc())
+            .limit(limit)
+        )
+        artifacts = list(result.scalars().all())
+        return [
+            {
+                "artifact_id": a.id,
+                "filename": a.filename,
+                "sha256": a.sha256[:12],
+                "bytes": a.size_bytes,
+                "source": a.source,
+            }
+            for a in artifacts
+        ]

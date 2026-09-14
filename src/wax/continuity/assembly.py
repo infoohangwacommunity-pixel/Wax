@@ -32,12 +32,18 @@ from dataclasses import dataclass
 
 from wax.continuity.contracts import ContinuityContext
 
-# Priorities: lower is kept first when the budget is tight. The objective
-# outranks conversation state, which outranks individual memories — losing
-# the objective loses the thread of the work; losing one memory costs less.
+# Priorities: lower is kept first when the budget is tight (mission §12:
+# security constraints outrank objective, then active work, then memory,
+# then interaction, then artifacts — implemented from repository evidence;
+# the current-user-input slot is the message itself, delivered outside
+# this budget). The objective outranks outstanding work, which outranks
+# memory and conversation state; artifacts and environment facts come last.
 PRIORITY_OBJECTIVE = 0
-PRIORITY_CONVERSATION = 1
-PRIORITY_MEMORY = 2
+PRIORITY_ACTIVE_WORK = 1
+PRIORITY_CONVERSATION = 2
+PRIORITY_MEMORY = 3
+PRIORITY_ARTIFACTS = 4
+PRIORITY_ENVIRONMENT = 5
 
 _MIN_TAIL = 200  # below this remaining budget, stop including evidence
 _TRUNCATION_MARKER = "[evidence truncated: context budget reached]"
@@ -47,7 +53,9 @@ _TRUNCATION_MARKER = "[evidence truncated: context budget reached]"
 class EvidenceSection:
     """One labelled piece of runtime evidence, deliverable to a model."""
 
-    kind: str  # "objective" | "conversation" | "memory"
+    kind: str
+    # "objective" | "active_work" | "conversation" | "memory" |
+    # "artifacts" | "environment"
     priority: int
     text: str
 
@@ -109,6 +117,44 @@ def build_evidence_sections(context: ContinuityContext) -> list[EvidenceSection]
                 text=f"[evidence: memory ({reason})] {summary}",
             )
         )
+
+    # Outstanding durable work (mission §4: critical active work state).
+    # Metadata only — what pends, what wakes it — never payload contents.
+    if context.active_work:
+        parts: list[str] = []
+        for item in context.active_work:
+            wake = item.get("wake_at") or "on event"
+            capability = item.get("capability") or "capability"
+            parts.append(f"{capability} [{item.get('status')}] wakes {wake}")
+        text = f"[evidence: active_work] {len(context.active_work)} pending: " + "; ".join(parts)
+        sections.append(
+            EvidenceSection(kind="active_work", priority=PRIORITY_ACTIVE_WORK, text=text)
+        )
+
+    # Known artifacts (mission §8: relevant artifacts). Integrity prefix
+    # + size — never bytes.
+    if context.recent_artifacts:
+        parts = []
+        for artifact in context.recent_artifacts:
+            parts.append(
+                f"{artifact.get('filename')} (sha256:{artifact.get('sha256')}, "
+                f"{artifact.get('bytes')}B)"
+            )
+        text = "[evidence: artifacts] " + "; ".join(parts)
+        sections.append(
+            EvidenceSection(kind="artifacts", priority=PRIORITY_ARTIFACTS, text=text)
+        )
+
+    # Environment facts (interface the interaction arrived on).
+    if context.environment:
+        interface = context.environment.get("interface")
+        if interface:
+            text = f"[evidence: environment] interface={interface}"
+            sections.append(
+                EvidenceSection(
+                    kind="environment", priority=PRIORITY_ENVIRONMENT, text=text
+                )
+            )
 
     return sections
 

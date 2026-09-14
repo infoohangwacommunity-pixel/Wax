@@ -76,5 +76,13 @@ class ContinuityContext(BaseModel):
     last_execution_id: str | None = None
     last_execution_status: str | None = None
     recent_memories: list[dict[str, Any]] = Field(default_factory=list)
+    # Outstanding durable work (mission Phase 5 ACTIVE_WORK section, §99
+    # pending actions) — metadata only, never payload contents.
+    active_work: list[dict[str, Any]] = Field(default_factory=list)
+    # Known artifacts (mission Phase 5 ARTIFACTS section) — filename,
+    # integrity prefix, size; never file bytes.
+    recent_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    # Environment facts (interface attached to this interaction).
+    environment: dict[str, Any] = Field(default_factory=dict)
     is_new_conversation: bool = True
     days_since_last_message: float | None = None

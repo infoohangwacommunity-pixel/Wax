@@ -293,6 +293,9 @@ def register_workspace_acquire_capability(
         from sqlalchemy import select
 
         from wax.observability.audit import record_audit_event
+        from ulid import ULID
+
+        from wax.state.artifact_models import ArtifactRecord
         from wax.state.engine import db_session
         from wax.state.provisioning_models import ProvisionedResourceRecord
 
@@ -345,6 +348,28 @@ def register_workspace_acquire_capability(
             raise ValueError(str(e)) from e
 
         async with db_session() as session:
+            # First-class artifact record (ADR-0023, mission §56): the
+            # acquisition boundary is where integrity is computed, so it
+            # is where artifact state is born — owner, integrity, size,
+            # workspace, provenance, and a TTL that mirrors the
+            # workspace's (the file cannot outlive its workspace).
+            artifact = ArtifactRecord(
+                id=str(ULID()),
+                principal_id=ctx.principal_id,
+                workspace_resource_id=workspace_resource_id,
+                filename=Path(result["path"]).name,
+                path=str(Path(result["path"]).relative_to(Path(workspace_path))),
+                sha256=result["sha256"],
+                size_bytes=result["bytes"],
+                source="workspace.acquire",
+                execution_id=ctx.execution_id,
+                metadata_json={
+                    "url_host": urlsplit(url).hostname or "",
+                    "cache_hit": result["cache_hit"],
+                },
+                expires_at=expires,
+            )
+            session.add(artifact)
             await record_audit_event(
                 session,
                 actor_principal_id=ctx.principal_id,
@@ -362,6 +387,6 @@ def register_workspace_acquire_capability(
             )
             await session.commit()
 
-        return result
+        return {**result, "artifact_id": artifact.id}
 
     registry.register(ACQUIRE_DESCRIPTOR, workspace_acquire_impl)
