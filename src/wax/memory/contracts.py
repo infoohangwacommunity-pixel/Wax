@@ -56,7 +56,7 @@ class MemoryProvenance(StrEnum):
 
 
 class MemoryLinkKind(StrEnum):
-    """Typed relationships between memories (ADR-0022, mission Phase 3).
+    """Typed relationships between memories (ADR-0022, ADR-0036 Phase 3).
 
     Knowledge relationships the retrieval engine can traverse. Deliberate
     split of responsibilities:
@@ -68,12 +68,18 @@ class MemoryLinkKind(StrEnum):
 
     Relational table, not a graph database: the abstraction is the typed
     edge; the storage is a detail (mission §8).
+
+    ADR-0036 (Phase 3) extends the set with:
+    - DEPENDS_ON: A needs B to be true (dependency edge)
+    - CONFLICTS_WITH: A and B are mutually exclusive (conflict graph)
     """
 
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"
     DERIVED_FROM = "derived_from"
     RELATED_TO = "related_to"
+    DEPENDS_ON = "depends_on"
+    CONFLICTS_WITH = "conflicts_with"
 
 
 class MemoryLinkCreate(BaseModel):

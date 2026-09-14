@@ -963,7 +963,14 @@ MEMORY_KINDS = ("episodic", "semantic", "procedural", "contextual", "external")
 
 # Typed evidence relationships (ADR-0022). Supersession is NOT here: it
 # is lifecycle (supersedes=), not a knowledge edge.
-MEMORY_LINK_KINDS = ("supports", "contradicts", "derived_from", "related_to")
+MEMORY_LINK_KINDS = (
+    "supports",
+    "contradicts",
+    "derived_from",
+    "related_to",
+    "depends_on",  # ADR-0036 Phase 3: dependency edge — A needs B to be true
+    "conflicts_with",  # ADR-0036 Phase 3: explicit conflict graph edge
+)
 
 MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
     name="memory.store",
@@ -974,9 +981,11 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
     "(revision: the old record stays for audit but leaves retrieval). "
     "Optional importance (0-1) weights retrieval; observed_at records "
     "when the fact was observed (vs written); links=[{memory_id, kind}] "
-    "adds typed edges (supports/contradicts/derived_from/related_to) to "
-    "existing memories.",
-    version="1.2.0",
+    "adds typed edges (supports/contradicts/derived_from/related_to/"
+    "depends_on/conflicts_with) to existing memories. Optional "
+    "objective_id links this memory to the objective it supports/"
+    "evidences (ADR-0036).",
+    version="1.3.0",
     input_schema={
         "type": "object",
         "properties": {
@@ -1005,6 +1014,14 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
                 "type": "string",
                 "description": "ISO-8601: when the fact was observed (may differ from now)",
             },
+            "objective_id": {
+                "type": "string",
+                "description": (
+                    "Optional objective this memory supports/evidences "
+                    "(ADR-0036 Phase 3). The objective must belong to "
+                    "the calling principal."
+                ),
+            },
             "links": {
                 "type": "array",
                 "maxItems": 10,
@@ -1014,12 +1031,7 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
                         "memory_id": {"type": "string"},
                         "kind": {
                             "type": "string",
-                            "enum": [
-                                "supports",
-                                "contradicts",
-                                "derived_from",
-                                "related_to",
-                            ],
+                            "enum": list(MEMORY_LINK_KINDS),
                         },
                     },
                     "required": ["memory_id", "kind"],
@@ -1274,6 +1286,26 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
                 summary=summary[:2000] if summary else None,
             )
         )
+
+        # ADR-0036 (Phase 3): optional objective linkage. The intelligence
+        # may declare that this memory supports/evidences a specific
+        # objective. The objective_id is validated for ownership before
+        # being attached.
+        objective_id_raw = inputs.get("objective_id")
+        if objective_id_raw:
+            if not isinstance(objective_id_raw, str) or not objective_id_raw:
+                raise ValueError("objective_id must be a non-empty string")
+            from wax.objective.repository import ObjectiveRepository
+
+            obj_repo = ObjectiveRepository(session)
+            objective = await obj_repo.get(objective_id_raw)
+            if objective is None:
+                raise ValueError(f"No such objective: {objective_id_raw}")
+            if objective.principal_id != ctx.principal_id:
+                raise ValueError(
+                    "objective_id belongs to a different principal"
+                )
+            record.objective_id = objective_id_raw
         if supersedes_id:
             superseded_rows = await repo.supersede(supersedes_id, record.id)
             if not superseded_rows:
@@ -1456,6 +1488,14 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
                 summary=summary[:2000] if summary else None,
             )
         )
+
+        # ADR-0036 (Phase 3): record the consolidation provenance as a
+        # forward chain on the new record. The backward chain
+        # (source.superseded_by = record.id) is set below when
+        # supersede_sources is True; the forward chain
+        # (record.consolidation_sources = [source1, ...]) is the
+        # inspectable "where I came from" answer.
+        record.consolidation_sources = list(source_ids)
 
         # Structured provenance edges (ADR-0022): the consolidation is
         # derived_from every source — queryable, not just JSON-in-content.
