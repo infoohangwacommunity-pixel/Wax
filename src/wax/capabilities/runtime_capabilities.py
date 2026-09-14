@@ -662,7 +662,63 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                         f"interface's delivery policy: {note}"
                     )
 
-        await delivery.send(interface_kind, recipient_id, text)
+        try:
+            await delivery.send(interface_kind, recipient_id, text)
+        except Exception as send_error:
+            # CV-13 fix: a failed send is recoverable delivery state, not
+            # a dead letter (ADR-0021, mission §55). The runtime now OWES
+            # this message: it lands on the DeliveryQueue and the
+            # maintenance loop retries it with backoff until delivered,
+            # exhausted, or past the deliverability horizon. The result
+            # reports the honest state — nothing was delivered YET.
+            from wax.runtime.delivery_queue import DeliveryQueue
+
+            services.metrics.send_failure(interface_kind)
+            async with db_session() as retry_session:
+                queue = DeliveryQueue(
+                    retry_session,
+                    services,
+                    retry_backoff_seconds=float(
+                        services.settings.delivery_retry_backoff_seconds
+                    ),
+                    max_age_seconds=float(services.settings.delivery_max_age_seconds),
+                )
+                delivery_record = await queue.enqueue(
+                    principal_id=ctx.principal_id,
+                    interface_kind=interface_kind,
+                    recipient_id=recipient_id,
+                    text=text,
+                    source="capability:message.send",
+                    execution_id=ctx.execution_id,
+                    max_attempts=max(
+                        1, int(services.settings.delivery_max_attempts)
+                    ),
+                )
+                # One attempt already happened (this failed send) — the
+                # backoff chain starts honestly from attempt 1.
+                delivery_record.attempts = 1
+                delivery_record.last_error = (
+                    f"{type(send_error).__name__}: {send_error}"
+                )[:2000]
+                delivery_record.next_attempt_at = datetime.now(UTC) + timedelta(
+                    seconds=float(services.settings.delivery_retry_backoff_seconds)
+                )
+                await retry_session.commit()
+            log.warning(
+                "message.send.queued_for_retry",
+                delivery_id=delivery_record.id,
+                interface=interface_kind,
+                principal_id=ctx.principal_id,
+                error=str(send_error)[:300],
+            )
+            return {
+                "sent": False,
+                "queued_for_retry": True,
+                "delivery_id": delivery_record.id,
+                "interface": interface_kind,
+                "recipient_id": recipient_id,
+                "error": f"{type(send_error).__name__}: {send_error}"[:200],
+            }
         services.metrics.send_ok(interface_kind)
         return {
             "sent": True,

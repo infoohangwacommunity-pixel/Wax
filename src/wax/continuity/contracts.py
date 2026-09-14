@@ -13,14 +13,18 @@ class ConversationStatus(StrEnum):
     """Lifecycle of a conversation.
 
     A conversation is "active" while the user is exchanging messages within
-    a short time window. After a configurable idle period (default 30 min),
-    it transitions to "idle". After a longer period (default 7 days), it
-    transitions to "archived".
+    a short time window. After the idle period (default 30 min) the
+    maintenance loop marks it "idle"; past the archive horizon (default
+    7 days of silence) it becomes "archived" and is no longer resumed —
+    the next message opens a fresh conversation (memory and objectives
+    carry the continuity, not the conversation row). These are state
+    markings only: no conversation row is ever deleted here; retention
+    (deletion) is a founder policy boundary.
     """
 
     ACTIVE = "active"
     IDLE = "idle"  # no messages for a while, but still resumable
-    ARCHIVED = "archived"  # older than retention; not loaded by default
+    ARCHIVED = "archived"  # idle past the archive horizon; not resumed
     CLOSED = "closed"  # explicitly closed by user or system
 
 

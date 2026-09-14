@@ -61,7 +61,9 @@ class DeadLetterEntry(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True), nullable=False
     )
 
-    # Whether this entry has been reprocessed (set by reprocessing worker)
+    # Whether this entry has been reprocessed. RESERVED: no reprocessing
+    # worker exists yet (the class docstring says the same). Nothing in
+    # the runtime sets this to True — do not mistake it for a guarantee.
     reprocessed: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default="false"
     )

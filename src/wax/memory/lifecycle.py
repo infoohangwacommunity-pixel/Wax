@@ -56,17 +56,32 @@ async def expire_due_memories(session: Any) -> int:
 
 
 async def memory_maintenance_loop(settings: Any, interval_seconds: float = 300.0) -> None:
-    """Periodic expiry sweep. Runs as a lifespan task."""
+    """Periodic expiry sweep. Runs as a lifespan task.
+
+    Multi-instance honesty (§61 audit fix): like every other lifecycle
+    sweep, it runs on the LEADER only (the same advisory-lock election
+    the maintenance loop uses). Followers skip and say so — the sweep is
+    idempotent, but N replicas re-forgetting the same rows multiplies
+    audit noise and contention for nothing.
+    """
     import asyncio
 
+    from wax.runtime.leadership import MaintenanceLeadership
     from wax.state.engine import db_session
 
     log.info("memory.maintenance_started", interval_s=interval_seconds)
     while True:
         try:
-            async with db_session() as session:
-                await expire_due_memories(session)
-                await session.commit()
+            leadership = await MaintenanceLeadership.acquire(settings)
+            try:
+                if leadership.is_leader:
+                    async with db_session() as session:
+                        await expire_due_memories(session)
+                        await session.commit()
+                else:
+                    log.debug("memory.maintenance.follower", mode=leadership.mode)
+            finally:
+                await leadership.release()
         except Exception as e:
             log.error(
                 "memory.maintenance_error",

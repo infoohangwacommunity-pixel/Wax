@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
@@ -66,10 +67,7 @@ from wax.intelligence.service import IntelligenceService
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
 from wax.objective.contracts import ObjectiveCreate, ObjectiveKind, ObjectiveStatus
-from wax.objective.evidence import (
-    sync_active_for_execution,
-    sync_awaiting_human_for_execution,
-)
+from wax.objective.evidence import sync_waiting_for_execution
 from wax.objective.repository import ObjectiveRepository
 from wax.observability.audit import record_audit_event
 from wax.reliability.dead_letter import DeadLetterRepository
@@ -262,11 +260,69 @@ class RuntimeBridge:
                 received_at=request.received_at,
             )
             session.add(record)
+            try:
+                await session.flush()  # acquire the unique constraint
+            except IntegrityError:
+                # A concurrent attempt (two replicas, or a racing
+                # redelivery) inserted the same message first and owns the
+                # pipeline for this message_id. Its record is
+                # authoritative; this attempt is the honest duplicate
+                # observer — it must NOT touch the winner's state.
+                await session.rollback()
+                winner = await self._find_existing(session, request)
+                log.warning(
+                    "bridge.duplicate_race",
+                    interface=request.interface_kind.value,
+                    message_id=request.interface_message_id,
+                    winner_outcome=(winner.outcome if winner else None),
+                )
+                return RuntimeResponse(
+                    status=RuntimeResponseStatus.DUPLICATE,
+                    execution_id=(winner.execution_id if winner else None),
+                    objective_id=(winner.objective_id if winner else None),
+                    principal_id=(winner.principal_id if winner else principal.id),
+                    text=(winner.response_text if winner else None),
+                    processed_at=datetime.now(UTC),
+                    duplicate_of_execution_id=(
+                        winner.execution_id if winner else None
+                    ),
+                )
         else:
-            record = retry_record
-            record.outcome = "pending"
-            record.response_text = None
-            record.processed_at = None
+            # Claim the failed record for THIS attempt with a single
+            # conditional UPDATE: two concurrent retries (two replicas, or
+            # a racing redelivery) must not both adopt the same failure —
+            # the rowcount decides who owns the retry (CV-12's sibling
+            # race in the idempotency machine).
+            from sqlalchemy import update as sa_update
+
+            claimed = await session.execute(
+                sa_update(ProcessedMessageRecord)
+                .where(
+                    ProcessedMessageRecord.id == existing.id,
+                    ProcessedMessageRecord.outcome == "failed",
+                )
+                .values(outcome="pending", response_text=None, processed_at=None)
+                .execution_options(synchronize_session=False)
+            )
+            if claimed.rowcount != 1:
+                # Another attempt already claimed the retry; its record is
+                # in flight again. Do not double-run the message.
+                log.info(
+                    "bridge.retry_claim_lost",
+                    interface=request.interface_kind.value,
+                    message_id=request.interface_message_id,
+                )
+                return RuntimeResponse(
+                    status=RuntimeResponseStatus.DUPLICATE,
+                    execution_id=existing.execution_id,
+                    objective_id=existing.objective_id,
+                    principal_id=existing.principal_id,
+                    text=None,
+                    processed_at=datetime.now(UTC),
+                    duplicate_of_execution_id=existing.execution_id,
+                )
+            await session.refresh(existing)
+            record = existing
         await session.flush()  # acquire the unique constraint
 
         # 5. Objective + Execution — the durable "work accepted" checkpoint
@@ -485,10 +541,10 @@ class RuntimeBridge:
         """Run the intelligence loop and return the final response text.
 
         The model may request capabilities via tool calls. Every request
-        passes: agency gate (policy + audit) → authority check → budget
-        consumption → CapabilityInvoker (the sole effect enforcement
-        point). Results return to the model as tool messages; the loop is
-        bounded by settings.max_tool_rounds.
+        passes: the shared approval gate (agency → approval primitive,
+        wax.authority.gate) → budget consumption → CapabilityInvoker
+        (the sole effect enforcement point). Results return to the model
+        as tool messages; the loop is bounded by settings.max_tool_rounds.
 
         Raises on failure — the caller owns the failure semantics.
         """
@@ -651,7 +707,6 @@ class RuntimeBridge:
         as structured results the model can reason about."""
         from datetime import datetime
 
-        from wax.agency.contracts import AgencyDecision, AgencyDecisionKind
         from wax.capabilities.contracts import (
             CapabilityInvocationRequest,
             CapabilityInvocationResult,
@@ -706,154 +761,27 @@ class RuntimeBridge:
                 )
             )
 
-        # 2. Agency gate - the runtime decides, the AI requests (INV-04)
-        agency = self._services.agency(session)
-        decision = AgencyDecision(
+        # 2. Agency gate → approval chain (CV-12/CV-14 fix: ONE shared
+        # component — RuntimeBridgeApprovalGate is the same authority chain
+        # the durable-work handler runs, not a private copy).
+        from wax.authority.gate import ApprovalGate, ApprovalGateState
+
+        gate = ApprovalGate(session, self._services)
+        outcome = await gate.evaluate(
             principal_id=principal_id,
-            kind=(
-                AgencyDecisionKind.DESTRUCTIVE_ACTION
-                if descriptor.is_destructive
-                else AgencyDecisionKind.INVOKE_CAPABILITY
-            ),
-            description=f"Invoke capability {call.name}",
             capability_name=call.name,
-            inputs_summary={k: str(v)[:120] for k, v in list(call.arguments.items())[:5]},
+            descriptor=descriptor,
+            inputs=dict(call.arguments),
+            execution_id=execution_id,
+            description=f"Invoke capability {call.name}",
+            emitted_by="bridge",
         )
-        verdict = await agency.evaluate(decision)
-        if not verdict.approved or verdict.requires_human_approval:
-            return await self._approval_gate(
-                session,
-                execution_id=execution_id,
-                principal_id=principal_id,
-                descriptor=descriptor,
-                call=call,
-                verdict=verdict,
-                _finalize=_finalize,
-                _structured_failure=_structured_failure,
-            )
-
-        # 3. Budget
-        if not self._services.resource_accountant.try_consume(
-            ResourceUsage(
-                execution_id,
-                ResourceKind.CAPABILITY_INVOCATIONS,
-                1.0,
-                notes=call.name,
-            )
-        ):
+        if outcome.state is ApprovalGateState.ALREADY_USED:
             return await _finalize(
-                _structured_failure(
-                    "denied",
-                    "Resource budget exhausted for capability invocations",
-                )
+                _structured_failure("denied", outcome.error or "approval already used")
             )
-
-        # 4. Authority + execution via the invoker (the SOLE effect point)
-        invoker = self._services.invoker(session)
-        result = await invoker.invoke(
-            CapabilityInvocationRequest(
-                capability_name=call.name,
-                principal_id=principal_id,
-                inputs=call.arguments,
-                request_id=execution_id,
-            )
-        )
-        return await _finalize(result)
-
-    # -------------------------------------------------------------------
-    # Human approval — the generic authority boundary (ADR-0013)
-    # -------------------------------------------------------------------
-
-    async def _approval_gate(
-        self,
-        session: AsyncSession,
-        *,
-        execution_id: str,
-        principal_id: str,
-        descriptor,
-        call: ToolCall,
-        verdict,
-        _finalize,
-        _structured_failure,
-    ) -> CapabilityInvocationResult:
-        """The approval path of the agency gate.
-
-        The runtime (never the model) decides which actions need explicit
-        human authorization. When one does:
-        - an approved, unconsumed approval matching this EXACT request
-          authorizes one attempt (consumed on use — replay impossible);
-        - an equivalent pending approval returns an honest "pending"
-          outcome (idempotent — no duplicate rows/notifications);
-        - otherwise a pending approval is created, the human is notified
-          through the delivery router, and the fact lands on the event
-          ledger (`approval.requested:<principal>`).
-        """
-        from wax.authority.approvals import (
-            ApprovalService,
-            fingerprint_request,
-        )
-        from wax.capabilities.contracts import CapabilityInvocationRequest
-        from wax.runtime.work.signals import SignalRepository
-
-        approvals = ApprovalService(session)
-        fp = fingerprint_request(principal_id, call.name, call.arguments)
-
-        # 1. An approved, unconsumed approval for this exact request?
-        approved = await approvals.find_approved_unconsumed(
-            principal_id, fp,
-            approval_ttl_seconds=self._services.settings.approval_expiry_seconds,
-        )
-        if approved is not None:
-            consumed = await approvals.consume(approved.id, execution_id=execution_id)
-            if consumed:
-                log.info(
-                    "approval.authorized_attempt",
-                    approval_id=approved.id,
-                    capability=call.name,
-                    execution_id=execution_id,
-                )
-                # Evidence sync (ADR-0020): the human decided — the
-                # objective is active again. BOTH objectives reactivate:
-                # the one that requested the approval (it was awaiting the
-                # human) and the one consuming it.
-                await sync_active_for_execution(session, execution_id)
-                await sync_active_for_execution(
-                    session, approved.requested_by_execution_id
-                )
-                # Fall through to budget + invoker below.
-            else:
-                return await _finalize(
-                    _structured_failure(
-                        "denied",
-                        "Approval was already used; request a new authorization.",
-                    )
-                )
-        else:
-            # 2. Pending? (idempotent) / 3. Create + notify.
-            record, created = await approvals.create_or_get_pending(
-                principal_id=principal_id,
-                capability_name=call.name,
-                action_kind=verdict.level.value,
-                inputs=dict(call.arguments),
-                requested_by_execution_id=execution_id,
-                expires_in_seconds=float(
-                    self._services.settings.approval_expiry_seconds
-                ),
-            )
-            if created:
-                await SignalRepository(session).emit(
-                    f"approval.requested:{principal_id}",
-                    payload={
-                        "approval_id": record.id,
-                        "capability": call.name,
-                    },
-                    emitted_by="bridge",
-                )
-                await self._notify_approval(session, record)
-                # Evidence sync (ADR-0020): a pending approval IS the
-                # objective awaiting a human.
-                await sync_awaiting_human_for_execution(session, execution_id)
-            self._services.metrics.approval_requested()
+        if outcome.state is ApprovalGateState.PENDING:
+            record = outcome.approval
             return await _finalize(
                 _structured_failure(
                     "pending_approval",
@@ -893,54 +821,10 @@ class RuntimeBridge:
         )
         return await _finalize(result)
 
-    async def _notify_approval(self, session: AsyncSession, record) -> None:
-        """Best-effort notification to the human through the delivery
-        router. The approval exists durably regardless; a failed
-        notification is logged and audited, never faked as success."""
-        from sqlalchemy import select
-
-        from wax.state.identity_models import PrincipalCredential
-
-        credential_kinds = {
-            kind: CREDENTIAL_KIND_INTERFACES[kind]
-            for kind in ("whatsapp_phone", "web_session", "telegram_chat")
-            if kind in CREDENTIAL_KIND_INTERFACES
-        }
-        text = (
-            f"Action requires your approval: {record.capability_name} "
-            f"(approval {record.id}). Reply '/approve {record.id}' or "
-            f"'/deny {record.id}'. Expires {record.expires_at.isoformat()}."
-        )
-        result = await session.execute(
-            select(PrincipalCredential).where(
-                PrincipalCredential.principal_id == record.principal_id
-            )
-        )
-        delivered = False
-        for credential in result.scalars():
-            interface = credential_kinds.get(credential.kind)
-            if interface is None or not self._services.delivery.has(interface):
-                continue
-            try:
-                await self._services.delivery.send(
-                    interface, credential.value, text
-                )
-                delivered = True
-                break  # one channel is enough
-            except Exception as e:
-                log.warning(
-                    "approval.notification_failed",
-                    approval_id=record.id,
-                    interface=interface,
-                    error=str(e),
-                )
-        if not delivered:
-            log.warning(
-                "approval.notification_undelivered",
-                approval_id=record.id,
-                reason="no reachable delivery interface for principal",
-            )
-
+    # -------------------------------------------------------------------
+    # Human authority path (decisions; the request chain lives in
+    # wax.authority.gate — the single shared approval component)
+    # -------------------------------------------------------------------
     async def submit_approval_decision(
         self,
         session: AsyncSession,
@@ -1212,6 +1096,7 @@ class RuntimeBridge:
         """
         final_outcome = "failed"
         attempts = 1
+        owns_record = False
         try:
             record = await self._find_existing(session, request)
             if record is not None:
@@ -1220,10 +1105,34 @@ class RuntimeBridge:
                 meta["attempts"] = attempts
                 meta["last_error_type"] = type(error).__name__
                 meta["last_error"] = str(error)[:500]
-                record.metadata_json = meta
                 final_outcome = "dead" if attempts >= MAX_ATTEMPTS_PER_MESSAGE else "failed"
-                record.outcome = final_outcome
-                record.processed_at = datetime.now(UTC)
+                # Claim the PENDING record for THIS failure with a single
+                # conditional UPDATE. A record that is no longer pending
+                # belongs to another attempt's lifecycle (a racing retry
+                # adopted it after our failure) — this attempt must not
+                # overwrite that attempt's in-flight state (the exact
+                # corruption a read-then-write here used to allow).
+                from sqlalchemy import update as sa_update
+
+                claimed = await session.execute(
+                    sa_update(ProcessedMessageRecord)
+                    .where(
+                        ProcessedMessageRecord.id == record.id,
+                        ProcessedMessageRecord.outcome == "pending",
+                    )
+                    .values(
+                        outcome=final_outcome,
+                        processed_at=datetime.now(UTC),
+                        metadata_json=meta,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                owns_record = claimed.rowcount == 1
+                if not owns_record:
+                    # Our execution still fails below; the record simply
+                    # is not ours to transition. Do not dead-letter either:
+                    # the owning attempt will decide that.
+                    final_outcome = "failed"
 
             exec_repo = ExecutionRepository(session)
             if execution_id is not None:

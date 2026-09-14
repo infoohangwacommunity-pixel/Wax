@@ -142,7 +142,9 @@ class RuntimeSignalRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Optional JSON evidence about what happened. NEVER secrets.
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
-    # When the fact happened (UTC). The ledger is append-only.
+    # When the fact happened (UTC). Emission is insert-only; RETENTION is
+    # not append-only — the maintenance loop prunes old/excess rows with
+    # the waiter-safety rule (ADR-0015).
     emitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Attribution: "bridge", "work_runner", or "principal:<id>".

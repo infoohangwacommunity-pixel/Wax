@@ -9,7 +9,10 @@ Implements Directive §54, §97, §146:
 Key invariants:
 - NEVER log secrets (enforced in wax.runtime.logging._redact_sensitive)
 - NEVER log model chain-of-thought (Directive §97)
-- All observability data must respect principal privacy (Phase U)
+- Metrics are per-instance aggregates with NO principal dimension today —
+  a deliberate, documented limitation, not an enforced privacy control.
+  Any principal-dimensioned observability requires an explicit privacy
+  design first (founder policy boundary).
 """
 
 from wax.observability.metrics import MetricsRegistry, get_metrics

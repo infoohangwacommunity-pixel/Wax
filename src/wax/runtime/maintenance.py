@@ -49,6 +49,7 @@ async def run_maintenance_pass(
     the skip is visible in the return value, the log, and metrics.
     """
     from wax.authority.approvals import ApprovalService
+    from wax.continuity.repository import ConversationRepository
     from wax.runtime.work.signals import SignalRepository
     from wax.state.engine import db_session
 
@@ -114,6 +115,19 @@ async def run_maintenance_pass(
             results["delivery_retries"] = retry_stats
             if retry_stats["due"]:
                 log.info("runtime.delivery_retry_pass", **retry_stats)
+
+        # 4. Conversation lifecycle (audit fix: the mechanism existed and
+        # advertised itself as a background task, but NO task ever called
+        # it — false mechanism). Wired here: active → idle after the idle
+        # timeout, idle → archived past the archive horizon. State
+        # marking only — no row is deleted, so this is lifecycle hygiene,
+        # not retention policy.
+        async with db_session() as session:
+            archived = await ConversationRepository(session).archive_stale()
+            await session.commit()
+        results["conversations_archived"] = archived
+        if archived:
+            log.info("runtime.conversation_lifecycle_pass", count=archived)
 
         _metric().maintenance_led()
         if (

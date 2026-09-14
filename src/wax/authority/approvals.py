@@ -37,10 +37,11 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
+from wax.core.exceptions import WaxStateConflictError
 from wax.observability.audit import record_audit_event
 from wax.runtime.logging import get_logger
 from wax.state.approval_models import (
@@ -103,6 +104,30 @@ def build_scope_summary(inputs: dict[str, Any] | None) -> dict[str, str]:
     return summary
 
 
+def _pending_insert(dialect_name: str):
+    """A dialect-specific INSERT … ON CONFLICT DO NOTHING targeting the
+    partial unique index — the atomic create-or-ignore primitive.
+
+    Both production dialects (postgresql, sqlite) support the identical
+    conflict target: (principal_id, request_fingerprint) WHERE status =
+    'pending'. Any other dialect gets a plain insert (the database will
+    raise on conflict rather than silently double-creating).
+    """
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:
+        from sqlalchemy import insert
+
+    if dialect_name in ("postgresql", "sqlite"):
+        return insert(PendingApprovalRecord).on_conflict_do_nothing(
+            index_elements=["principal_id", "request_fingerprint"],
+            index_where=text("status = 'pending'"),
+        )
+    return insert(PendingApprovalRecord)
+
+
 class ApprovalDecisionError(Exception):
     """A decision request cannot be honored. Message is caller-safe."""
 
@@ -138,8 +163,17 @@ class ApprovalService:
             return existing, False
 
         now = datetime.now(UTC)
-        record = PendingApprovalRecord(
-            id=str(ULID()),
+        record_id = str(ULID())
+        # CV-11 fix: creation is a single ATOMIC create-or-ignore against
+        # the partial unique index
+        # uq_pending_approvals_principal_fp_pending. Two concurrent gate
+        # passes (live bridge + work handler, or two replicas) can both
+        # observe "no pending row"; the DATABASE decides the winner and
+        # the loser sees rowcount 0 and returns the winner's row. One
+        # approval, one notification, no duplicate authority — no
+        # read-then-write race, no exception-path transaction cleanup.
+        stmt = _pending_insert(self._session.bind.dialect.name).values(
+            id=record_id,
             principal_id=principal_id,
             requested_by_execution_id=requested_by_execution_id,
             capability_name=capability_name[:128],
@@ -149,30 +183,42 @@ class ApprovalService:
             status=STATUS_PENDING,
             requested_at=now,
             expires_at=now + timedelta(seconds=expires_in_seconds),
+            created_at=now,
+            updated_at=now,
         )
-        self._session.add(record)
-        await self._session.flush()
-        await record_audit_event(
-            self._session,
-            actor_principal_id=principal_id,
-            actor_kind="system",
-            event_kind="approval.requested",
-            outcome="success",
-            payload={
-                "approval_id": record.id,
-                "capability": capability_name,
-                "action_kind": action_kind,
-                "expires_at": record.expires_at.isoformat(),
-                "execution_id": requested_by_execution_id,
-            },
+        result = await self._session.execute(stmt)
+        if result.rowcount == 1:
+            record = await self.get(record_id)
+            assert record is not None  # inserted in this transaction
+            await record_audit_event(
+                self._session,
+                actor_principal_id=principal_id,
+                actor_kind="system",
+                event_kind="approval.requested",
+                outcome="success",
+                payload={
+                    "approval_id": record.id,
+                    "capability": capability_name,
+                    "action_kind": action_kind,
+                    "expires_at": record.expires_at.isoformat(),
+                    "execution_id": requested_by_execution_id,
+                },
+            )
+            log.info(
+                "approval.requested",
+                approval_id=record.id,
+                principal_id=principal_id,
+                capability=capability_name,
+            )
+            return record, True
+
+        # Lost the creation race — the winner's row is the honest answer.
+        existing = await self.find_pending(principal_id, fp)
+        if existing is not None:
+            return existing, False
+        raise WaxStateConflictError(
+            "approval creation conflict and no pending row visible; retry"
         )
-        log.info(
-            "approval.requested",
-            approval_id=record.id,
-            principal_id=principal_id,
-            capability=capability_name,
-        )
-        return record, True
 
     # --- Lookups -----------------------------------------------------------
 

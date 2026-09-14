@@ -137,3 +137,60 @@ class TestMetrics:
             "maintenance_leadership_total", role="leader"
         )
         assert counter.value >= 1
+
+
+class TestConversationLifecycleSweep:
+    """Audit fix: archive_stale existed and claimed a background task ran
+    it — none did. The maintenance pass is that task; the lifecycle is
+    now real (state marking only, no deletion)."""
+
+    async def test_stale_conversations_transition(self, fresh_db, test_settings):
+        from datetime import UTC, datetime, timedelta
+
+        from wax.continuity.contracts import ConversationStatus
+        from wax.continuity.repository import ConversationRepository
+        from wax.identity.repository import PrincipalRepository
+
+        async with db_session() as session:
+            principal = await PrincipalRepository(session).create_principal(
+                display_name="Lifer"
+            )
+            repo = ConversationRepository(session)
+            conv = await repo.create(principal.id, "whatsapp")
+            stale_created = datetime.now(UTC) - timedelta(days=30)
+            conv.last_message_at = stale_created
+            await session.commit()
+
+            result = await run_maintenance_pass(test_settings)
+            assert result.get("conversations_archived", 0) >= 1
+
+        # Verify in a FRESH session — the writer session's identity map
+        # caches the pre-sweep object.
+        async with db_session() as verify:
+            refreshed = await ConversationRepository(verify).get(conv.id)
+            assert refreshed.status == ConversationStatus.ARCHIVED.value
+
+    async def test_recent_conversations_are_untouched(self, fresh_db, test_settings):
+        from datetime import UTC, datetime
+
+        from wax.continuity.contracts import ConversationStatus
+        from wax.continuity.repository import ConversationRepository
+        from wax.identity.repository import PrincipalRepository
+
+        async with db_session() as session:
+            principal = await PrincipalRepository(session).create_principal(
+                display_name="Active"
+            )
+            repo = ConversationRepository(session)
+            conv = await repo.create(principal.id, "whatsapp")
+            conv.last_message_at = datetime.now(UTC)
+            await session.commit()
+
+            await run_maintenance_pass(test_settings)
+
+        async with db_session() as verify:
+            refreshed = await ConversationRepository(verify).get(conv.id)
+            assert refreshed.status in (
+                ConversationStatus.ACTIVE.value,
+                ConversationStatus.IDLE.value,
+            )

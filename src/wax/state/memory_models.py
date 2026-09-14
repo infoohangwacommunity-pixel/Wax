@@ -9,7 +9,9 @@ Memory is NOT a vector database. Each memory record carries:
 - confidence: 0.0 to 1.0 — how confident we are this is accurate
 - superseded_by: if a newer memory has replaced this one, its ID
 - retention_policy: when this memory may be forgotten
-- sensitivity: how private this memory is
+- sensitivity: RESERVED (honest placeholder — no runtime path reads it;
+  wiring it requires a founder privacy policy, see the RESERVED note
+  on the column below)
 
 This is deliberately richer than "embed text → store vector → search."
 """
@@ -33,11 +35,11 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     improvement may add shared/organizational memory, but that requires
     explicit authorization design.
 
-    Lifecycle:
+    Lifecycle (the states a writer actually produces):
     - active: currently relevant
     - superseded: replaced by a newer record (superseded_by set)
-    - archived: kept for audit but not retrieved by default
-    - forgotten: marked for deletion (retention policy fired)
+    - forgotten: explicit forget or TTL expiry (row retained for audit,
+      excluded from every retrieval path)
     """
 
     __tablename__ = "memory_records"
@@ -59,7 +61,8 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     # One of: episodic, semantic, procedural, contextual, external
 
-    # Status: active, superseded, archived, forgotten
+    # Status: active, superseded, forgotten (no archived state — nothing
+    # writes one; see MemoryStatus in wax.memory.contracts)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="active"
     )

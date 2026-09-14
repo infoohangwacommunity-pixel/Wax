@@ -36,8 +36,10 @@ class ArtifactRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # The scratch workspace (provisioned resource) holding the file, if
-    # the artifact lives in one; the workspace's TTL governs the file's
-    # lifetime, and this record's expires_at mirrors it honestly.
+    # the artifact lives in one; the workspace's TTL governs the FILE's
+    # lifetime (the reaper destroys expired workspaces). This record's
+    # expires_at is recorded evidence of that lifetime — the row itself
+    # is retained and no reader enforces the timestamp yet.
     workspace_resource_id: Mapped[str | None] = mapped_column(
         String(26), nullable=True
     )

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text
+from sqlalchemy import DateTime, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -52,6 +52,19 @@ class PendingApprovalRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_pending_approvals_principal_status", "principal_id", "status"),
         Index("ix_pending_approvals_fingerprint_status", "request_fingerprint", "status"),
         Index("ix_pending_approvals_status_expires", "status", "expires_at"),
+        # CV-11 fix: idempotent creation is enforced by the DATABASE, not
+        # by a find-then-insert race. At most ONE pending approval may
+        # exist per (principal, fingerprint); historical terminal rows
+        # (approved/consumed/denied/expired/cancelled) keep the same
+        # fingerprint freely — hence a PARTIAL unique index.
+        Index(
+            "uq_pending_approvals_principal_fp_pending",
+            "principal_id",
+            "request_fingerprint",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
     )
 
     # The HUMAN this approval belongs to (the authority whose decision is

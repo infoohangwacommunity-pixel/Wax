@@ -85,7 +85,7 @@ class MemoryRepository:
     ) -> list[MemoryRecord]:
         """List active memories for a principal.
 
-        Excludes superseded, archived, and forgotten memories.
+        Excludes superseded and forgotten memories.
         Optional filter by kind.
         """
         stmt = (
@@ -233,14 +233,40 @@ class MemoryRepository:
         )
         return edge
 
-    async def unlink(self, from_memory_id: str, to_memory_id: str, kind: str) -> bool:
-        """Remove a typed edge. Returns True when a row was deleted."""
+    async def unlink(
+        self, from_memory_id: str, to_memory_id: str, kind: str
+    ) -> bool:
+        """Remove a typed edge. Returns True when a row was deleted.
+
+        OWNERSHIP (defense in depth): links are principal-scoped through
+        their endpoints — the edge is deleted only when BOTH endpoint
+        memories exist and belong to the SAME principal. A missing or
+        cross-principal pair refuses loudly instead of deleting. Callers
+        (the capability layer) still enforce WHOSE memories these are;
+        this makes the repo-level primitive itself incapable of touching
+        another principal's graph.
+        """
         from sqlalchemy import delete
 
         from wax.memory.contracts import MemoryLinkKind
 
         if isinstance(kind, MemoryLinkKind):
             kind = kind.value
+        endpoints = await self._session.execute(
+            select(MemoryRecord.principal_id).where(
+                MemoryRecord.id.in_([from_memory_id, to_memory_id])
+            )
+        )
+        owners = {principal for (principal,) in endpoints.all()}
+        if len(owners) != 1:
+            # Missing endpoint(s) or a cross-principal pair: refuse.
+            log.warning(
+                "memory.link.unlink_refused",
+                from_memory_id=from_memory_id,
+                to_memory_id=to_memory_id,
+                owners=len(owners),
+            )
+            return False
         result = await self._session.execute(
             delete(MemoryLinkRecord).where(
                 MemoryLinkRecord.from_memory_id == from_memory_id,

@@ -28,9 +28,21 @@ class MemoryKind(StrEnum):
 
 
 class MemoryStatus(StrEnum):
+    """Lifecycle states a memory row actually takes.
+
+    active → superseded (a newer memory replaced it, provenance kept)
+    active → forgotten  (explicit forget or TTL expiry; row retained for
+            audit, excluded from every retrieval path — soft delete by
+            declared design)
+
+    There is deliberately no "archived" state: nothing in the runtime
+    sets one, and a lifecycle state no writer ever produces is a false
+    mechanism. Memory retention (hard deletion) is a founder policy
+    decision, not an engineering constant — see docs/omega docs.
+    """
+
     ACTIVE = "active"
     SUPERSEDED = "superseded"
-    ARCHIVED = "archived"
     FORGOTTEN = "forgotten"
 
 
