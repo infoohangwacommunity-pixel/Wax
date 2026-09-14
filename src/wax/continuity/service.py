@@ -107,6 +107,16 @@ class ContinuityService:
         retrieval: the AI sees what is RELEVANT, not merely what is recent.
         Returns (context, conversation_id). If conversation_id is None, a
         new conversation will need to be opened by the caller.
+
+        ADR-0037 (Phase 4: Context Becomes Environment): the context now
+        also carries:
+        - available_capabilities: the runtime's registered capability
+          names (the AI can compose what's available)
+        - current_time: the runtime's clock (the AI reasons about time)
+        - recent_signals: the last few runtime signals the principal's
+          work has been waiting on (so the AI sees what woke up)
+        - waiting_work: durable work items in 'waiting' status,
+          distinct from active_work which carries all non-terminal work
         """
         conversation = await self._conv_repo.get_active_for_principal(principal_id)
 
@@ -128,7 +138,9 @@ class ContinuityService:
                     recent_artifacts=await self._fetch_recent_artifacts(
                         principal_id
                     ),
-                    environment={"interface": interface_kind},
+                    environment=await self._build_environment(
+                        principal_id, interface_kind
+                    ),
                 ),
                 None,
             )
@@ -150,10 +162,10 @@ class ContinuityService:
         # artifacts — metadata only, never payload bytes).
         active_work = await self._fetch_active_work(principal_id)
         recent_artifacts = await self._fetch_recent_artifacts(principal_id)
-        environment = {
-            "interface": conversation.interface_kind,
-            "active_work_count": len(active_work),
-        }
+        environment = await self._build_environment(
+            principal_id, conversation.interface_kind
+        )
+        environment["active_work_count"] = len(active_work)
 
         # Fetch active objective (if any)
         active_objective = None
@@ -316,3 +328,94 @@ class ContinuityService:
             }
             for a in artifacts
         ]
+
+    async def _build_environment(
+        self, principal_id: str, interface_kind: str
+    ) -> dict[str, Any]:
+        """ADR-0037 (Phase 4): compose the environment facts the AI wakes into.
+
+        The environment is NOT chat history — it is the runtime reality
+        the intelligence composes against:
+
+        - interface: which interface this interaction is on
+        - current_time: the runtime's clock (the AI reasons about time)
+        - available_capabilities: the registered capability names
+          (the AI can compose what's available; new platforms require
+          no architectural rewrite)
+        - recent_signals: the last few runtime signals emitted for this
+          principal (so the AI sees what woke up — work.succeeded,
+          approval.granted, etc.)
+        - waiting_work_count: how many durable work items are waiting
+          (subset of active_work; status=waiting specifically)
+
+        Degrades gracefully: any subsystem that cannot be queried
+        contributes nothing to the dict, never raises.
+        """
+        env: dict[str, Any] = {
+            "interface": interface_kind,
+            "current_time": datetime.now(UTC).isoformat(),
+        }
+
+        # Available capabilities — try to fetch from the runtime services
+        # container attached to the session. Tolerant: a session without
+        # the container (e.g. unit tests) contributes nothing.
+        try:
+            services = getattr(self._session, "wax_services", None)
+            if services is not None and hasattr(services, "capability_registry"):
+                capabilities = []
+                for descriptor in services.capability_registry.list_capabilities():
+                    capabilities.append(
+                        {
+                            "name": descriptor.name,
+                            "description": descriptor.description[:200],
+                            "is_destructive": descriptor.is_destructive,
+                        }
+                    )
+                env["available_capabilities"] = capabilities
+        except Exception:
+            pass
+
+        # Recent signals — the last few runtime signals emitted for this
+        # principal's work (so the AI sees what woke up).
+        try:
+            from sqlalchemy import select
+
+            from wax.state.work_models import RuntimeSignalRecord
+
+            result = await self._session.execute(
+                select(RuntimeSignalRecord)
+                .where(RuntimeSignalRecord.name.like(f"%{principal_id}%"))
+                .order_by(RuntimeSignalRecord.emitted_at.desc())
+                .limit(5)
+            )
+            signals = list(result.scalars().all())
+            env["recent_signals"] = [
+                {
+                    "name": s.name,
+                    "emitted_at": (
+                        s.emitted_at.isoformat() if s.emitted_at else None
+                    ),
+                    "emitted_by": s.emitted_by,
+                }
+                for s in signals
+            ]
+        except Exception:
+            pass
+
+        # Waiting work count — items in 'waiting' status specifically
+        # (distinct from active_work which carries all non-terminal items)
+        try:
+            from sqlalchemy import func, select
+
+            from wax.state.work_models import WorkItemRecord
+
+            result = await self._session.execute(
+                select(func.count(WorkItemRecord.id))
+                .where(WorkItemRecord.principal_id == principal_id)
+                .where(WorkItemRecord.status == "waiting")
+            )
+            env["waiting_work_count"] = int(result.scalar() or 0)
+        except Exception:
+            pass
+
+        return env
