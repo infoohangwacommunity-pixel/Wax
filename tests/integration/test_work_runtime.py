@@ -548,15 +548,34 @@ class TestMessageSendMechanism:
         assert delivered == []
 
     async def test_send_outside_24h_window_is_honestly_refused(self, fresh_db, services) -> None:
-        """Meta policy: outside the window a template would be required.
-        WAX has none — the runtime says so truthfully instead of faking."""
+        """Vendor delivery policy: the WHATSAPP ADAPTER declares a 24-hour
+        inbound-freshness window (Meta would require a template outside it;
+        WAX has none) and the runtime enforces whatever the attached
+        interface declares — generically — refusing truthfully instead of
+        faking. No other interface carries this policy."""
         delivered: list[tuple[str, str]] = []
 
         async def fake_sender(recipient: str, text: str) -> dict:
             delivered.append((recipient, text))
             return {}
 
-        services.delivery.register("whatsapp", fake_sender)
+        from datetime import timedelta
+
+        from wax.runtime.delivery import DeliveryPolicy
+
+        services.delivery.register(
+            "whatsapp",
+            fake_sender,
+            policy=DeliveryPolicy(
+                inbound_freshness_window=timedelta(hours=24),
+                freshness_note=(
+                    "the 24-hour customer service window has closed and the "
+                    "vendor requires an approved template message; no "
+                    "template is registered on this deployment. Ask the user "
+                    "to message WAX first."
+                ),
+            ),
+        )
 
         bridge = RuntimeBridge(
             intelligence=IntelligenceService(MockLLMProvider()), services=services

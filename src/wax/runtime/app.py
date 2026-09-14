@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import UTC, timedelta
 from typing import Any
 
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from wax import __version__
 from wax.core.config import WaxSettings, load_settings
+from wax.runtime.delivery import DeliveryPolicy
 from wax.runtime.lifecycle import LifecycleManager
 from wax.runtime.logging import configure_logging, get_logger
 
@@ -107,7 +108,23 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             lifecycle.on_shutdown("whatsapp.close", wa_client.close())
             # Register the WhatsApp sender with the runtime's delivery router
             # (Phase W: interfaces attach to the runtime, never own it).
-            services.delivery.register("whatsapp", wa_client.send_long_text)
+            # The 24-hour customer-service window is META's policy, so it is
+            # DECLARED HERE — at the WhatsApp adapter wiring point — not in
+            # the runtime capability layer. The runtime enforces whatever
+            # the attached interface declares, generically.
+            services.delivery.register(
+                "whatsapp",
+                wa_client.send_long_text,
+                policy=DeliveryPolicy(
+                    inbound_freshness_window=timedelta(hours=24),
+                    freshness_note=(
+                        "the 24-hour customer service window has closed and "
+                        "Meta requires an approved template message; no "
+                        "template is registered on this deployment. Ask the "
+                        "user to message WAX first."
+                    ),
+                ),
+            )
             log.info(
                 "whatsapp.client.initialized", phone_number_id=settings.whatsapp_phone_number_id
             )

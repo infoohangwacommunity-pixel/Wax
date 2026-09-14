@@ -39,19 +39,11 @@ from wax.state.engine import db_session
 
 log = get_logger(__name__)
 
-# The 24-hour customer service window: inside it, a plain text reply is
-# permitted by Meta policy; outside it, an approved template would be
-# required. WAX has no registered templates, so the runtime reports that
-# constraint truthfully instead of faking a send.
-CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
-
-# Interface kind → credential kind (mirrors the bridge's identity mapping).
-_INTERFACE_CREDENTIAL_KIND: dict[str, str] = {
-    "whatsapp": "whatsapp_phone",
-    "web": "web_session",
-    "telegram": "telegram_chat",
-    "api": "api_key",
-}
+# Interface kind → credential kind comes from the SINGLE source of truth in
+# wax.identity.contracts. The capability layer owns no private copy of the
+# identity boundary mapping, and no vendor delivery policy: an interface's
+# own adapter declares its policy (see DeliveryRouter/DeliveryPolicy); the
+# runtime only enforces whatever the attached interface declared.
 
 MAX_WORK_DELAY = timedelta(days=30)
 
@@ -231,11 +223,16 @@ WORK_REQUEUE_DESCRIPTOR = CapabilityDescriptor(
 MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
     name="message.send",
     description=(
-        "Send a text message to the requesting principal on an attached "
-        "interface (default: whatsapp). Enforces identity ownership and "
-        "Meta's 24-hour customer service window."
+        "Send a text message to the requesting principal over one of THEIR "
+        "attached interfaces. The interface is taken from interface_kind "
+        "when given; otherwise it is derived from the requesting "
+        "principal's verified credentials (refused loudly if that is "
+        "ambiguous). Enforces identity ownership — the runtime never "
+        "messages third parties — and enforces whatever delivery policy "
+        "the attached interface itself declares (for example a vendor "
+        "freshness window)."
     ),
-    version="1.0.0",
+    version="1.1.0",
     input_schema={
         "type": "object",
         "properties": {
@@ -245,7 +242,13 @@ MESSAGE_SEND_DESCRIPTOR = CapabilityDescriptor(
                 "maxLength": 12000,
                 "description": "Chunks over 4096 chars are delivered as marked parts",
             },
-            "interface_kind": {"type": "string", "default": "whatsapp"},
+            "interface_kind": {
+                "type": "string",
+                "description": (
+                    "Optional. Required explicitly only when the principal "
+                    "has more than one attached interface."
+                ),
+            },
         },
         "required": ["recipient_id", "text"],
     },
@@ -553,13 +556,12 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # --- message.send -----------------------------------------------------
 
     async def message_send_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.identity.contracts import (
+            CREDENTIAL_KIND_INTERFACES,
+            INTERFACE_CREDENTIAL_KINDS,
+        )
         from wax.state.bridge_models import ProcessedMessageRecord
         from wax.state.identity_models import PrincipalCredential
-
-        interface_kind = inputs.get("interface_kind") or "whatsapp"
-        if interface_kind not in _INTERFACE_CREDENTIAL_KIND:
-            raise ValueError(f"Unknown interface kind: {interface_kind!r}")
-        credential_kind = _INTERFACE_CREDENTIAL_KIND[interface_kind]
 
         recipient_id = inputs.get("recipient_id")
         text = inputs.get("text")
@@ -571,14 +573,55 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             raise ValueError("text exceeds 12000 characters")
 
         delivery = services.delivery
-        if not delivery.has(interface_kind):
-            raise ValueError(
-                f"No delivery interface attached for {interface_kind!r}; the "
-                "runtime cannot send messages right now (an honest "
-                "constraint, not a success)."
-            )
 
         async with db_session() as session:
+            # 0. Interface selection — identity-derived, never a hardcoded
+            # default. Explicit interface_kind wins; otherwise the
+            # requesting principal's verified credentials decide. If that
+            # is ambiguous (several attached interfaces), the runtime
+            # refuses loudly instead of guessing.
+            interface_input = inputs.get("interface_kind")
+            if interface_input:
+                interface_kind = str(interface_input)
+                if interface_kind not in INTERFACE_CREDENTIAL_KINDS:
+                    raise ValueError(f"Unknown interface kind: {interface_kind!r}")
+            else:
+                rows = await session.execute(
+                    select(PrincipalCredential.kind).where(
+                        PrincipalCredential.principal_id == ctx.principal_id
+                    )
+                )
+                attached = sorted(
+                    {
+                        CREDENTIAL_KIND_INTERFACES[kind]
+                        for (kind,) in rows.all()
+                        if kind in CREDENTIAL_KIND_INTERFACES
+                        and delivery.has(CREDENTIAL_KIND_INTERFACES[kind])
+                    }
+                )
+                if not attached:
+                    raise ValueError(
+                        "The requesting principal has no verified credential on "
+                        "any attached delivery interface; the runtime cannot "
+                        "send this message (an honest constraint, not a "
+                        "success)."
+                    )
+                if len(attached) > 1:
+                    raise ValueError(
+                        "The requesting principal has several attached "
+                        f"interfaces ({', '.join(attached)}); provide "
+                        "interface_kind explicitly."
+                    )
+                interface_kind = attached[0]
+            credential_kind = INTERFACE_CREDENTIAL_KINDS[interface_kind]
+
+            if not delivery.has(interface_kind):
+                raise ValueError(
+                    f"No delivery interface attached for {interface_kind!r}; the "
+                    "runtime cannot send messages right now (an honest "
+                    "constraint, not a success)."
+                )
+
             # 1. Ownership: recipient must be the CALLING principal's own
             # verified credential. The AI cannot message third parties.
             result = await session.execute(
@@ -594,23 +637,30 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     "principal; WAX will not message third parties"
                 )
 
-            # 2. Meta 24-hour window — evidence from the message ledger.
-            recent = await session.execute(
-                select(ProcessedMessageRecord.received_at)
-                .where(ProcessedMessageRecord.principal_id == ctx.principal_id)
-                .order_by(ProcessedMessageRecord.received_at.desc())
-                .limit(1)
-            )
-            last_inbound = recent.scalar_one_or_none()
-            if last_inbound is not None and last_inbound.tzinfo is None:
-                last_inbound = last_inbound.replace(tzinfo=UTC)
-            now = datetime.now(UTC)
-            if last_inbound is None or (now - last_inbound) > CUSTOMER_SERVICE_WINDOW:
-                raise ValueError(
-                    "Outside the 24-hour customer service window: Meta "
-                    "requires an approved template message, and WAX has no "
-                    "registered templates. Ask the user to message WAX first."
+            # 2. Interface-declared delivery policy — the runtime enforces
+            # whatever the attached interface declared, generically. It
+            # invents no vendor rule of its own.
+            policy = delivery.policy_for(interface_kind)
+            if policy is not None and policy.inbound_freshness_window is not None:
+                recent = await session.execute(
+                    select(ProcessedMessageRecord.received_at)
+                    .where(ProcessedMessageRecord.principal_id == ctx.principal_id)
+                    .order_by(ProcessedMessageRecord.received_at.desc())
+                    .limit(1)
                 )
+                last_inbound = recent.scalar_one_or_none()
+                if last_inbound is not None and last_inbound.tzinfo is None:
+                    last_inbound = last_inbound.replace(tzinfo=UTC)
+                now = datetime.now(UTC)
+                if last_inbound is None or (now - last_inbound) > policy.inbound_freshness_window:
+                    note = policy.freshness_note or (
+                        "the attached interface does not accept a plain-text "
+                        "delivery right now"
+                    )
+                    raise ValueError(
+                        f"Delivery refused by the attached {interface_kind} "
+                        f"interface's delivery policy: {note}"
+                    )
 
         await delivery.send(interface_kind, recipient_id, text)
         services.metrics.send_ok(interface_kind)

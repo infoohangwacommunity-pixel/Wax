@@ -49,7 +49,11 @@ from wax.continuity.service import ContinuityService, ConversationService
 from wax.core.exceptions import WaxStateConflictError
 from wax.execution.contracts import ExecutionKind
 from wax.execution.repository import ExecutionRepository
-from wax.identity.contracts import ALLOWED_CREDENTIAL_KINDS
+from wax.identity.contracts import (
+    ALLOWED_CREDENTIAL_KINDS,
+    CREDENTIAL_KIND_INTERFACES,
+    INTERFACE_CREDENTIAL_KINDS,
+)
 from wax.identity.repository import PrincipalRepository
 from wax.intelligence.contracts import (
     LLMMessage,
@@ -86,14 +90,13 @@ from wax.state.identity_models import Principal
 
 log = get_logger(__name__)
 
-# Map InterfaceKind → PrincipalCredential kind.
-# This is the only place that knows that WhatsApp uses phone numbers and
-# web uses session tokens. Adding a new interface means adding one line here.
+# Map InterfaceKind → PrincipalCredential kind — DERIVED from the single
+# source of truth in wax.identity.contracts (the identity boundary table).
+# The bridge owns no private copy of the mapping.
 _INTERFACE_CREDENTIAL_KIND: dict[InterfaceKind, str] = {
-    InterfaceKind.WHATSAPP: "whatsapp_phone",
-    InterfaceKind.WEB: "web_session",
-    InterfaceKind.TELEGRAM: "telegram_chat",  # future
-    InterfaceKind.API: "api_key",
+    InterfaceKind(kind): credential_kind
+    for kind, credential_kind in INTERFACE_CREDENTIAL_KINDS.items()
+    if kind in InterfaceKind._value2member_map_
 }
 
 # Outcome state machine for the idempotency record.
@@ -868,9 +871,9 @@ class RuntimeBridge:
         from wax.state.identity_models import PrincipalCredential
 
         credential_kinds = {
-            "whatsapp_phone": "whatsapp",
-            "web_session": "web",
-            "telegram_chat": "telegram",
+            kind: CREDENTIAL_KIND_INTERFACES[kind]
+            for kind in ("whatsapp_phone", "web_session", "telegram_chat")
+            if kind in CREDENTIAL_KIND_INTERFACES
         }
         text = (
             f"Action requires your approval: {record.capability_name} "

@@ -24,6 +24,25 @@ ALLOWED_CREDENTIAL_KINDS: frozenset[str] = frozenset(
     }
 )
 
+# The identity boundary mapping (Invariant INV-02): an interface kind maps
+# to exactly one PrincipalCredential kind, and vice versa. This constant is
+# the SINGLE source of truth for that mapping — the bridge, the capability
+# layer, and delivery paths derive their views from here instead of each
+# re-declaring their own copy (drift on the identity boundary is a
+# constitutional risk: this table IS the "interface credentials attach to
+# a principal" invariant).
+INTERFACE_CREDENTIAL_KINDS: dict[str, str] = {
+    "whatsapp": "whatsapp_phone",
+    "web": "web_session",
+    "telegram": "telegram_chat",
+    "api": "api_key",
+}
+
+# Reverse view: credential kind → interface kind.
+CREDENTIAL_KIND_INTERFACES: dict[str, str] = {
+    v: k for k, v in INTERFACE_CREDENTIAL_KINDS.items()
+}
+
 
 class PrincipalRead(BaseModel):
     """A principal as returned from the API."""
