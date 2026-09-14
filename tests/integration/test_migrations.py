@@ -210,20 +210,22 @@ class TestUpgradeFromProductionSchema:
             await dispose_engine()
 
     async def test_downgrade_drops_idempotency_ledger(self, tmp_path) -> None:
-        """head → -3 removes Phase 3 (memory) + Phase 5 (environment)
-        columns/tables AND the idempotency ledger table; evidence lives
-        in the database, so the downgrade boundary must match the upgrade.
+        """head → -4 removes Phase 3 (memory) + Phase 5 (environment)
+        + Phase 6 (terminal) columns/tables AND the idempotency ledger
+        table; evidence lives in the database, so the downgrade boundary
+        must match the upgrade.
 
-        Note: ADR-0036 (Phase 3) and ADR-0038 (Phase 5) added new
-        migrations after the idempotency ledger migration. To drop the
-        idempotency ledger table, we now downgrade by -3 (skipping
-        Phase 5 env tables, Phase 3 memory columns, AND the idempotency
+        Note: ADR-0036 (Phase 3), ADR-0038 (Phase 5), and ADR-0039
+        (Phase 6) added new migrations after the idempotency ledger
+        migration. To drop the idempotency ledger table, we now
+        downgrade by -4 (skipping Phase 6 terminal sessions, Phase 5
+        env tables, Phase 3 memory columns, AND the idempotency
         ledger table).
         """
         db_file = tmp_path / "ledgerdown.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-3")
+        _alembic(url, "downgrade", "-4")
 
         settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
         init_engine(settings)
@@ -236,7 +238,7 @@ class TestUpgradeFromProductionSchema:
                 ).scalars().all()
                 assert "capability_invocations" not in set(tables)
                 assert "pending_approvals" in set(tables), (
-                    "only the ledger table is dropped by the -3 step"
+                    "only the ledger table is dropped by the -4 step"
                 )
         finally:
             await dispose_engine()

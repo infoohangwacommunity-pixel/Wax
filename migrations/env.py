@@ -47,6 +47,7 @@ import wax.state.capability_models  # noqa: E402,F401  (CV-19 idempotency ledger
 import wax.state.delivery_models  # noqa: E402,F401  (ADR-0021 durable delivery)
 import wax.state.artifact_models  # noqa: E402,F401  (ADR-0023 artifacts)
 import wax.state.environment_models  # noqa: E402,F401  (ADR-0038 environment leases)
+import wax.state.terminal_models  # noqa: E402,F401  (ADR-0039 terminal sessions)
 
 config = context.config
 

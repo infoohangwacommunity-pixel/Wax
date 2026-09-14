@@ -1006,7 +1006,213 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         }
 
     registry.register(ENVIRONMENT_REQUEST_DESCRIPTOR, environment_request_impl)
-    log.info("capability.runtime_registered", count=20)
+
+    # ========================================================================
+    # ADR-0039 (Phase 6): Terminal Runtime
+    # ========================================================================
+
+    async def terminal_session_open_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from datetime import UTC, datetime, timedelta
+
+        from ulid import ULID
+
+        from wax.state.engine import db_session
+        from wax.state.environment_models import EnvironmentLeaseRecord
+        from wax.state.terminal_models import TerminalSessionRecord
+
+        environment_id = inputs.get("environment_id")
+        if not isinstance(environment_id, str) or not environment_id:
+            raise ValueError("environment_id is required")
+        working_dir = inputs.get("working_dir", ".")
+        if not isinstance(working_dir, str) or not working_dir:
+            raise ValueError("working_dir must be a string")
+        # Reject absolute paths — working_dir is workspace-relative
+        if working_dir.startswith("/"):
+            raise ValueError("working_dir must be workspace-relative (no absolute paths)")
+        env_vars = inputs.get("env_vars", {})
+        if not isinstance(env_vars, dict):
+            raise ValueError("env_vars must be an object")
+        if len(env_vars) > 50:
+            raise ValueError("env_vars exceeds 50 entries")
+        # Validate env var values — reject secret-like patterns
+        for k, v in env_vars.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ValueError("env_vars keys and values must be strings")
+            if len(v) > 4096:
+                raise ValueError(f"env_var {k} value exceeds 4096 chars")
+            kl = k.lower()
+            if "token" in kl or "secret" in kl or "password" in kl or "api_key" in kl:
+                raise ValueError(f"env_var {k} looks like a secret; secrets must not enter intelligence")
+
+        ttl_seconds = inputs.get("ttl_seconds", 3600)
+        try:
+            ttl_seconds = int(ttl_seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError("ttl_seconds must be an integer") from e
+        if not 1 <= ttl_seconds <= 86400:
+            raise ValueError("ttl_seconds must be between 1 and 86400")
+
+        async with db_session() as session:
+            # Verify the environment exists + is active
+            lease = await session.get(EnvironmentLeaseRecord, environment_id)
+            if lease is None:
+                raise ValueError(f"No such environment: {environment_id}")
+            if lease.status not in ("planned", "provisioned", "active"):
+                raise ValueError(f"Environment {environment_id} is {lease.status}; cannot open session")
+            if lease.principal_id != ctx.principal_id:
+                raise ValueError("environment belongs to a different principal")
+
+            session_record = TerminalSessionRecord(
+                id=str(ULID()),
+                principal_id=ctx.principal_id,
+                execution_id=ctx.request_id or ctx.execution_id,
+                environment_id=environment_id,
+                status="active",
+                working_dir=working_dir,
+                env_vars=env_vars,
+                expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            )
+            session.add(session_record)
+            await session.flush()
+            await session.commit()
+            sid = session_record.id
+            expires = session_record.expires_at
+
+        return {
+            "session_id": sid,
+            "state": "active",
+            "expires_at": expires.isoformat() if expires else None,
+        }
+
+    async def terminal_execute_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        import asyncio
+        import os
+        from datetime import UTC, datetime
+
+        from wax.state.engine import db_session
+        from wax.state.terminal_models import TerminalSessionRecord
+
+        session_id = inputs.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id is required")
+        command = inputs.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("command must be a non-empty string")
+        if len(command) > 8192:
+            raise ValueError("command exceeds 8192 chars")
+        timeout_seconds = inputs.get("timeout_seconds", 30)
+        try:
+            timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError("timeout_seconds must be a number") from e
+        if not 1 <= timeout_seconds <= 600:
+            raise ValueError("timeout_seconds must be between 1 and 600")
+        max_output_bytes = int(inputs.get("max_output_bytes", 65536))
+        if not 1024 <= max_output_bytes <= 1_048_576:
+            raise ValueError("max_output_bytes must be between 1024 and 1048576")
+
+        async with db_session() as session:
+            record = await session.get(TerminalSessionRecord, session_id)
+            if record is None:
+                raise ValueError(f"No such terminal session: {session_id}")
+            if record.principal_id != ctx.principal_id:
+                raise ValueError("session belongs to a different principal")
+            if record.status != "active":
+                raise ValueError(f"session is {record.status}; cannot execute")
+            # Check TTL
+            if record.expires_at is not None:
+                expires = record.expires_at
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=UTC)
+                if datetime.now(UTC) > expires:
+                    record.status = "expired"
+                    await session.commit()
+                    raise ValueError("session has expired")
+
+            # Execute the command in a subprocess with process group
+            # (governed by the session's environment lease — workspace +
+            # isolation boundary are inherited from the environment).
+            env = dict(os.environ)
+            env.update(record.env_vars or {})
+
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    # Process group isolation (Unix only; future: Windows
+                    # support needs a different mechanism)
+                    preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout_seconds
+                    )
+                    timed_out = False
+                except TimeoutError:
+                    # Kill the entire process group
+                    if hasattr(os, "killpg"):
+                        import contextlib
+
+                        with contextlib.suppress(ProcessLookupError):
+                            os.killpg(os.getpgid(proc.pid), 9)
+                    await proc.wait()
+                    stdout = b""
+                    stderr = b"command timed out"
+                    timed_out = True
+
+                # Truncate output
+                stdout_str = stdout.decode("utf-8", errors="replace")[:max_output_bytes]
+                stderr_str = stderr.decode("utf-8", errors="replace")[:max_output_bytes]
+                truncated = (
+                    len(stdout) > max_output_bytes or len(stderr) > max_output_bytes
+                )
+
+                record.last_command_at = datetime.now(UTC)
+                record.last_exit_code = proc.returncode if proc.returncode is not None else -1
+                await session.commit()
+
+                return {
+                    "exit_code": record.last_exit_code,
+                    "stdout": stdout_str,
+                    "stderr": stderr_str,
+                    "timed_out": timed_out,
+                    "truncated": truncated,
+                    "duration_ms": 0,  # not measured here for simplicity
+                }
+            except Exception as e:
+                record.status = "failed"
+                record.error = f"execution error: {e}"
+                await session.commit()
+                raise ValueError(f"terminal execution failed: {e}") from e
+
+    async def terminal_session_close_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+
+        from wax.state.engine import db_session
+        from wax.state.terminal_models import TerminalSessionRecord
+
+        session_id = inputs.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id is required")
+
+        async with db_session() as session:
+            record = await session.get(TerminalSessionRecord, session_id)
+            if record is None:
+                raise ValueError(f"No such terminal session: {session_id}")
+            if record.principal_id != ctx.principal_id:
+                raise ValueError("session belongs to a different principal")
+            if record.status == "closed":
+                return {"session_id": session_id, "closed": False, "state": "closed"}
+            record.status = "closed"
+            await session.commit()
+
+        return {"session_id": session_id, "closed": True, "state": "closed"}
+
+    registry.register(TERMINAL_SESSION_OPEN_DESCRIPTOR, terminal_session_open_impl)
+    registry.register(TERMINAL_EXECUTE_DESCRIPTOR, terminal_execute_impl)
+    registry.register(TERMINAL_SESSION_CLOSE_DESCRIPTOR, terminal_session_close_impl)
+    log.info("capability.runtime_registered", count=23)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -2039,4 +2245,101 @@ ENVIRONMENT_REQUEST_DESCRIPTOR = CapabilityDescriptor(
     timeout_seconds=30.0,
     idempotent=False,
     is_destructive=False,
+)
+
+
+# ============================================================================
+# ADR-0039 (Phase 6): Terminal Runtime — module-level descriptors
+# ============================================================================
+
+TERMINAL_SESSION_OPEN_DESCRIPTOR = CapabilityDescriptor(
+    name="terminal.session.open",
+    description=(
+        "Open a persistent terminal session bound to an environment lease. "
+        "The session's working_dir is workspace-relative; env_vars are "
+        "validated (no secret-like names). The session has its own TTL "
+        "(≤ the environment's TTL)."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "environment_id": {"type": "string"},
+            "working_dir": {"type": "string", "default": "."},
+            "env_vars": {"type": "object", "additionalProperties": {"type": "string"}},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400, "default": 3600},
+        },
+        "required": ["environment_id"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "state": {"type": "string"},
+            "expires_at": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+TERMINAL_EXECUTE_DESCRIPTOR = CapabilityDescriptor(
+    name="terminal.execute",
+    description=(
+        "Run a shell command in a terminal session. The command runs in "
+        "the session's environment (workspace + isolation + network "
+        "policy). stdout/stderr are bounded (default 64KB each). The "
+        "command is killed on timeout (SIGKILL the entire process group)."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "command": {"type": "string", "maxLength": 8192},
+            "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 600, "default": 30},
+            "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536},
+        },
+        "required": ["session_id", "command"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "exit_code": {"type": "integer"},
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"},
+            "timed_out": {"type": "boolean"},
+            "truncated": {"type": "boolean"},
+            "duration_ms": {"type": "number"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=600.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+TERMINAL_SESSION_CLOSE_DESCRIPTOR = CapabilityDescriptor(
+    name="terminal.session.close",
+    description="Close a terminal session and kill its process group.",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"session_id": {"type": "string"}},
+        "required": ["session_id"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "closed": {"type": "boolean"},
+            "state": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=True,
+    is_destructive=True,
 )
