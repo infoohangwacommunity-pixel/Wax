@@ -648,3 +648,21 @@ Stage Summary:
 - 19 violations corrected across three audit cycles; 0 open.
 - Remaining honest boundaries unchanged: ADR-0025 retention policy, ADR-0026 open registry, ADR-0027 multi-instance perimeter, output_schema/provenance.
 - Next frontier per mission §92: memory correctness/lifecycle (Phase 3) — re-audit first.
+
+---
+Task ID: POST-OMEGA-2
+Agent: main (Super Z)
+Task: Mission §92 Phase 3 — memory substrate re-audit (read-only) against POST-OMEGA §10–§16; fix what is fixable honestly; register behavioral follow-ups.
+
+Work Log:
+- Independent read-only audit of src/wax/memory/, memory capabilities, memory tests, and mission §10–§16: verdict — substrate constitutionally sound; CV-3/8/9 fixes hold; no domain assumptions; forgotten memories excluded from every retrieval path; ADR-0022 link mechanics match code (14 tests)
+- 11 findings classified (MEM-1..10 + contract drift); fixed the honesty class this cycle:
+  MEM-1 false use_postgres_fts docstring claim (single portable path is the only path; GIN columns reserved), MEM-6 dead MemoryRead deleted, MEM-7 unlink marked internal primitive, MEM-8 three doc-rot surfaces corrected (no future MemoryService claim, no archive state), MEM-9 consolidate reports supersede_refused_ids loudly, declared output schemas completed (linked, already_forgotten, nullable superseded)
+- Registered as designed open follow-ups (NOT violations; own verification cycle): MEM-2 evidence on SYSTEM channel -> structural data-role boundary; MEM-3 contradicts never rendered as conflict markers; MEM-4 observed_at ranked-but-unsurfaced; MEM-5 bridge provenance (mixed user_statement, NULL execution id, hardcoded model_observation)
+- Full dispositions recorded in docs/constitutional-audit/memory-deep-audit.md POST-OMEGA section
+- Verification: 673 tests passing; probe 13/13 PASS
+- Committed a26d528; pushed; local == origin verified; credentials deleted
+
+Stage Summary:
+- Memory re-audit complete: sound substrate, honesty drift corrected, behavioral follow-ups queued with designs.
+- Next frontier: MEM-2/3/4/5 behavioral cycle (prompt-assembly + observation-time surfacing), then Phase 5 context/environment reality model.
