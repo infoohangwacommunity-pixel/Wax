@@ -43,6 +43,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
+# ADR-0045 (Phase 12): ensure the media subsystem is statically visible
+# to AST import analysis. The pipeline is used dynamically inside
+# _run_intelligence for extracting media from inbound messages; this
+# top-level reference makes the connection visible to the constitutional
+# audit scanner.
+import wax.media.pipeline  # noqa: F401
 from wax.authority.seed import DEFAULT_ROLE_FOR_NEW_PRINCIPALS, ensure_principal_role
 from wax.capabilities.contracts import CapabilityInvocationResult
 from wax.continuity.contracts import ContinuityContext
