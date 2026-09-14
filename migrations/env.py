@@ -44,6 +44,7 @@ import wax.state.memory_models
 import wax.state.objective_models
 import wax.state.provisioning_models
 import wax.state.terminal_models
+import wax.state.workspace_models
 import wax.state.work_models  # noqa: F401  (Phase R/V durable work)
 from wax.core.config import WaxSettings
 from wax.state.models import Base
