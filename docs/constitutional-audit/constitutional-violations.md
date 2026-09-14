@@ -15,13 +15,20 @@ Every finding classified `CONSTITUTIONAL VIOLATION`. Format: location / why it v
 | CV-9 | `memory.forget` descriptor vs impl (pre-fix) | Descriptor declared `idempotent=True`; implementation raised on any non-active memory — the contract was false | **FIXED `f44a067`**: already-forgotten ⇒ honest no-op (`already_forgotten: true`); superseded memories still refuse loudly (real state conflict) | High | High |
 | CV-10 | `intelligence/service.py:103,122-123,205,219` (pre-fix) | One shared `llm_base_url` fed BOTH vendor adapters: a mixed-vendor fallback chain silently pointed the Anthropic candidate at an OpenAI-compatible proxy — a hidden provider assumption | **FIXED `bcec2a5`**: separate `anthropic_base_url` setting; adapters no longer share a base URL | High | High |
 
-## Documented-but-not-yet-remediated (classified; fixes designed, founder-visible)
+## Documented-but-not-yet-remediated → **FIXED in the OMEGA cycle (`b439aae`)**
 
-| ID | Location | Class | Why it matters | Designed fix |
-|---|---|---|---|---|
-| CV-11 | `authority/approvals.py create_or_get_pending` | Violation (medium) | Find-then-insert with a non-unique index: two concurrent requests can create two pending approvals for the same fingerprint (compare `processed_messages`, which has a real unique constraint) | Partial unique index on `(principal_id, request_fingerprint) WHERE status='pending'` + IntegrityError→refetch; migration required |
-| CV-12 | `runtime/work/handlers.py` vs `bridge/service.py` gate chains | Violation (drift risk) | The two copies of the gate chain already differ: the bridge notifies the human of a pending approval; the work path announces only on the signal ledger — an approval created by durable work may never reach the human | Extract one shared gate component; both paths consume it |
-| CV-13 | Delivery sources: only `bridge_reply` enqueues durable delivery records | Violation (honesty gap, ADR-0021 25% wired) | A `message.send` failure from the AI (or a work-run reply) is a dead letter, not recoverable delivery state — mission §55 requires delivery to BE recoverable state | Enqueue from all four declared sources; DeliveryQueue already generalizes |
-| CV-14 | `authority/approvals.py` notification asymmetry | Violation (human-authority visibility) | Same as CV-12's concrete harm: approval exists durably but the human may not know | Part of the shared-gate extraction |
+These four were tracked across cycles (the founder's §58 "items that
+must not disappear") and are now fixed in code, each with tests:
 
-No other constitutional violations were found. All remaining findings are classified in the domain documents as LIVE / IMPLEMENTED-BUT-UNWIRED / TEST-ONLY / DOCUMENTATION-ONLY / PLACEHOLDER / DEAD.
+| ID | Location | Class | Fix shipped |
+|---|---|---|---|
+| CV-11 | `authority/approvals.py create_or_get_pending` | Violation (medium) | **FIXED `b439aae`**: atomic INSERT..ON CONFLICT DO NOTHING against partial unique index `uq_pending_approvals_principal_fp_pending` (migration `f2b4d6a8c0e2`, downgrade drops exactly the index); race loser returns the winner's row; tested |
+| CV-12 | `runtime/work/handlers.py` vs `bridge/service.py` gate chains | Violation (drift risk) | **FIXED `b439aae`**: ONE shared component (`wax/authority/gate.py` ApprovalGate) serves both paths; behavioral parity tested |
+| CV-13 | Delivery sources: only `bridge_reply` enqueued durable delivery records | Violation (honesty gap, ADR-0021 partial) | **FIXED `b439aae`**: `message.send` transport failures enqueue a DeliveryRecord (source=`capability:message.send`, failed attempt counted) and return `sent=false, queued_for_retry=true` |
+| CV-14 | `authority/approvals.py` notification asymmetry | Violation (human-authority visibility) | **FIXED `b439aae`**: the work path notifies through the shared gate — live channel first, durable retry state (source=`approval_notification`) when no adapter is up; live probe shows the notification attempt firing on the real path |
+
+No constitutional violations remain open. All findings are classified
+in the domain documents as LIVE / IMPLEMENTED-BUT-UNWIRED / TEST-ONLY /
+DOCUMENTATION-ONLY / PLACEHOLDER / DEAD. Residual designed-but-deferred
+boundaries are recorded in ADR-0025 (retention policy), ADR-0026 (open
+registry), and ADR-0027 (multi-server enforcement perimeter).
