@@ -1712,7 +1712,93 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(ARTIFACT_CAPTURE_DESCRIPTOR, artifact_capture_impl)
     registry.register(ARTIFACT_LIST_DESCRIPTOR, artifact_list_impl)
     registry.register(ARTIFACT_RETRIEVE_DESCRIPTOR, artifact_retrieve_impl)
-    log.info("capability.runtime_registered", count=35)
+
+    # ========================================================================
+    # ADR-0043 (Phase 10): Media + Delivery completion
+    # ========================================================================
+
+    async def delivery_status_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from wax.state.delivery_models import DeliveryRecord
+        from wax.state.engine import db_session
+
+        delivery_id = inputs.get("delivery_id")
+        execution_id = inputs.get("execution_id")
+        if not delivery_id and not execution_id:
+            raise ValueError("either delivery_id or execution_id is required")
+
+        async with db_session() as session:
+            if delivery_id:
+                records = (await session.execute(
+                    select(DeliveryRecord)
+                    .where(DeliveryRecord.id == delivery_id)
+                    .where(DeliveryRecord.principal_id == ctx.principal_id)
+                )).scalars().all()
+            else:
+                records = (await session.execute(
+                    select(DeliveryRecord)
+                    .where(DeliveryRecord.execution_id == execution_id)
+                    .where(DeliveryRecord.principal_id == ctx.principal_id)
+                    .order_by(DeliveryRecord.created_at.desc())
+                    .limit(20)
+                )).scalars().all()
+            await session.commit()
+
+        # Return metadata only — NEVER the message text
+        return {
+            "deliveries": [
+                {
+                    "delivery_id": r.id,
+                    "interface": r.interface_kind,
+                    "recipient_id": r.recipient_id,
+                    "status": r.status,
+                    "attempts": r.attempts,
+                    "max_attempts": r.max_attempts,
+                    "last_error": (r.last_error or "")[:200],
+                    "delivered_at": r.delivered_at.isoformat() if r.delivered_at else None,
+                    "next_attempt_at": r.next_attempt_at.isoformat() if r.next_attempt_at else None,
+                    "source": r.source,
+                }
+                for r in records
+            ],
+            "count": len(records),
+        }
+
+    async def delivery_retry_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from datetime import UTC, datetime
+
+        from wax.state.delivery_models import DeliveryRecord
+        from wax.state.engine import db_session
+
+        delivery_id = inputs.get("delivery_id")
+        if not isinstance(delivery_id, str) or not delivery_id:
+            raise ValueError("delivery_id is required")
+
+        async with db_session() as session:
+            record = await session.get(DeliveryRecord, delivery_id)
+            if record is None:
+                raise ValueError(f"No such delivery: {delivery_id}")
+            if record.principal_id != ctx.principal_id:
+                raise ValueError("delivery belongs to a different principal")
+            if record.status == "delivered":
+                return {"retried": False, "status": "delivered", "reason": "already delivered"}
+            if record.attempts >= record.max_attempts:
+                return {"retried": False, "status": "failed", "reason": "max_attempts exhausted"}
+            # Reset to pending for the maintenance loop
+            record.status = "pending"
+            record.next_attempt_at = datetime.now(UTC)
+            await session.commit()
+
+        return {
+            "retried": True,
+            "status": "pending",
+            "next_attempt_at": record.next_attempt_at.isoformat(),
+        }
+
+    registry.register(DELIVERY_STATUS_DESCRIPTOR, delivery_status_impl)
+    registry.register(DELIVERY_RETRY_DESCRIPTOR, delivery_retry_impl)
+    log.info("capability.runtime_registered", count=37)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -3193,6 +3279,69 @@ ARTIFACT_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
         "properties": {
             "artifact": {"type": "object"},
             "integrity_verified": {"type": "boolean"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+
+# ============================================================================
+# ADR-0043 (Phase 10): Media + Delivery — module-level descriptors
+# ============================================================================
+
+DELIVERY_STATUS_DESCRIPTOR = CapabilityDescriptor(
+    name="delivery.status",
+    description=(
+        "Check the delivery status of an outbound message. Returns "
+        "metadata only — NEVER the message text. Use delivery_id for "
+        "a specific delivery, or execution_id for all deliveries "
+        "from that execution."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "delivery_id": {"type": "string"},
+            "execution_id": {"type": "string"},
+        },
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "deliveries": {"type": "array", "items": {"type": "object"}},
+            "count": {"type": "integer"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+DELIVERY_RETRY_DESCRIPTOR = CapabilityDescriptor(
+    name="delivery.retry",
+    description=(
+        "Manually trigger a retry of a failed delivery. Resets "
+        "next_attempt_at to now; the maintenance loop picks it up. "
+        "Cannot bypass max_attempts — once exhausted, the delivery "
+        "is terminal failed."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {"delivery_id": {"type": "string"}},
+        "required": ["delivery_id"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "retried": {"type": "boolean"},
+            "status": {"type": "string"},
+            "next_attempt_at": {"type": "string"},
+            "reason": {"type": "string"},
         },
     },
     required_permission="capability.invoke:built_in",
