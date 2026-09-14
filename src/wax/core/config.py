@@ -136,7 +136,7 @@ class WaxSettings(BaseSettings):
     # Each candidate gets its own retry+breaker; failover happens after a
     # candidate's own retry budget exhausts. Misconfigured kinds fail at
     # boot (loud), not at 3am.
-    llm_provider_fallbacks: str = "" 
+    llm_provider_fallbacks: str = ""
 
     # --- Human approval primitive (ADR-0013) ---
     # How long a pending approval stays decidable before it honestly

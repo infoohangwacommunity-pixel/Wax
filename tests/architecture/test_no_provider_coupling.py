@@ -54,9 +54,9 @@ def test_provider_sdks_live_only_in_adapters() -> None:
     for path in _iter_py_files():
         module = _module_name(path)
         rel = path.relative_to(SRC)
-        inside_adapters = rel.parts[:2] == ("intelligence", "adapters") or rel.parts[
+        inside_adapters = rel.parts[:2] == ("intelligence", "adapters") or (rel.parts[
             :1
-        ] == ("intelligence",) and rel.name.startswith("adapters")
+        ] == ("intelligence",) and rel.name.startswith("adapters"))
         if inside_adapters:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))

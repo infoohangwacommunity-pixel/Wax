@@ -5,22 +5,19 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from wax.core.config import settings_for_testing
 from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
 from wax.interfaces.whatsapp.client import WhatsAppClient
 from wax.interfaces.whatsapp.contracts import (
     WhatsAppIncomingMessage,
-    WhatsAppMessageStatus,
     WhatsAppMessageType,
     WhatsAppOutgoingMessage,
 )
-
 
 # Test credentials — do NOT use these in production.
 TEST_APP_SECRET = "test-app-secret-xxxxx"
@@ -77,7 +74,7 @@ def _build_text_message_webhook(
                                 {
                                     "from": from_phone,
                                     "id": message_id,
-                                    "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+                                    "timestamp": str(int(datetime.now(UTC).timestamp())),
                                     "type": "text",
                                     "text": {"body": text},
                                 }
@@ -267,7 +264,7 @@ class TestWhatsAppAdapterWebhook:
                                         "id": "wamid.out1",
                                         "status": "delivered",
                                         "recipient_id": "+2348000000000",
-                                        "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+                                        "timestamp": str(int(datetime.now(UTC).timestamp())),
                                     }
                                 ],
                             },

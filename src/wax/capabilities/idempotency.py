@@ -71,7 +71,7 @@ class Verdict(StrEnum):
 class ClaimResult:
     """The claim verdict plus the row (for replay) when relevant."""
 
-    __slots__ = ("verdict", "record")
+    __slots__ = ("record", "verdict")
 
     def __init__(self, verdict: Verdict, record: CapabilityInvocationRecord) -> None:
         self.verdict = verdict

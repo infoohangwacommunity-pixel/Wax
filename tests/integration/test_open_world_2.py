@@ -21,16 +21,16 @@ names explicitly, all through pure composition of the same primitives:
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 
-from wax.authority.seed import ensure_principal_role, seed_builtin_roles
+from wax.authority.seed import seed_builtin_roles
 from wax.capabilities.contracts import CapabilityDescriptor
 from wax.capabilities.registry import CapabilityStatus
 from wax.intelligence.adapters.mock_provider import MockLLMProvider
-from wax.intelligence.contracts import MessageRole, ToolCall
+from wax.intelligence.contracts import ToolCall
 from wax.intelligence.service import IntelligenceService
 from wax.runtime.bridge.contracts import InterfaceKind, RuntimeRequest
 from wax.runtime.bridge.service import RuntimeBridge

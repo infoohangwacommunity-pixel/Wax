@@ -94,6 +94,17 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         bridge = RuntimeBridge(intelligence=intel, services=services)
         app.state.runtime_bridge = bridge
 
+        # ADR-0034: register the bridge's re-entry callback on
+        # RuntimeServices. The durable-work `intelligence_handler` calls
+        # this callback to wake the intelligence on a runtime fact
+        # (time or signal) — WITHOUT importing the bridge. The
+        # composition root (this lifespan) is the SOLE place where
+        # the bridge and the work handler are wired together; the
+        # architecture boundary tests prohibit either from importing
+        # the other.
+        services.reentry_callback = bridge.run_reentry
+        log.info("runtime.reentry_callback_registered")
+
         # Initialize WhatsApp client if credentials are present (Phase Q)
         if settings.whatsapp_access_token and settings.whatsapp_phone_number_id:
             from wax.interfaces.whatsapp.client import WhatsAppClient
@@ -145,13 +156,18 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         # Phase R/V: the background work runtime — durable work that
         # survives restarts. In-process asyncio worker (single-process
         # deployment today; the lease design admits replicas later).
+        # ADR-0034: TWO handlers are registered — "capability" (the
+        # universal wake-and-invoke path) and "intelligence" (the
+        # durable re-entry path that wakes the LLM + tool-call loop).
         from wax.runtime.work import WorkRunner, capability_handler
+        from wax.runtime.work.handlers import intelligence_handler
 
         work_runner = WorkRunner(
             services,
             poll_interval_seconds=settings.work_poll_interval_seconds,
         )
         work_runner.register_handler("capability", capability_handler)
+        work_runner.register_handler("intelligence", intelligence_handler)
         services.work_runner = work_runner
         recovered = await work_runner.recover_orphans()
         if recovered["failed_executions"]:
@@ -505,9 +521,9 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             """
             from sqlalchemy import select
 
+            from wax.runtime.delivery_queue import DeliveryQueue
             from wax.state.engine import db_session
             from wax.state.identity_models import PrincipalCredential
-            from wax.runtime.delivery_queue import DeliveryQueue
 
             svc = getattr(app.state, "services", None)
             if svc is not None:

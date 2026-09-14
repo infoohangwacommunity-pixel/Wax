@@ -16,17 +16,13 @@ generic capabilities by name, and the runtime enforces the rest.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import shutil
 
 import pytest
-import shutil
-from sqlalchemy import select
 from ulid import ULID
 
 from wax.authority.seed import get_role_by_name, seed_builtin_roles
 from wax.capabilities.contracts import CapabilityInvocationRequest
-from wax.intelligence.adapters.mock_provider import MockLLMProvider
-from wax.intelligence.service import IntelligenceService
 from wax.state.authority_models import PrincipalRole
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
@@ -185,7 +181,6 @@ class TestSandboxedComposition:
         from PIL import Image, ImageDraw, ImageFont
 
         from wax.media.contracts import MediaKind, MediaSource
-
         from wax.media.pipeline import MediaPipeline
 
         img = Image.new("RGB", (600, 160), "white")

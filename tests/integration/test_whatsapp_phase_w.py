@@ -16,7 +16,6 @@ import pytest
 
 from wax.interfaces.whatsapp.client import WhatsAppClient
 
-
 TEST_APP_SECRET = "test-app-secret-xxxxx"
 TEST_ACCESS_TOKEN = "test-access-token-xxxxx"
 TEST_PHONE_NUMBER_ID = "123456789"

@@ -6,13 +6,12 @@ import pytest
 
 from wax.security.abuse import AbuseDetector, AbuseLevel
 from wax.security.cost_protection import CostLimitConfig, CostProtector
-from wax.security.input_sanitizer import InputSanitizer, InjectionRisk
+from wax.security.input_sanitizer import InjectionRisk, InputSanitizer
 from wax.security.rate_limiter import (
     RateLimitConfig,
     RateLimitDecision,
     RateLimiter,
 )
-
 
 # ===========================================================================
 # Abuse Detector

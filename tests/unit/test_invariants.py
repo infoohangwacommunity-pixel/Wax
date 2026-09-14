@@ -67,6 +67,6 @@ class TestIdentityBoundaryDerivation:
             NON_INTERFACE_CREDENTIAL_KINDS,
         )
 
-        assert ALLOWED_CREDENTIAL_KINDS == frozenset(
+        assert frozenset(
             INTERFACE_CREDENTIAL_KINDS.values()
-        ) | NON_INTERFACE_CREDENTIAL_KINDS
+        ) | NON_INTERFACE_CREDENTIAL_KINDS == ALLOWED_CREDENTIAL_KINDS

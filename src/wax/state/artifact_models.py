@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -52,7 +52,7 @@ class ArtifactRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Integrity + size at acquisition (mission §56: integrity is part of
     # the record, not a recompute-on-demand hope).
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     # Where the artifact came from: the capability/execution that
     # produced it ("workspace.acquire" today; produced outputs later).

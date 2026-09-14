@@ -18,7 +18,7 @@ these are operating-system-style mechanisms.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,13 @@ from wax.security.abuse import AbuseDetector
 from wax.security.cost_protection import CostProtector
 from wax.security.input_sanitizer import InputSanitizer
 from wax.security.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    # Avoid a circular import at runtime: the work package's __init__
+    # imports handlers, which import services. Importing the type only
+    # under TYPE_CHECKING keeps the type hint without triggering the
+    # package init at module load time.
+    from wax.runtime.work.reentry import ReentryCallback
 
 log = get_logger(__name__)
 
@@ -57,6 +64,12 @@ class RuntimeServices:
     # Mutable slot for the background work runner, set by the lifespan
     # (Phase V). Typed loosely to avoid an import cycle; tests may inspect.
     work_runner: Any | None = field(default=None)
+    # ADR-0034: durable intelligence re-entry callback. Set ONCE by the
+    # composition root (create_app) so the work handler can wake the
+    # intelligence WITHOUT importing the bridge. None means the runtime
+    # was built without re-entry wiring (e.g. a stripped-down test
+    # container) — the intelligence_handler fails honestly in that case.
+    reentry_callback: ReentryCallback | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:

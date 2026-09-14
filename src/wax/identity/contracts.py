@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel
 
 # The identity boundary mapping (Invariant INV-02): an interface kind maps
 # to exactly one PrincipalCredential kind, and vice versa. This constant is

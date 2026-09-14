@@ -21,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -98,7 +97,7 @@ def make_whatsapp_client(sent_log: list[httpx.Request]) -> WhatsAppClient:
         verify_token=VERIFY_TOKEN,
     )
     # Swap the underlying httpx client for one backed by a mock transport.
-    client._client = httpx.AsyncClient(  # noqa: SLF001 — test seam
+    client._client = httpx.AsyncClient(
         base_url=WhatsAppClient.BASE_URL,
         transport=httpx.MockTransport(handler),
     )

@@ -416,7 +416,6 @@ class TestMemoryRevisionAndConsolidation:
 
         # Retrieval: the sources left context; the consolidated note is
         # what remains relevant.
-        from wax.capabilities.runtime_capabilities import memory_search_impl
 
         found = await memory_search_impl({"query": "optics weak area"}, ctx_store)
         assert any(m["id"] == record.id for m in found["memories"])

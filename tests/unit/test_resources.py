@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from wax.resources.accountant import ResourceAccountant
 from wax.resources.contracts import ResourceBudget, ResourceKind, ResourceUsage
 

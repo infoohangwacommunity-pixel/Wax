@@ -12,7 +12,6 @@ from wax.agency.contracts import (
 )
 from wax.agency.service import AgencyService
 from wax.authority.service import AuthorizationService
-from wax.core.config import settings_for_testing
 from wax.identity.repository import PrincipalRepository
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base

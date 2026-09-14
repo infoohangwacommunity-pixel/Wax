@@ -11,12 +11,10 @@ Tests verify:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
 
-from wax.core.config import settings_for_testing
 from wax.identity.repository import PrincipalRepository
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
@@ -74,7 +72,7 @@ class TestMemoryCreate:
     async def test_create_with_all_fields(self, principal_id) -> None:
         async with db_session() as session:
             repo = MemoryRepository(session)
-            expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            expiry = datetime.now(UTC) + timedelta(hours=1)
             record = await repo.create(
                 MemoryCreate(
                     principal_id=principal_id,
@@ -329,7 +327,7 @@ class TestMemoryExpiry:
         async with db_session() as session:
             repo = MemoryRepository(session)
             # Already expired (1 hour ago)
-            past = datetime.now(timezone.utc) - timedelta(hours=1)
+            past = datetime.now(UTC) - timedelta(hours=1)
             expired = MemoryRecord(
                 id="01HXY" + "0" * 21,
                 principal_id=principal_id,
@@ -343,7 +341,7 @@ class TestMemoryExpiry:
             session.add(expired)
 
             # Not yet expired (1 hour in future)
-            future = datetime.now(timezone.utc) + timedelta(hours=1)
+            future = datetime.now(UTC) + timedelta(hours=1)
             fresh = MemoryRecord(
                 id="01HXY" + "1" * 21,
                 principal_id=principal_id,
@@ -370,7 +368,7 @@ class TestMemoryExpiry:
         """A forgotten memory should not appear in the expiry queue."""
         async with db_session() as session:
             repo = MemoryRepository(session)
-            past = datetime.now(timezone.utc) - timedelta(hours=1)
+            past = datetime.now(UTC) - timedelta(hours=1)
             record = await repo.create(
                 MemoryCreate(
                     principal_id=principal_id,

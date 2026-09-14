@@ -27,22 +27,19 @@ import pytest
 from sqlalchemy import select
 
 from wax.authority.approvals import ApprovalService, fingerprint_request
-from wax.authority.gate import ApprovalGate, ApprovalGateState
 from wax.authority.seed import seed_builtin_roles
 from wax.capabilities.contracts import (
     CapabilityDescriptor,
     CapabilityInvocationRequest,
 )
-from wax.capabilities.invoker import CapabilityInvoker
+from wax.identity.repository import PrincipalRepository
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work.handlers import capability_handler
 from wax.runtime.work.runner import WorkExecutionError
 from wax.state.approval_models import PendingApprovalRecord
 from wax.state.delivery_models import DeliveryRecord
 from wax.state.engine import db_session, dispose_engine, init_engine
-from wax.state.identity_models import PrincipalCredential
 from wax.state.models import Base
-from wax.identity.repository import PrincipalRepository
 
 
 @pytest.fixture
@@ -391,9 +388,12 @@ class TestInflightRedelivery:
         """A redelivery that arrives while the first attempt is still
         running must observe DUPLICATE — never adopt or corrupt the
         in-flight record."""
-        from wax.runtime.bridge.contracts import InterfaceKind, RuntimeRequest
+        from wax.runtime.bridge.contracts import (
+            InterfaceKind,
+            RuntimeRequest,
+            RuntimeResponseStatus,
+        )
         from wax.runtime.bridge.service import RuntimeBridge
-        from wax.runtime.bridge.contracts import RuntimeResponseStatus
         from wax.state.bridge_models import ProcessedMessageRecord
 
         bridge = RuntimeBridge(

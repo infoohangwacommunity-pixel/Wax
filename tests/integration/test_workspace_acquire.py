@@ -22,10 +22,9 @@ import pytest
 
 from wax.authority.seed import ensure_principal_role, seed_builtin_roles
 from wax.capabilities.contracts import CapabilityInvocationRequest
-from wax.capabilities.workspace_acquire import ArtifactAcquirer, AcquisitionError
+from wax.capabilities.workspace_acquire import AcquisitionError, ArtifactAcquirer
 from wax.runtime.provisioning import ProvisioningService
 from wax.runtime.services import RuntimeServices
-from wax.security.network import NetworkBoundaryError
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
 

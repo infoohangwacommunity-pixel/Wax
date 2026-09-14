@@ -31,7 +31,6 @@ from sqlalchemy import select
 from wax.capabilities.contracts import CapabilityDescriptor, InvocationContext
 from wax.capabilities.registry import CapabilityRegistry
 from wax.objective.evidence import (
-    sync_active_for_execution,
     sync_waiting_for_execution,
 )
 from wax.runtime.logging import get_logger
@@ -374,6 +373,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # --- work.schedule ----------------------------------------------------
 
     async def work_schedule_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.runtime.work.reentry import validate_reentry_payload
         from wax.runtime.work.repository import WorkRepository
         from wax.runtime.work.signals import (
             SignalNameError,
@@ -384,20 +384,45 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         payload = inputs.get("payload")
         if not isinstance(payload, dict):
             raise ValueError("payload object is required")
-        capability_name = payload.get("capability_name")
-        if not capability_name or not isinstance(capability_name, str):
-            raise ValueError("payload.capability_name is required")
-
-        # Honest early feedback: refuse to schedule work whose capability
-        # does not exist (availability may still change by wake time).
-        try:
-            descriptor, _impl = services.capability_registry.get(capability_name)
-        except Exception as e:
-            raise ValueError(f"Unknown capability for scheduled work: {capability_name}") from e
 
         kind = inputs.get("kind") or "capability"
-        if kind != "capability":
-            raise ValueError(f"Unsupported work kind: {kind!r} (only 'capability')")
+        if kind not in ("capability", "intelligence"):
+            raise ValueError(
+                f"Unsupported work kind: {kind!r} "
+                "(only 'capability' or 'intelligence')"
+            )
+
+        # ADR-0034: validate intelligence payload at SCHEDULE time too,
+        # so a malformed work item cannot be persisted. The handler
+        # re-validates at WAKE time (defense in depth against tampering).
+        if kind == "intelligence":
+            try:
+                validate_reentry_payload(payload)
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid intelligence work payload: {e}"
+                ) from e
+        else:
+            # capability kind: payload must contain a capability_name
+            capability_name = payload.get("capability_name")
+            if not capability_name or not isinstance(capability_name, str):
+                raise ValueError("payload.capability_name is required")
+            # Honest early feedback: refuse to schedule work whose capability
+            # does not exist (availability may still change by wake time).
+            try:
+                descriptor, _impl = services.capability_registry.get(capability_name)
+            except Exception as e:
+                raise ValueError(f"Unknown capability for scheduled work: {capability_name}") from e
+
+            if descriptor.is_destructive:
+                # Destructive work is schedulable: at wake time the agency gate
+                # routes it into the human-approval primitive (a pending
+                # approval is created honestly, the attempt fails without
+                # consuming anything, and the human's approval authorizes the
+                # retry/requeue exactly once). The authority boundary moved
+                # from "refuse to schedule" to "refuse to run without an
+                # explicit human YES" — the stronger, generic guarantee.
+                pass
 
         # Wake condition: TIME (wake_at/delay_seconds) or EVENT (wake_event).
         wake_event_raw = inputs.get("wake_event")
@@ -413,16 +438,6 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             raise ValueError("max_attempts must be an integer") from e
         if not 1 <= max_attempts <= 10:
             raise ValueError("max_attempts must be between 1 and 10")
-
-        if descriptor.is_destructive:
-            # Destructive work is schedulable: at wake time the agency gate
-            # routes it into the human-approval primitive (a pending
-            # approval is created honestly, the attempt fails without
-            # consuming anything, and the human's approval authorizes the
-            # retry/requeue exactly once). The authority boundary moved
-            # from "refuse to schedule" to "refuse to run without an
-            # explicit human YES" — the stronger, generic guarantee.
-            pass
 
         expires_at = _parse_optional_deadline(inputs)
 
@@ -455,14 +470,23 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             wake_event = None
             wake_at = _parse_wake_time(inputs)
 
+        # For capability kind, normalize the payload to the persisted shape.
+        if kind == "capability":
+            persisted_payload = {
+                "capability_name": payload.get("capability_name"),
+                "inputs": payload.get("inputs") or {},
+            }
+        else:
+            # For intelligence kind, persist the bounded payload exactly
+            # as validated (prompt + observation). The handler will
+            # re-validate at wake time.
+            persisted_payload = payload
+
         async with db_session() as session:
             repo = WorkRepository(session)
             item = await repo.schedule(
                 kind=kind,
-                payload={
-                    "capability_name": capability_name,
-                    "inputs": payload.get("inputs") or {},
-                },
+                payload=persisted_payload,
                 wake_at=wake_at,
                 principal_id=ctx.principal_id,
                 # Traceability: link the work back to WHO called for it.
@@ -490,7 +514,10 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "wake_event": item.wake_event,
             "wake_at": item.wake_at.isoformat(),
             "expires_at": item.expires_at.isoformat() if item.expires_at else None,
-            "capability_name": capability_name,
+            "kind": kind,
+            "capability_name": (
+                payload.get("capability_name") if kind == "capability" else None
+            ),
         }
 
     # --- work.cancel ------------------------------------------------------

@@ -251,7 +251,7 @@ class IntelligenceService:
         for candidate in self.candidates:
             try:
                 response = await candidate.complete(request)
-            except Exception as e:  # noqa: BLE001 — failover is the point
+            except Exception as e:
                 last_error = e
                 log.error(
                     "intelligence.complete.error",

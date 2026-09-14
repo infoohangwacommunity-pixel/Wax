@@ -10,8 +10,6 @@ Tests verify:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 

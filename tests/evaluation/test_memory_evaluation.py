@@ -19,7 +19,6 @@ import pytest
 from wax.authority.seed import seed_builtin_roles
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
-from wax.runtime.services import RuntimeServices
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
 

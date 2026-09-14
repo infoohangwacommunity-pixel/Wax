@@ -235,7 +235,7 @@ class ApprovalGate:
                     interface=interface,
                 )
                 return  # one live channel is enough
-            except Exception as e:  # noqa: BLE001 — try the next channel
+            except Exception as e:
                 log.warning(
                     "approval.notification_failed",
                     approval_id=record.id,

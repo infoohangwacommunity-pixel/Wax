@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from wax.continuity.contracts import (
     ConversationStatus,
-    ContinuityContext,
 )
 from wax.continuity.repository import ConversationRepository
-from wax.continuity.service import ConversationService, ContinuityService
-from wax.core.config import settings_for_testing
+from wax.continuity.service import ContinuityService, ConversationService
 from wax.identity.repository import PrincipalRepository
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
@@ -91,7 +89,7 @@ class TestConversationRepository:
             assert fetched.message_count == 1
             # Normalize timezones for comparison (SQLite may return naive)
             def _aware(dt: datetime) -> datetime:
-                return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+                return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
             assert _aware(fetched.last_message_at) > _aware(original_last)
 
     async def test_close_marks_closed(self, principal_id) -> None:
@@ -168,7 +166,7 @@ class TestContinuityService:
             conv_svc = ConversationService(session)
             conv = await conv_svc.open_or_resume(principal_id, "whatsapp")
             # Manually set last_message_at to 3 days ago
-            conv.last_message_at = datetime.now(timezone.utc) - timedelta(days=3)
+            conv.last_message_at = datetime.now(UTC) - timedelta(days=3)
             await session.commit()
 
         async with db_session() as session:

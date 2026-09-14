@@ -18,7 +18,6 @@ import asyncio
 
 import pytest
 
-from wax.authority.permissions import BUILTIN_PERMISSIONS
 from wax.authority.service import AuthorizationService
 from wax.capabilities.built_ins import register_builtins
 from wax.capabilities.contracts import (
@@ -28,11 +27,10 @@ from wax.capabilities.contracts import (
 )
 from wax.capabilities.invoker import CapabilityInvoker
 from wax.capabilities.registry import CapabilityRegistry
-from wax.core.config import settings_for_testing
 from wax.identity.repository import PrincipalRepository
+from wax.state.authority_models import Role
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
-from wax.state.authority_models import Role
 
 
 @pytest.fixture

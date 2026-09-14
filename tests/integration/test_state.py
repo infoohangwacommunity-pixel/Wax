@@ -10,13 +10,10 @@ Tests verify:
 
 from __future__ import annotations
 
-from datetime import datetime
-
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from wax.core.config import settings_for_testing
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
 
@@ -30,8 +27,6 @@ async def initialized_db(test_settings) -> AsyncSession:
     engine = init_engine.__wrapped__ if hasattr(init_engine, "__wrapped__") else None
 
     # Actually re-init with the override
-    from wax.state.engine import _build_engine, _session_factory
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from wax.state.engine import _engine as cur_engine
     if cur_engine is not None:
@@ -61,7 +56,6 @@ class TestEngineLifecycle:
         await dispose_engine()
 
     async def test_get_engine_raises_when_not_initialized(self) -> None:
-        from wax.state.engine import _engine
         # Save and clear the global
         import wax.state.engine as eng_mod
 

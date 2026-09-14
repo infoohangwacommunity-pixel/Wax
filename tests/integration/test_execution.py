@@ -12,12 +12,9 @@ Tests verify:
 
 from __future__ import annotations
 
-from datetime import datetime
-
 import pytest
 
-from wax.core.config import settings_for_testing
-from wax.execution.contracts import ExecutionKind, ExecutionStatus, StepStatus
+from wax.execution.contracts import ExecutionKind, StepStatus
 from wax.execution.repository import ExecutionRepository
 from wax.identity.repository import PrincipalRepository
 from wax.state.engine import db_session, dispose_engine, init_engine

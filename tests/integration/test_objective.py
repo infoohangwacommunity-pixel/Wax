@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from wax.authority.service import AuthorizationService
-from wax.core.config import settings_for_testing
 from wax.core.exceptions import WaxNotFoundError, WaxPermissionDeniedError
 from wax.identity.repository import PrincipalRepository
 from wax.objective.contracts import ObjectiveCreate, ObjectiveKind, ObjectiveStatus

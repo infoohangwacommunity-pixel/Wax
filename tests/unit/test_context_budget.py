@@ -28,7 +28,6 @@ from wax.continuity.contracts import ContinuityContext
 from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.intelligence.context_limits import (
     CHARS_PER_TOKEN,
-    ContextBudget,
     derive_context_budget,
     estimate_messages_tokens,
     estimate_tokens,

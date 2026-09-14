@@ -19,7 +19,7 @@ Verified here:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from ulid import ULID
@@ -215,7 +215,6 @@ class TestObjectiveStateSurvivesTheInteraction:
     ) -> None:
         from wax.runtime.bridge.contracts import RuntimeResponseStatus
         from wax.state.objective_models import ObjectiveRecord
-        from wax.state.work_models import WorkItemRecord
 
         script = [
             [

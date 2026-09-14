@@ -105,7 +105,7 @@ def _failing_client() -> Any:
         app_secret=APP_SECRET,
         verify_token=VERIFY_TOKEN,
     )
-    client._client = httpx.AsyncClient(  # noqa: SLF001 — test seam
+    client._client = httpx.AsyncClient(
         base_url=WhatsAppClient.BASE_URL,
         transport=httpx.MockTransport(
             lambda request: httpx.Response(500, json={"error": "down"})

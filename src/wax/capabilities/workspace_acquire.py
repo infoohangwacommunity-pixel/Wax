@@ -291,10 +291,9 @@ def register_workspace_acquire_capability(
         inputs: dict[str, Any], ctx: InvocationContext
     ) -> dict[str, Any]:
         from sqlalchemy import select
-
-        from wax.observability.audit import record_audit_event
         from ulid import ULID
 
+        from wax.observability.audit import record_audit_event
         from wax.state.artifact_models import ArtifactRecord
         from wax.state.engine import db_session
         from wax.state.provisioning_models import ProvisionedResourceRecord

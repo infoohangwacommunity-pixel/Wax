@@ -82,7 +82,7 @@ async def sync_waiting_for_execution(
                 execution_id=execution_id,
             )
         return changed
-    except Exception as e:  # noqa: BLE001 — sync must never break scheduling
+    except Exception as e:
         log.warning("objective.sync_failed", reason=str(e)[:300])
         return False
 
@@ -103,7 +103,7 @@ async def sync_awaiting_human_for_execution(
                 execution_id=execution_id,
             )
         return changed
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.warning("objective.sync_failed", reason=str(e)[:300])
         return False
 
@@ -124,7 +124,7 @@ async def sync_active_for_execution(
                 execution_id=execution_id,
             )
         return changed
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.warning("objective.sync_failed", reason=str(e)[:300])
         return False
 
@@ -196,7 +196,7 @@ async def sync_failure_for_work(
             reason="last_pending_work_died",
         )
         return True
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.warning("objective.sync_failed", reason=str(e)[:300])
         return False
 

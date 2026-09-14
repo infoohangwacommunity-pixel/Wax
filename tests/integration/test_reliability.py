@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from wax.core.config import settings_for_testing
 from wax.reliability.circuit_breaker import (
     CircuitBreaker,
     CircuitOpenError,

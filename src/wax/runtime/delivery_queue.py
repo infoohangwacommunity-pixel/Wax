@@ -147,7 +147,7 @@ class DeliveryQueue:
                 await self._services.delivery.send(
                     record.interface_kind, record.recipient_id, record.text
                 )
-            except Exception as e:  # noqa: BLE001 — the failure IS the data
+            except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:2000]
             else:
                 record.status = "delivered"

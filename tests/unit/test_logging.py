@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any
 
-import structlog
 from structlog.types import EventDict
 
 from wax.core.config import LogFormat, LogLevel, settings_for_testing

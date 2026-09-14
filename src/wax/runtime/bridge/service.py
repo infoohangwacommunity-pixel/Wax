@@ -52,7 +52,6 @@ from wax.execution.contracts import ExecutionKind
 from wax.execution.repository import ExecutionRepository
 from wax.identity.contracts import (
     ALLOWED_CREDENTIAL_KINDS,
-    CREDENTIAL_KIND_INTERFACES,
     INTERFACE_CREDENTIAL_KINDS,
 )
 from wax.identity.repository import PrincipalRepository
@@ -67,7 +66,6 @@ from wax.intelligence.service import IntelligenceService
 from wax.memory.contracts import MemoryCreate, MemoryKind
 from wax.memory.repository import MemoryRepository
 from wax.objective.contracts import ObjectiveCreate, ObjectiveKind, ObjectiveStatus
-from wax.objective.evidence import sync_waiting_for_execution
 from wax.objective.repository import ObjectiveRepository
 from wax.observability.audit import record_audit_event
 from wax.reliability.dead_letter import DeadLetterRepository
@@ -80,6 +78,11 @@ from wax.runtime.bridge.contracts import (
 )
 from wax.runtime.logging import get_logger
 from wax.runtime.services import RuntimeServices
+from wax.runtime.work.reentry import (
+    ReentryOutcome,
+    ReentryRequest,
+    ReentryResult,
+)
 from wax.security.abuse import AbuseLevel
 from wax.security.input_sanitizer import InjectionRisk, SanitizerResult
 from wax.security.rate_limiter import RateLimitDecision
@@ -141,6 +144,36 @@ class _Rejection:
     status: RuntimeResponseStatus
     outcome: str
     reason: str
+
+
+@dataclass(frozen=True)
+class _SyntheticRequest:
+    """A minimal RuntimeRequest-like object for the re-entry path.
+
+    The bridge's `_run_intelligence` reads `request.effective_text` and
+    `request.interface_kind` from the RuntimeRequest. The re-entry path
+    does NOT have a real RuntimeRequest (the wake is a runtime fact, not
+    an interface message) — but it does have a prompt and a conversation
+    that lives on a specific interface. This synthetic request carries
+    the minimum fields the intelligence loop needs.
+
+    The `effective_text` is the prompt (the intelligence's instruction
+    for this re-entry), NOT a user message — the prompt is presented to
+    the model as a user message in the message list, but the runtime
+    observation is presented as a tool message so the model cannot
+    impersonate the runtime.
+    """
+
+    interface_kind: InterfaceKind
+    interface_message_id: str
+    sender_interface_id: str
+    sender_display_name: str | None
+    text: str
+    received_at: datetime
+
+    @property
+    def effective_text(self) -> str:
+        return self.text
 
 
 class RuntimeBridge:
@@ -712,12 +745,12 @@ class RuntimeBridge:
             CapabilityInvocationResult,
             CapabilityStatus,
         )
-        from wax.execution.contracts import StepStatus
 
         # CV-19: lift the declared idempotency-key transport field before
         # the authority gate (it is request metadata, not operation
         # semantics; approval fingerprints stay about the operation).
         from wax.capabilities.invoker import lift_idempotency_key
+        from wax.execution.contracts import StepStatus
 
         op_inputs, idempotency_key = lift_idempotency_key(call.arguments)
 
@@ -938,6 +971,399 @@ class RuntimeBridge:
                     processed_at=datetime.now(UTC),
                 )
         return None
+
+    # -------------------------------------------------------------------
+    # ADR-0034: Durable intelligence re-entry
+    # -------------------------------------------------------------------
+    async def run_reentry(self, request: ReentryRequest) -> ReentryResult:
+        """Wake the intelligence and re-run the LLM + tool-call loop.
+
+        This is the bridge-side implementation of the re-entry callback. The
+        work handler's `intelligence_handler` builds a `ReentryRequest`
+        from the work item's payload + principal + execution id and calls
+        this method via `services.reentry_callback`.
+
+        Flow:
+        1. Resolve the originating objective from execution_id
+        2. Locate the conversation linked to this objective
+        3. Verify conversation.principal_id == request.principal_id
+        4. Create a fresh continuation execution
+        5. Record objective execution history (kind="work_continuation")
+        6. Reactivate the objective (sync_active_for_execution)
+        7. Allocate execution budget
+        8. Assemble context via ContinuityService (same composer)
+        9. Build the LLM message list with the runtime observation as
+           a typed tool message (NOT a user message — the model cannot
+           impersonate the runtime)
+        10. Run the intelligence + tool-call loop (same loop as live)
+        11. Persist continuation memory + execution result
+        12. Record objective execution end + reconcile objective state
+
+        Never auto-closes the objective — only the intelligence can do
+        that via `objective.update_status` (a future capability) with
+        real evidence. This handler leaves the objective in_progress,
+        waiting, or awaiting_human based on what the continuation
+        produced.
+        """
+        from wax.continuity.service import ContinuityService
+        from wax.execution.contracts import ExecutionKind
+        from wax.execution.repository import ExecutionRepository
+        from wax.intelligence.context_limits import derive_context_budget
+        from wax.intelligence.contracts import LLMMessage, MessageRole
+        from wax.memory.contracts import MemoryCreate, MemoryKind
+        from wax.memory.repository import MemoryRepository
+        from wax.objective.evidence import (
+            objective_for_execution,
+            sync_active_for_execution,
+        )
+        from wax.objective.repository import ObjectiveRepository
+        from wax.observability.audit import record_audit_event
+        from wax.runtime.work.signals import SignalRepository
+        from wax.state.engine import db_session
+
+        async with db_session() as session:
+            # 1. Resolve the originating objective
+            objective = await objective_for_execution(
+                session, request.originating_execution_id
+            )
+            if objective is None:
+                log.warning(
+                    "reentry.no_objective",
+                    originating_execution_id=request.originating_execution_id,
+                )
+                return ReentryResult(
+                    execution_id="",
+                    objective_id="",
+                    conversation_id="",
+                    outcome="failed",
+                    error="no objective for originating execution",
+                )
+
+            # 2. Locate the conversation linked to this objective
+            from sqlalchemy import select as sa_select
+
+            from wax.state.continuity_models import ConversationRecord
+
+            conversation = (
+                await session.execute(
+                    sa_select(ConversationRecord)
+                    .where(ConversationRecord.objective_id == objective.id)
+                    .order_by(ConversationRecord.last_message_at.desc().nulls_last())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if conversation is None:
+                log.warning(
+                    "reentry.no_conversation",
+                    objective_id=objective.id,
+                )
+                return ReentryResult(
+                    execution_id="",
+                    objective_id=objective.id,
+                    conversation_id="",
+                    outcome="failed",
+                    error="no conversation linked to this objective",
+                )
+
+            # 3. Ownership check — wrong principal is a security violation
+            if conversation.principal_id != request.principal_id:
+                log.error(
+                    "reentry.principal_mismatch",
+                    work_item_id=request.work_item_id,
+                    work_principal_id=request.principal_id,
+                    conversation_principal_id=conversation.principal_id,
+                )
+                return ReentryResult(
+                    execution_id="",
+                    objective_id=objective.id,
+                    conversation_id=conversation.id,
+                    outcome="failed",
+                    error="principal_id does not match the conversation's owner",
+                )
+
+            # 4. Create a fresh continuation execution
+            exec_repo = ExecutionRepository(session)
+            execution = await exec_repo.create(
+                principal_id=request.principal_id,
+                kind=ExecutionKind.SINGLE_TURN,
+                objective=f"[continuation] {request.prompt[:200]}",
+            )
+            await exec_repo.start(execution.id)
+
+            # 5. Record objective execution history
+            objective_repo = ObjectiveRepository(session)
+            await objective_repo.record_execution_start(
+                objective.id, execution.id, kind="work_continuation"
+            )
+
+            # 6. Reactivate the objective (waiting → in_progress)
+            await sync_active_for_execution(session, execution.id)
+
+            # 7. Allocate execution budget (same shape as live path)
+            self._services.resource_accountant.allocate(
+                execution.id, **_DEFAULT_EXECUTION_BUDGET
+            )
+
+            # 8. Assemble context (ContinuityService is the single composer)
+            continuity = ContinuityService(session)
+            # The "interface_kind" for a continuation is the same one the
+            # conversation was on — the principal didn't switch channels.
+            context, _conv_id = await continuity.build_context(
+                request.principal_id,
+                conversation.interface_kind,
+                current_message=request.prompt,
+            )
+
+            # 9. Build messages — observation as a TOOL message, not user
+            from wax.continuity.assembly import assemble_evidence, build_evidence_sections
+
+            budget = derive_context_budget(
+                self._intelligence.inner_provider,
+                fallback_char_budget=int(self._services.settings.context_char_budget),
+                output_reserve_tokens=int(
+                    self._services.settings.llm_output_reserve_tokens
+                ),
+            )
+
+            principal = await session.get(
+                Principal, request.principal_id
+            )
+            principal_display = (principal.display_name if principal else None)
+
+            system_prompt = self._build_system_prompt(
+                principal_display=principal_display,
+                principal_id=request.principal_id,
+            )
+            messages: list[LLMMessage] = [
+                LLMMessage(role=MessageRole.SYSTEM, content=system_prompt),
+            ]
+            evidence_lines = assemble_evidence(
+                build_evidence_sections(context),
+                budget_chars=budget.budget_chars,
+            )
+            for line in evidence_lines:
+                messages.append(LLMMessage(role=MessageRole.SYSTEM, content=line))
+
+            # The intelligence's instruction (the prompt) is a user message —
+            # the model is being ASKED to reason about something. The runtime
+            # observation is a TOOL message so the model cannot impersonate
+            # the runtime by typing into a chat box.
+            messages.append(
+                LLMMessage(role=MessageRole.USER, content=request.prompt)
+            )
+
+            # The observation is a structured tool response from "the runtime"
+            # — the model sees it as evidence, not as user instruction.
+            import json as _json
+
+            observation_payload = {
+                "source": request.observation.get("source", "runtime"),
+                "event": request.observation.get("event"),
+                "work_id": request.observation.get("work_id"),
+                "result": request.observation.get("result", {}),
+            }
+            messages.append(
+                LLMMessage(
+                    role=MessageRole.TOOL,
+                    content=_json.dumps(observation_payload, default=str)[:4000],
+                    tool_call_id=f"runtime-observation-{request.work_item_id}",
+                    name="runtime.observation",
+                )
+            )
+
+            # Audit the re-entry start
+            await record_audit_event(
+                session,
+                actor_principal_id=request.principal_id,
+                actor_kind="system",
+                event_kind="intelligence.reentry.started",
+                outcome="success",
+                payload={
+                    "continuation_execution_id": execution.id,
+                    "originating_execution_id": request.originating_execution_id,
+                    "objective_id": objective.id,
+                    "work_item_id": request.work_item_id,
+                    "observation_event": request.observation.get("event"),
+                },
+                request_id=execution.id,
+            )
+            await session.commit()
+
+            # 10. Run intelligence + tool-call loop
+            try:
+                response_text = await self._run_intelligence(
+                    session,
+                    execution_id=execution.id,
+                    principal_id=request.principal_id,
+                    principal_display=principal_display,
+                    # The re-entry path does NOT pass a RuntimeRequest —
+                    # the prompt is already in the message list. We pass
+                    # a minimal synthetic request only if _run_intelligence
+                    # needs it for context. Refactor: we'll call the loop
+                    # directly to avoid the RuntimeRequest dependency.
+                    request=_SyntheticRequest(
+                        interface_kind=InterfaceKind(conversation.interface_kind)
+                        if InterfaceKind._value2member_map_.get(conversation.interface_kind)
+                        else InterfaceKind.WHATSAPP,
+                        interface_message_id=f"reentry-{request.work_item_id}",
+                        sender_interface_id="runtime",
+                        sender_display_name=principal_display,
+                        text=request.prompt,
+                        received_at=datetime.now(UTC),
+                    ),
+                    context=context,
+                    sanitizer_result=None,
+                )
+
+                # 11. Persist continuation memory (episodic)
+                memory_repo = MemoryRepository(session)
+                await memory_repo.create(
+                    MemoryCreate(
+                        principal_id=request.principal_id,
+                        kind=MemoryKind.EPISODIC,
+                        content={
+                            "wake_observation": request.observation,
+                            "continuation_response": response_text[:1000],
+                            "originating_execution_id": request.originating_execution_id,
+                        },
+                        provenance="runtime_continuation",
+                        summary=(
+                            f"Re-entry after {request.observation.get('event')}: "
+                            f"{response_text[:200]}"
+                        ),
+                    )
+                )
+
+                # 12. Complete the continuation execution
+                await exec_repo.complete(
+                    execution.id,
+                    checkpoint={
+                        "response": response_text[:1000],
+                        "wake_event": request.observation.get("event"),
+                        "originating_execution_id": request.originating_execution_id,
+                    },
+                )
+                await objective_repo.record_execution_end(
+                    objective.id, execution.id, outcome="succeeded"
+                )
+
+                # 13. Announce the re-entry completion on the event ledger
+                await SignalRepository(session).emit(
+                    f"intelligence.reentered:{execution.id}",
+                    payload={
+                        "continuation_execution_id": execution.id,
+                        "objective_id": objective.id,
+                        "originating_execution_id": request.originating_execution_id,
+                    },
+                    emitted_by="bridge",
+                )
+
+                # 14. Reconcile objective state per evidence — do NOT auto-close
+                from wax.objective.evidence import (
+                    objective_has_outstanding_work,
+                    sync_waiting_for_execution,
+                )
+
+                if await objective_has_outstanding_work(session, objective.id):
+                    await sync_waiting_for_execution(session, execution.id)
+                    outcome: ReentryOutcome = "waiting"
+                else:
+                    # Check for pending approvals
+                    from wax.state.approval_models import PendingApprovalRecord
+
+                    pending = (
+                        await session.execute(
+                            sa_select(PendingApprovalRecord.id)
+                            .where(
+                                PendingApprovalRecord.principal_id
+                                == request.principal_id,
+                                PendingApprovalRecord.status == "pending",
+                            )
+                            .limit(1)
+                        )
+                    ).first()
+                    if pending is not None:
+                        from wax.objective.evidence import (
+                            sync_awaiting_human_for_execution,
+                        )
+
+                        await sync_awaiting_human_for_execution(
+                            session, execution.id
+                        )
+                        outcome = "awaiting_human"
+                    else:
+                        # Active reasoning with nothing pending — leave in_progress
+                        outcome = "in_progress"
+
+                await record_audit_event(
+                    session,
+                    actor_principal_id=request.principal_id,
+                    actor_kind="system",
+                    event_kind="intelligence.reentry.completed",
+                    outcome="success",
+                    payload={
+                        "continuation_execution_id": execution.id,
+                        "objective_id": objective.id,
+                        "outcome": outcome,
+                        "response_chars": len(response_text),
+                    },
+                    request_id=execution.id,
+                )
+                await session.commit()
+
+                return ReentryResult(
+                    execution_id=execution.id,
+                    objective_id=objective.id,
+                    conversation_id=conversation.id,
+                    outcome=outcome,
+                    response_text=response_text[:1000],
+                )
+
+            except Exception as e:
+                # Honest failure: the continuation execution failed. Mark
+                # it so, record the failure evidence, and propagate. The
+                # objective stays in_progress; the work runner's retry
+                # semantics will re-attempt the re-entry if attempts
+                # remain.
+                await session.rollback()
+                async with db_session() as fail_session:
+                    fail_exec_repo = ExecutionRepository(fail_session)
+                    fail_obj_repo = ObjectiveRepository(fail_session)
+                    # The execution may not exist on the failure path
+                    # (rollback may have un-committed the create). Be
+                    # tolerant: try to mark it failed; if not, log.
+                    try:
+                        existing_exec = await fail_exec_repo.get(execution.id)
+                        if existing_exec is not None and existing_exec.status == "running":
+                            await fail_exec_repo.fail(
+                                execution.id,
+                                error=f"reentry failure: {type(e).__name__}: {e}",
+                            )
+                            await fail_obj_repo.record_execution_end(
+                                objective.id, execution.id, outcome="failed"
+                            )
+                            await fail_session.commit()
+                    except Exception as finalize_err:
+                        log.error(
+                            "reentry.finalize_failed",
+                            execution_id=execution.id,
+                            error=str(finalize_err),
+                        )
+
+                log.warning(
+                    "intelligence.reentry.failed",
+                    work_item_id=request.work_item_id,
+                    continuation_execution_id=execution.id,
+                    error=str(e)[:500],
+                    error_type=type(e).__name__,
+                )
+                return ReentryResult(
+                    execution_id=execution.id,
+                    objective_id=objective.id,
+                    conversation_id=conversation.id,
+                    outcome="failed",
+                    error=f"{type(e).__name__}: {e}",
+                )
 
     def _build_messages(
         self,

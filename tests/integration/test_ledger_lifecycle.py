@@ -23,7 +23,7 @@ from wax.runtime.work.repository import WorkRepository
 from wax.runtime.work.signals import SignalRepository
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
-from wax.state.work_models import RuntimeSignalRecord, WAKE_KIND_EVENT
+from wax.state.work_models import WAKE_KIND_EVENT, RuntimeSignalRecord
 
 
 @pytest.fixture
@@ -278,7 +278,6 @@ class TestPruneStatsAccounting:
         `total` is measured AFTER retention deletes; subtracting the
         retention count again double-counted and reported a negative
         ledger."""
-        from datetime import datetime, timedelta, timezone as tz
 
         for i in range(7):
             await _emit(f"acc.test.{i}", age_seconds=40 * 86400)

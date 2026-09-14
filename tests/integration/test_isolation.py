@@ -5,8 +5,6 @@ from __future__ import annotations
 import pytest
 
 from wax.isolation.contracts import (
-    ExecutionResult,
-    IsolationBoundary,
     IsolationKind,
     IsolationRequest,
 )

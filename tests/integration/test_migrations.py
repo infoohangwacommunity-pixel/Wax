@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 from sqlalchemy import text
 
 from wax.state.engine import db_session, dispose_engine, init_engine

@@ -38,13 +38,13 @@ from urllib.parse import urlsplit
 import httpcore
 import httpx
 
-from wax.runtime.logging import get_logger
-
 # httpcore's default backend (creates the real socket). Not a public
 # class in httpcore 1.0.x; httpx 0.28.x pins httpcore 1.0.x, and the
 # import is guarded so an unexpected httpcore layout fails loudly here
 # rather than at fetch time.
-from httpcore._backends.auto import AutoBackend as _AutoBackend  # noqa: PLC2701
+from httpcore._backends.auto import AutoBackend as _AutoBackend
+
+from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
 

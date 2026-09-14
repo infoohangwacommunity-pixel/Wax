@@ -36,17 +36,17 @@ from wax.capabilities.contracts import (
     CapabilityInvocationRequest,
 )
 from wax.capabilities.idempotency import (
-    complete_success,
     claim_invocation,
+    complete_success,
 )
 from wax.capabilities.invoker import (
     CapabilityInvoker,
     lift_idempotency_key,
 )
 from wax.identity.repository import PrincipalRepository
+from wax.state.authority_models import Role
 from wax.state.capability_models import CapabilityInvocationRecord
 from wax.state.engine import db_session, dispose_engine, init_engine
-from wax.state.authority_models import Role
 from wax.state.models import Base
 
 

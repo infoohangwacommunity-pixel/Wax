@@ -30,7 +30,6 @@ from wax.media.contracts import (
 from wax.media.real_extractors import PdfDocumentExtractor, TesseractImageExtractor
 
 
-
 class StubAudioExtractor(MediaExtractor):
     """Stub for audio transcription."""
 

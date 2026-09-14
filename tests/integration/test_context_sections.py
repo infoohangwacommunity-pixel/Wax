@@ -106,7 +106,6 @@ class TestArtifactRecords:
     async def test_acquisition_creates_first_class_record(
         self, fresh_db, services
     ) -> None:
-        from sqlalchemy import select
 
         artifact_id = await _acquire_capability(services)
 

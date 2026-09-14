@@ -1,14 +1,22 @@
 """Work handlers — what the runner can DO with durable work.
 
-Exactly one handler exists: "capability". It is the universal mechanism:
-wake at a time and invoke a registered capability on behalf of the
-principal who scheduled the work, through the same gate chain the live
-bridge uses (agency → budget → authority → invoker).
+Two handlers exist:
 
-Because the handler is generic, a reminder is not a feature — it is the
+1. "capability" — wake at a time and invoke a registered capability on
+   behalf of the principal who scheduled the work, through the same gate
+   chain the live bridge uses (agency → budget → authority → invoker).
+
+2. "intelligence" (ADR-0034) — wake the intelligence itself. The runtime
+   observes a wake (time or signal) and re-enters the LLM + tool-call loop
+   against the SAME objective/context/memory the live path uses, with the
+   wake fact presented as typed runtime evidence (not as user content).
+
+Because handlers are generic, a reminder is not a feature — it is the
 composition work.schedule(kind="capability", payload={capability_name:
 "message.send", ...}, wake_at=...) — and any FUTURE capability is
-automatically schedulable without new runtime code.
+automatically schedulable without new runtime code. Long-running
+objectives are also not a feature — they are work.schedule(kind=
+"intelligence", payload={prompt, observation}, wake_event=...).
 """
 
 from __future__ import annotations
@@ -18,6 +26,11 @@ from typing import Any
 from wax.objective.evidence import sync_active_for_execution
 from wax.runtime.logging import get_logger
 from wax.runtime.services import RuntimeServices
+from wax.runtime.work.reentry import (
+    ReentryRequest,
+    ReentryValidationError,
+    validate_reentry_payload,
+)
 from wax.runtime.work.runner import WorkExecutionError
 from wax.state.engine import db_session
 from wax.state.work_models import WorkItemRecord
@@ -45,7 +58,7 @@ async def record_work_participation(item: WorkItemRecord) -> None:
                 objective.id, item.id, kind="work"
             )
             await session.commit()
-    except Exception as e:  # noqa: BLE001 — history must never break work
+    except Exception as e:
         log.warning(
             "objective.work_history_failed", work_id=item.id, reason=str(e)[:300]
         )
@@ -155,3 +168,120 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
             f"capability {capability_name} outcome={result.outcome}: {result.error}"
         )
     return result.outputs or {}
+
+
+# ============================================================================
+# ADR-0034: Durable intelligence re-entry
+# ============================================================================
+
+
+async def intelligence_handler(
+    services: RuntimeServices, item: WorkItemRecord
+) -> dict[str, Any]:
+    """Wake the intelligence and re-run the LLM + tool-call loop.
+
+    The handler is generic: it validates the bounded payload, builds a
+    neutral `ReentryRequest`, and calls `services.reentry_callback`. The
+    callback (set by the composition root) is the bridge's `run_reentry`
+    method. The bridge resolves the objective, creates a fresh continuation
+    execution, reactivates the objective, assembles context, and runs the
+    SAME intelligence loop the live path uses — with the wake observation
+    presented as typed runtime evidence (a tool message, NOT a user message,
+    so the model cannot impersonate the runtime).
+
+    The handler never imports the bridge. The bridge never imports the
+    handler. They share only the neutral contracts in
+    `wax.runtime.work.reentry`.
+    """
+    if services.reentry_callback is None:
+        # Honest failure: the runtime was built without re-entry wiring
+        # (e.g. a stripped-down test container, or a deployment that has
+        # not yet wired the bridge into the work handler). Retry cannot
+        # help — the configuration is fixed at process start.
+        raise WorkExecutionError(
+            "intelligence re-entry not configured in this runtime "
+            "(services.reentry_callback is None)"
+        )
+
+    # 1. Validate the payload at WAKE time (it was also validated at
+    # schedule time, but a tampered-with row must still be rejected).
+    try:
+        prompt, observation = validate_reentry_payload(item.payload)
+    except ReentryValidationError as e:
+        raise WorkExecutionError(f"invalid intelligence work payload: {e}") from e
+
+    # 2. The work must have an owner: intelligence work without a principal
+    # has no identity to re-enter against.
+    if not item.principal_id:
+        raise WorkExecutionError(
+            "intelligence work item has no principal_id; cannot re-enter"
+        )
+    if not item.execution_id:
+        raise WorkExecutionError(
+            "intelligence work item has no execution_id; cannot resolve "
+            "originating objective"
+        )
+
+    # 3. Budget for the re-entry: same shape as a capability invocation
+    # (one reasoning cycle, bounded). The bridge's inner LLM loop has its
+    # OWN per-execution budget for tokens/calls; this is the outer "the
+    # work runner spent one unit of accounting" allocation.
+    budget_key = f"work-{item.id}"
+    services.resource_accountant.allocate(
+        budget_key, capability_invocations=1.0, execution_time_seconds=300.0
+    )
+
+    # 4. Build the neutral request and call the bridge's callback.
+    request = ReentryRequest(
+        principal_id=item.principal_id,
+        originating_execution_id=item.execution_id,
+        work_item_id=item.id,
+        prompt=prompt,
+        observation=observation,
+    )
+
+    log.info(
+        "intelligence.reentry.start",
+        work_id=item.id,
+        principal_id=item.principal_id,
+        originating_execution_id=item.execution_id,
+        observation_event=observation.get("event"),
+    )
+
+    try:
+        result = await services.reentry_callback(request)
+    except Exception as e:
+        # The bridge raised — that is a real failure (not a normal
+        # outcome). Retry semantics apply. The objective's state was
+        # reconciled by the bridge BEFORE raising (the bridge commits
+        # the continuation execution's failure evidence first), so the
+        # objective is left in_progress honestly.
+        log.warning(
+            "intelligence.reentry.exception",
+            work_id=item.id,
+            error=str(e)[:500],
+            error_type=type(e).__name__,
+        )
+        raise WorkExecutionError(
+            f"intelligence re-entry failed: {type(e).__name__}: {e}"
+        ) from e
+
+    log.info(
+        "intelligence.reentry.complete",
+        work_id=item.id,
+        continuation_execution_id=result.execution_id,
+        outcome=result.outcome,
+    )
+
+    # 5. Return the result dict — the runner will mark_succeeded with
+    # this as the work's result. The objective's state was already
+    # reconciled inside the bridge (waiting / awaiting_human / in_progress
+    # / succeeded / failed are honest outcomes from the continuation).
+    return {
+        "execution_id": result.execution_id,
+        "objective_id": result.objective_id,
+        "conversation_id": result.conversation_id,
+        "outcome": result.outcome,
+        "response_text": (result.response_text or "")[:1000],
+        "error": result.error,
+    }

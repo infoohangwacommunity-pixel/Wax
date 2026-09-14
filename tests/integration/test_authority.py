@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from wax.authority.permissions import (
     BUILTIN_PERMISSIONS,
@@ -20,12 +19,11 @@ from wax.authority.permissions import (
     is_permission_granted,
 )
 from wax.authority.service import AuthorizationService
-from wax.core.config import settings_for_testing
 from wax.identity.repository import PrincipalRepository
 from wax.state.audit_models import AuditEvent
+from wax.state.authority_models import Role
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
-from wax.state.authority_models import Role
 
 
 @pytest.fixture

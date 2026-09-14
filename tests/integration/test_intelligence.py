@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from wax.core.config import settings_for_testing
+from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.intelligence.contracts import (
     LLMMessage,
     LLMRequest,
@@ -13,7 +14,6 @@ from wax.intelligence.contracts import (
     MessageRole,
     ProviderKind,
 )
-from wax.intelligence.adapters.mock_provider import MockLLMProvider
 from wax.intelligence.service import IntelligenceService
 
 
@@ -120,6 +120,6 @@ class TestProviderIsolationArchitecture:
                     violations.append((module_info.name, module_str))
 
         assert not violations, (
-            f"wax.core imports provider SDKs (violates INV-03):\n  "
+            "wax.core imports provider SDKs (violates INV-03):\n  "
             + "\n  ".join(f"{m} -> {s}" for m, s in violations)
         )

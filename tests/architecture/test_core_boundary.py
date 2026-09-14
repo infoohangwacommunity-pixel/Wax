@@ -142,7 +142,7 @@ class TestCoreHasNoIO:
         # (Already in the set above.)
 
         assert not violations, (
-            f"wax.core contains forbidden I/O imports (violates INV-09):\n  "
+            "wax.core contains forbidden I/O imports (violates INV-09):\n  "
             + "\n  ".join(f"{m} imports {f}" for m, f in violations)
         )
 
@@ -228,7 +228,6 @@ class TestNoDomainCoupling:
         documentation, not contamination.
         """
         import ast
-
         from pathlib import Path
 
         violations: list[tuple[str, str]] = []

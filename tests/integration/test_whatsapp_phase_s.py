@@ -10,21 +10,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from wax.core.config import settings_for_testing
 from wax.interfaces.whatsapp.adapter import WhatsAppAdapter
 from wax.interfaces.whatsapp.client import WhatsAppClient
 from wax.interfaces.whatsapp.contracts import (
     WhatsAppIncomingMessage,
-    WhatsAppMessageStatus,
     WhatsAppMessageType,
 )
-
 
 TEST_APP_SECRET = "test-app-secret-xxxxx"
 TEST_ACCESS_TOKEN = "test-access-token-xxxxx"
@@ -48,8 +45,6 @@ def adapter(whatsapp_client: WhatsAppClient) -> WhatsAppAdapter:
 
 
 def _sign(body: bytes, secret: str) -> str:
-    import hmac
-    import hashlib
     return f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
 
 
@@ -91,7 +86,7 @@ class TestTextMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.text1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "text",
             "text": {"body": "Hello WAX"},
         }
@@ -107,7 +102,7 @@ class TestImageMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.img1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "image",
             "image": {
                 "id": "media_img1",
@@ -130,7 +125,7 @@ class TestAudioMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.au1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "audio",
             "audio": {"id": "media_au1", "mime_type": "audio/ogg", "voice": True},
         }
@@ -146,7 +141,7 @@ class TestDocumentMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.doc1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "document",
             "document": {
                 "id": "media_doc1",
@@ -169,7 +164,7 @@ class TestVideoMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.vid1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "video",
             "video": {"id": "media_vid1", "mime_type": "video/mp4", "caption": "Cool video"},
         }
@@ -185,7 +180,7 @@ class TestStickerMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.stk1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "sticker",
             "sticker": {"id": "media_stk1", "mime_type": "image/webp"},
         }
@@ -200,7 +195,7 @@ class TestLocationMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.loc1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "location",
             "location": {
                 "latitude": 6.5244,
@@ -223,7 +218,7 @@ class TestContactsMessage:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.ctc1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "contacts",
             "contacts": [
                 {
@@ -244,7 +239,7 @@ class TestInteractiveButtonReply:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.btn1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "interactive",
             "interactive": {
                 "type": "button_reply",
@@ -264,7 +259,7 @@ class TestReaction:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.rxn1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "reaction",
             "reaction": {"message_id": "wamid.original_msg", "emoji": "👍"},
         }
@@ -281,7 +276,7 @@ class TestSystemEvent:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.sys1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "system",
             "system": {"type": "user_changed_number", "body": {"wa_id": "+2348000000088"}},
         }
@@ -297,7 +292,7 @@ class TestReplyContext:
         msg = {
             "from": "+2348000000000",
             "id": "wamid.reply1",
-            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "timestamp": str(int(datetime.now(UTC).timestamp())),
             "type": "text",
             "text": {"body": "following up"},
             "context": {
@@ -328,7 +323,7 @@ class TestStatusEvents:
                             "id": "wamid.out1",
                             "status": "delivered",
                             "recipient_id": "+2348000000000",
-                            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+                            "timestamp": str(int(datetime.now(UTC).timestamp())),
                         }],
                     },
                     "field": "messages",
@@ -353,7 +348,7 @@ class TestStatusEvents:
                             "id": "wamid.out1",
                             "status": "read",
                             "recipient_id": "+2348000000000",
-                            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+                            "timestamp": str(int(datetime.now(UTC).timestamp())),
                         }],
                     },
                     "field": "messages",
