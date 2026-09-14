@@ -67,9 +67,24 @@ class TestFreshDatabase:
                 ).scalars().all()
                 tables = set(rows)
                 assert "pending_approvals" in tables
+                assert "capability_invocations" in tables
                 assert "runtime_signals" in tables
                 assert "work_items" in tables
                 assert "principals" in tables
+
+                # The at-most-one-claim property is a DATABASE property.
+                indexes = (
+                    await session.execute(
+                        text(
+                            "SELECT name FROM sqlite_master WHERE type='index' "
+                            "AND tbl_name='capability_invocations'"
+                        )
+                    )
+                ).scalars().all()
+                assert (
+                    "uq_capability_invocations_principal_capability_key"
+                    in set(indexes)
+                )
         finally:
             await dispose_engine()
 
@@ -165,6 +180,14 @@ class TestUpgradeFromProductionSchema:
                     )
                 ).scalar_one()
                 assert count == 0
+
+                # The idempotency ledger is present and empty-but-real.
+                ledger = (
+                    await session.execute(
+                        text("SELECT COUNT(*) FROM capability_invocations")
+                    )
+                ).scalar_one()
+                assert ledger == 0
         finally:
             await dispose_engine()
 
@@ -172,17 +195,41 @@ class TestUpgradeFromProductionSchema:
         db_file = tmp_path / "roundtrip.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-1")  # drop pending_approvals
+        _alembic(url, "downgrade", "-1")  # drop capability_invocations
         _alembic(url, "upgrade", "head")  # bring it back
         settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
         init_engine(settings)
         try:
             async with db_session() as session:
-                count = (
+                ledger = (
                     await session.execute(
-                        text("SELECT COUNT(*) FROM pending_approvals")
+                        text("SELECT COUNT(*) FROM capability_invocations")
                     )
                 ).scalar_one()
-                assert count == 0
+                assert ledger == 0
+        finally:
+            await dispose_engine()
+
+    async def test_downgrade_drops_idempotency_ledger(self, tmp_path) -> None:
+        """head → -1 removes exactly the ledger table; evidence lives in
+        the database, so the downgrade boundary must match the upgrade."""
+        db_file = tmp_path / "ledgerdown.db"
+        url = _sqlite_file_url(db_file)
+        _alembic(url, "upgrade", "head")
+        _alembic(url, "downgrade", "-1")
+
+        settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
+        init_engine(settings)
+        try:
+            async with db_session() as session:
+                tables = (
+                    await session.execute(
+                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    )
+                ).scalars().all()
+                assert "capability_invocations" not in set(tables)
+                assert "pending_approvals" in set(tables), (
+                    "only the ledger table is dropped by this step"
+                )
         finally:
             await dispose_engine()

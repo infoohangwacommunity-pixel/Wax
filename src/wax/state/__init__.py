@@ -34,6 +34,7 @@ from wax.state import (  # noqa: F401
     audit_models,
     authority_models,
     bridge_models,
+    capability_models,
     continuity_models,
     delivery_models,
     execution_models,

@@ -714,6 +714,13 @@ class RuntimeBridge:
         )
         from wax.execution.contracts import StepStatus
 
+        # CV-19: lift the declared idempotency-key transport field before
+        # the authority gate (it is request metadata, not operation
+        # semantics; approval fingerprints stay about the operation).
+        from wax.capabilities.invoker import lift_idempotency_key
+
+        op_inputs, idempotency_key = lift_idempotency_key(call.arguments)
+
         exec_repo = ExecutionRepository(session)
 
         def _structured_failure(outcome: str, error: str) -> CapabilityInvocationResult:
@@ -771,7 +778,7 @@ class RuntimeBridge:
             principal_id=principal_id,
             capability_name=call.name,
             descriptor=descriptor,
-            inputs=dict(call.arguments),
+            inputs=dict(op_inputs),
             execution_id=execution_id,
             description=f"Invoke capability {call.name}",
             emitted_by="bridge",
@@ -815,7 +822,8 @@ class RuntimeBridge:
             CapabilityInvocationRequest(
                 capability_name=call.name,
                 principal_id=principal_id,
-                inputs=call.arguments,
+                inputs=op_inputs,
+                idempotency_key=idempotency_key,
                 request_id=execution_id,
             )
         )

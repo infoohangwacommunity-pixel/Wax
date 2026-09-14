@@ -104,8 +104,13 @@ class RuntimeServices:
         return AgencyService(session, AuthorizationService(session))
 
     def invoker(self, session: AsyncSession) -> CapabilityInvoker:
-        """The SOLE enforcement point for AI-requested effects (INV-04)."""
-        return CapabilityInvoker(self.capability_registry, AuthorizationService(session))
+        """The SOLE enforcement point for AI-requested effects (INV-04).
+        CV-19: the idempotency claim lease is operator-tunable."""
+        return CapabilityInvoker(
+            self.capability_registry,
+            AuthorizationService(session),
+            idempotency_claim_seconds=self.settings.capability_idempotency_claim_seconds,
+        )
 
 
 def services_from_app(app: Any) -> RuntimeServices | None:

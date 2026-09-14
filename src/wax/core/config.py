@@ -161,6 +161,12 @@ class WaxSettings(BaseSettings):
     delivery_max_attempts: int = 5
     delivery_max_age_seconds: float = 86400.0
 
+    # --- Capability idempotency (CV-19) ----------------------------------
+    # Lease for an `executing` idempotency claim. An abandoned claim
+    # (process died between claim and completion) becomes takeable again
+    # after this many seconds — honest at-least-once recovery.
+    capability_idempotency_claim_seconds: float = 900.0
+
     # --- Artifact acquisition (ADR-0015) ---
     # Comma-separated hostnames a workspace.acquire may download from.
     # Empty list = acquisition disabled (honest refusal).
@@ -173,7 +179,11 @@ class WaxSettings(BaseSettings):
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_app_secret: str = ""
-    whatsapp_verify_token: str = "wax-default-verify-token"
+    # CV-17 fix: no guessable default. An empty value fail-fasts at the
+    # adapter wiring point (WhatsAppClient requires a real verify token);
+    # a default literal would silently accept webhook verification with a
+    # publicly-known token.
+    whatsapp_verify_token: str = ""
 
     # --- Convenience predicates -------------------------------------------
 

@@ -11,19 +11,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-# Allowed credential kinds. Adding a new kind here is a deliberate
-# architectural act — it means a new interface is being integrated.
-ALLOWED_CREDENTIAL_KINDS: frozenset[str] = frozenset(
-    {
-        "whatsapp_phone",
-        "email",
-        "web_session",
-        "oauth_subject",
-        "api_key",
-        "service_id",
-    }
-)
-
 # The identity boundary mapping (Invariant INV-02): an interface kind maps
 # to exactly one PrincipalCredential kind, and vice versa. This constant is
 # the SINGLE source of truth for that mapping — the bridge, the capability
@@ -42,6 +29,32 @@ INTERFACE_CREDENTIAL_KINDS: dict[str, str] = {
 CREDENTIAL_KIND_INTERFACES: dict[str, str] = {
     v: k for k, v in INTERFACE_CREDENTIAL_KINDS.items()
 }
+
+# Credential kinds that belong to a DECLARED interface derive from the
+# boundary table above — the single source of truth. Attaching a new
+# interface means adding one mapping above; its credential kind is then
+# allowed automatically (CV-16: interface attachment must not require
+# editing identity allowlist semantics).
+_INTERFACE_CREDENTIAL_KINDS: frozenset[str] = frozenset(
+    INTERFACE_CREDENTIAL_KINDS.values()
+)
+
+# Non-interface credential kinds: credentials that identify a principal
+# without belonging to a messaging interface (no delivery channel).
+NON_INTERFACE_CREDENTIAL_KINDS: frozenset[str] = frozenset(
+    {
+        "email",
+        "oauth_subject",
+        "service_id",
+    }
+)
+
+# Allowed credential kinds = interface-derived ∪ non-interface.
+# Adding a new interface mapping above is the deliberate architectural
+# act — it means a new interface is being integrated.
+ALLOWED_CREDENTIAL_KINDS: frozenset[str] = (
+    _INTERFACE_CREDENTIAL_KINDS | NON_INTERFACE_CREDENTIAL_KINDS
+)
 
 
 class PrincipalRead(BaseModel):

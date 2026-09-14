@@ -1768,6 +1768,22 @@ async def objective_update_status_impl(
                 f"Objective {objective_id} is already terminal ({record.status})"
             )
 
+        # CV-15 guard: `succeeded` is a terminal, immutable claim. The
+        # bridge path already refuses to fabricate it while durable work
+        # is outstanding (objective_has_outstanding_work); this model-
+        # facing close path enforces the SAME runtime evidence rule.
+        # Terminal states cannot be revised, so a fabricated `succeeded`
+        # would be a permanent lie.
+        if status == "succeeded":
+            from wax.objective.evidence import objective_has_outstanding_work
+
+            if await objective_has_outstanding_work(session, objective_id):
+                raise ValueError(
+                    f"Objective {objective_id} still has outstanding durable "
+                    "work; `succeeded` requires zero outstanding work "
+                    "(the runtime, not the model, owns terminal evidence)"
+                )
+
         # Record the claim WITH its evidence (mission §24: the runtime
         # retains the evidence supporting the completed state), then
         # transition. Terminal statuses accept no further transitions.

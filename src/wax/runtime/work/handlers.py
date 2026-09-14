@@ -63,9 +63,15 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
     capability_name = payload.get("capability_name")
     if not capability_name:
         raise WorkExecutionError("payload.capability_name is required")
-    inputs = payload.get("inputs") or {}
-    if not isinstance(inputs, dict):
+    raw_inputs = payload.get("inputs") or {}
+    if not isinstance(raw_inputs, dict):
         raise WorkExecutionError("payload.inputs must be an object")
+
+    # CV-19: lift the declared idempotency-key transport field (request
+    # metadata, not operation semantics) before the authority gate.
+    from wax.capabilities.invoker import lift_idempotency_key
+
+    inputs, idempotency_key = lift_idempotency_key(raw_inputs)
 
     # The work must have an owner: capability work without a principal has
     # no authority to act under.
@@ -136,6 +142,7 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
                 capability_name=capability_name,
                 principal_id=item.principal_id,
                 inputs=inputs,
+                idempotency_key=idempotency_key,
                 request_id=item.id,
             )
         )

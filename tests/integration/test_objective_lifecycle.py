@@ -616,6 +616,90 @@ class TestObjectiveCapabilities:
         )
         assert again.outcome != "success"
 
+    async def test_update_status_succeeded_with_outstanding_work_is_refused(
+        self, fresh_db, services
+    ) -> None:
+        """CV-15: `succeeded` is a terminal, immutable claim. The model-
+        facing close path must enforce the SAME runtime evidence rule the
+        bridge path enforces — an objective with outstanding durable work
+        cannot be closed as succeeded, whatever the model asserts."""
+        from datetime import UTC, datetime
+
+        from wax.state.work_models import WorkItemRecord
+
+        principal_id = await self._principal()
+        async with db_session() as session:
+            repo = ObjectiveRepository(session)
+            obj = await repo.create(
+                ObjectiveCreate(
+                    principal_id=principal_id, description="deliver the digest"
+                )
+            )
+            await repo.record_execution_start(obj.id, "exec-cv15", kind="bridge")
+            await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
+            # Durable work scheduled under this objective's execution.
+            session.add(
+                WorkItemRecord(
+                    id="01CV15WORKITEM000000000000",
+                    kind="capability",
+                    status="pending",
+                    principal_id=principal_id,
+                    execution_id="exec-cv15",
+                    payload={"capability_name": "echo", "inputs": {}},
+                    wake_at=datetime.now(UTC),
+                    available_at=datetime.now(UTC),
+                    wake_kind="time",
+                    attempts=0,
+                    max_attempts=3,
+                )
+            )
+            await session.commit()
+            objective_id = obj.id
+
+        claim = await self._invoke(
+            services,
+            principal_id,
+            "objective.update_status",
+            {
+                "objective_id": objective_id,
+                "status": "succeeded",
+                "evidence": "the model says everything is done",
+            },
+        )
+        assert claim.outcome != "success", (
+            "a fabricated terminal claim must be refused"
+        )
+        assert "outstanding durable work" in (claim.error or "")
+
+        async with db_session() as session:
+            record = await session.get(
+                __import__(
+                    "wax.state.objective_models", fromlist=["ObjectiveRecord"]
+                ).ObjectiveRecord,
+                objective_id,
+            )
+        assert record.status == "in_progress", (
+            "the objective stays in_progress: waiting is the truth"
+        )
+
+        # Once the work reaches a terminal state, `succeeded` is honest.
+        async with db_session() as session:
+            item = await session.get(WorkItemRecord, "01CV15WORKITEM000000000000")
+            item.status = "succeeded"
+            await session.commit()
+
+        after = await self._invoke(
+            services,
+            principal_id,
+            "objective.update_status",
+            {
+                "objective_id": objective_id,
+                "status": "succeeded",
+                "evidence": "work terminal: digest delivered",
+            },
+        )
+        assert after.outcome == "success", after.error
+
     async def test_update_status_demands_evidence(self, fresh_db, services) -> None:
         principal_id = await self._principal()
         async with db_session() as session:

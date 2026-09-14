@@ -147,3 +147,107 @@ class TestHttpGetCapability:
         result = await http_get_impl({"url": "https://example.com/"}, _ctx())
         assert result["status_code"] == 200
         assert result["body"] == "public data"
+
+
+class TestConnectionPinning:
+    """CV-18: the connection must be pinned to the validated addresses.
+
+    validate_url resolves and classifies the hostname BEFORE the fetch;
+    the pinning backend must refuse any DNS answer that differs from
+    that validated set — most importantly a rebinding to a private or
+    loopback address, but also any unvalidated public change.
+    """
+
+    async def test_rebind_to_loopback_blocked(self, monkeypatch) -> None:
+        # validate_url sees a public address...
+        public = [
+            (2, 1, 6, "", ("93.184.216.34", 80)),
+        ]
+        # ...but DNS re-resolves to loopback when the transport connects.
+        private = [
+            (2, 1, 6, "", ("127.0.0.1", 80)),
+        ]
+        monkeypatch.setattr(
+            "wax.security.network.socket.getaddrinfo", lambda *a, **k: public
+        )
+        monkeypatch.setattr(
+            "wax.security.network.asyncio.get_running_loop",
+            lambda: type(
+                "_Loop", (), {"getaddrinfo": staticmethod(lambda *a, **k: _async(private))}
+            )(),
+        )
+        with pytest.raises(NetworkBoundaryError, match="rebinding"):
+            await guarded_get("http://rebind.example/")
+
+    async def test_unvalidated_public_change_blocked(self, monkeypatch) -> None:
+        # Even a change to a DIFFERENT public address is refused: the
+        # connection may only land on validated addresses.
+        first = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        second = [(2, 1, 6, "", ("93.184.216.99", 80))]
+        monkeypatch.setattr(
+            "wax.security.network.socket.getaddrinfo", lambda *a, **k: first
+        )
+        monkeypatch.setattr(
+            "wax.security.network.asyncio.get_running_loop",
+            lambda: type(
+                "_Loop", (), {"getaddrinfo": staticmethod(lambda *a, **k: _async(second))}
+            )(),
+        )
+        with pytest.raises(NetworkBoundaryError, match="rebinding"):
+            await guarded_get("http://drift.example/")
+
+    async def test_pinned_connection_reaches_validated_address(
+        self, monkeypatch
+    ) -> None:
+        # The happy path: the validated address is the one the stream
+        # opens against (a literal IP — no further resolution).
+        resolved = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        opened: list[str] = []
+
+        class _FakeStream:
+            async def start_tls(self, **kwargs):
+                return self
+
+            def get_extra(self, key):
+                return None
+
+        monkeypatch.setattr(
+            "wax.security.network.socket.getaddrinfo", lambda *a, **k: resolved
+        )
+
+        class _Loop:
+            @staticmethod
+            async def getaddrinfo(*a, **k):
+                return resolved
+
+            @staticmethod
+            async def _noop():
+                return None
+
+        monkeypatch.setattr(
+            "wax.security.network.asyncio.get_running_loop", lambda: _Loop()
+        )
+
+        backend = net_module._PinningNetworkBackend(frozenset({"93.184.216.34"}))
+
+        class _Default:
+            async def connect_tcp(self, host, port, **kwargs):
+                opened.append(host)
+                return _FakeStream()
+
+        backend._default = _Default()
+        stream = await backend.connect_tcp("pinned.example", 80)
+        assert opened == ["93.184.216.34"]
+        assert stream is not None
+
+
+def _async(value):
+    import asyncio as _aio
+
+    async def _inner():
+        return value
+
+    return _aio.ensure_future(_inner())
+
+
+import wax.security.network as net_module  # noqa: E402

@@ -200,11 +200,12 @@ class ApprovalGate:
         from wax.identity.contracts import CREDENTIAL_KIND_INTERFACES
         from wax.state.identity_models import PrincipalCredential
 
-        credential_kinds = {
-            kind: CREDENTIAL_KIND_INTERFACES[kind]
-            for kind in ("whatsapp_phone", "web_session", "telegram_chat")
-            if kind in CREDENTIAL_KIND_INTERFACES
-        }
+        # CV-16 fix: no hardcoded credential-kind tuple here. The
+        # principal's ACTUAL credentials decide the candidate channels;
+        # the boundary table (single source of truth) maps credential
+        # kind → interface. Attaching a new interface means adding one
+        # mapping to `INTERFACE_CREDENTIAL_KINDS` — authority semantics
+        # are never edited per interface.
         text = (
             f"Action requires your approval: {record.capability_name} "
             f"(approval {record.id}). Reply '/approve {record.id}' or "
@@ -217,7 +218,7 @@ class ApprovalGate:
         )
         fallback: tuple[str, str] | None = None  # (interface, recipient)
         for credential in result.scalars():
-            interface = credential_kinds.get(credential.kind)
+            interface = CREDENTIAL_KIND_INTERFACES.get(credential.kind)
             if interface is None:
                 continue
             if fallback is None:

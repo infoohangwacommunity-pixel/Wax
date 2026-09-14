@@ -83,13 +83,19 @@ class CapabilityInvocationRequest(BaseModel):
     - the capability exists
     - the requesting principal has the required permission
     - the inputs match the input_schema
-    - the idempotency key (if provided) has not been used
+    - the idempotency key (if provided) is claimed exactly once
+      (CV-19): a replay returns the RECORDED outcome of the first
+      execution; a concurrent duplicate is refused until the first
+      attempt completes or its claim lease expires
     """
 
     capability_name: str
     principal_id: str
     inputs: dict[str, Any] = Field(default_factory=dict)
-    idempotency_key: str | None = None
+    idempotency_key: str | None = Field(
+        default=None,
+        description="Caller-chosen at-most-once handle for this request shape",
+    )
     request_id: str | None = None
 
 
@@ -102,10 +108,14 @@ class CapabilityInvocationResult(BaseModel):
     """
 
     capability_name: str
-    outcome: str  # success | denied | failure | timeout | not_found
+    outcome: str  # success | denied | failure | timeout | not_found | duplicate
     outputs: dict[str, Any] | None = None
     error: str | None = None
     execution_id: str
     started_at: datetime
     ended_at: datetime
     duration_ms: float
+    # CV-19: True when this result is the RECORDED outcome of an earlier
+    # identical invocation (same idempotency key) — the effect did not
+    # run again.
+    idempotent_replay: bool = False

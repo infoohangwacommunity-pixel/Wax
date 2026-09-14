@@ -9,9 +9,13 @@ Flow:
 3. Invoker calls AuthorizationService.check() — the runtime decides.
 4. If denied, return CapabilityInvocationResult(outcome="denied").
 5. If authorized, validate inputs against the descriptor's input_schema.
-6. Execute the capability implementation with a timeout.
-7. Record the invocation in the audit log.
-8. Return the result.
+6. If the request carries an idempotency key, claim it in the ledger
+   (CV-19): a replay returns the RECORDED outcome; a concurrent
+   duplicate is refused; a failed/expired claim may be re-executed.
+7. Execute the capability implementation with a timeout.
+8. Record the invocation evidence (execution steps are written by the
+calling path; this module emits structured logs and metrics).
+9. Return the result.
 
 The AI NEVER directly executes a capability. It ALWAYS goes through this
 invoker, which ALWAYS checks authorization.
@@ -22,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from ulid import ULID
 
@@ -36,6 +41,29 @@ from wax.capabilities.registry import CapabilityRegistry
 from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
+
+# The declared transport field the intelligence may include in tool-call
+# arguments to request at-most-once semantics for that request shape.
+IDEMPOTENCY_INPUT_FIELD = "idempotency_key"
+
+
+def lift_idempotency_key(
+    inputs: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    """Split the declared idempotency-key field out of tool-call inputs.
+
+    The key is request METADATA, not operation semantics: lifting it
+    before the authority gate keeps approval fingerprints about the
+    operation itself. Returns (cleaned_inputs, key_or_none); the original
+    dict is never mutated (it is execution-step evidence).
+    """
+    if not isinstance(inputs, dict):
+        return inputs, None
+    key = inputs.get(IDEMPOTENCY_INPUT_FIELD)
+    if not isinstance(key, str) or not key.strip():
+        return inputs, None
+    cleaned = {k: v for k, v in inputs.items() if k != IDEMPOTENCY_INPUT_FIELD}
+    return cleaned, key.strip()[:512]
 
 
 class CapabilityInvoker:
@@ -52,9 +80,11 @@ class CapabilityInvoker:
         self,
         registry: CapabilityRegistry,
         auth_service: AuthorizationService,
+        idempotency_claim_seconds: float = 900.0,
     ) -> None:
         self._registry = registry
         self._auth = auth_service
+        self._idempotency_claim_seconds = idempotency_claim_seconds
 
     async def invoke(
         self,
@@ -118,6 +148,58 @@ class CapabilityInvoker:
                 error=f"Invalid inputs: {e}",
             )
 
+        # 3.7 IDEMPOTENCY (CV-19): the contract says the runtime honors
+        # the idempotency key — now it does. Claimed before execution so
+        # two identical requests (replay or concurrency) cannot both run.
+        claim_id: str | None = None
+        idempotent_replay = False
+        if request.idempotency_key:
+            from wax.capabilities.idempotency import Verdict, claim_invocation
+
+            claim = await claim_invocation(
+                principal_id=request.principal_id,
+                capability_name=request.capability_name,
+                idempotency_key=request.idempotency_key,
+                inputs=request.inputs,
+                claim_seconds=self._idempotency_claim_seconds,
+            )
+            if claim.verdict is Verdict.REPLAY:
+                import json as _json
+
+                ended_at = datetime.now(UTC)
+                log.info(
+                    "capability.idempotent_replay",
+                    capability=request.capability_name,
+                    principal_id=request.principal_id,
+                )
+                return CapabilityInvocationResult(
+                    capability_name=request.capability_name,
+                    outcome="success",
+                    outputs=(
+                        _json.loads(claim.record.response_json)
+                        if claim.record is not None
+                        and claim.record.response_json
+                        else None
+                    ),
+                    error=None,
+                    execution_id=execution_id,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    duration_ms=round((time.perf_counter() - start_perf) * 1000, 2),
+                    idempotent_replay=True,
+                )
+            if claim.verdict in (Verdict.EXECUTING, Verdict.TAKEOVER_LOST):
+                return self._failure_result(
+                    request, execution_id, started_at, start_perf,
+                    outcome="duplicate",
+                    error=(
+                        "An identical request (same idempotency key) is "
+                        "already claimed; retry with the same key to obtain "
+                        "the recorded outcome"
+                    ),
+                )
+            claim_id = claim.record.id if claim.record is not None else None
+
         # 4. Execute with timeout. The implementation receives an
         # InvocationContext (who/what/why) — never authorization power.
         context = InvocationContext(
@@ -138,6 +220,13 @@ class CapabilityInvoker:
                 principal_id=request.principal_id,
                 timeout_s=descriptor.timeout_seconds,
             )
+            if claim_id is not None:
+                from wax.capabilities.idempotency import complete_failure
+
+                await complete_failure(
+                    f"Capability exceeded {descriptor.timeout_seconds}s timeout",
+                    claim_id,
+                )
             return self._failure_result(
                 request, execution_id, started_at, start_perf,
                 outcome="timeout",
@@ -151,6 +240,10 @@ class CapabilityInvoker:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            if claim_id is not None:
+                from wax.capabilities.idempotency import complete_failure
+
+                await complete_failure(f"{type(e).__name__}: {e}", claim_id)
             return self._failure_result(
                 request, execution_id, started_at, start_perf,
                 outcome="failure",
@@ -159,6 +252,11 @@ class CapabilityInvoker:
 
         ended_at = datetime.now(UTC)
         duration_ms = (time.perf_counter() - start_perf) * 1000
+
+        if claim_id is not None:
+            from wax.capabilities.idempotency import complete_success
+
+            await complete_success(outputs, claim_id)
 
         log.info(
             "capability.invoked",
@@ -176,6 +274,7 @@ class CapabilityInvoker:
             started_at=started_at,
             ended_at=ended_at,
             duration_ms=round(duration_ms, 2),
+            idempotent_replay=idempotent_replay,
         )
 
     def _failure_result(

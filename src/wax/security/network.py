@@ -28,14 +28,23 @@ for. Capabilities compose it; they do not re-implement it.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
+import typing
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+import httpcore
 import httpx
 
 from wax.runtime.logging import get_logger
+
+# httpcore's default backend (creates the real socket). Not a public
+# class in httpcore 1.0.x; httpx 0.28.x pins httpcore 1.0.x, and the
+# import is guarded so an unexpected httpcore layout fails loudly here
+# rather than at fetch time.
+from httpcore._backends.auto import AutoBackend as _AutoBackend  # noqa: PLC2701
 
 log = get_logger(__name__)
 
@@ -122,6 +131,80 @@ def validate_url(url: str) -> tuple[str, list[str]]:
     return url, resolved
 
 
+class _PinningNetworkBackend(httpcore.AsyncNetworkBackend):
+    """CV-18: the transport can only connect to addresses that crossed
+    the boundary.
+
+    The pool hands us the HOSTNAME it wants to talk to. We resolve it
+    ourselves and refuse unless every resolved address is one of the
+    addresses `validate_url` already classified as public AND is a
+    member of the validated set for THIS fetch. A DNS answer that
+    differs from the validated set — most importantly a rebinding to a
+    private/loopback/metadata address, but also any unvalidated change
+    — fails the connection. The TCP stream is then opened against the
+    literal IP (no further resolution); TLS still validates the
+    certificate against the ORIGINAL hostname because httpcore calls
+    `start_tls(server_hostname=hostname)` on the stream we return.
+    """
+
+    def __init__(self, allowed_ips: frozenset[str]) -> None:
+        super().__init__()
+        self._allowed = allowed_ips
+        self._default = _AutoBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: typing.Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(host, port)
+        except socket.gaierror as e:
+            raise NetworkBoundaryError(f"cannot resolve host: {host}") from e
+
+        pinned: str | None = None
+        for _family, _type, _proto, _canon, sockaddr in infos:
+            addr = sockaddr[0]
+            if addr not in self._allowed or _is_blocked_address(
+                ipaddress.ip_address(addr)
+            ):
+                raise NetworkBoundaryError(
+                    "DNS changed during fetch (possible rebinding) — blocked"
+                )
+            if pinned is None:
+                pinned = addr
+        if pinned is None:
+            raise NetworkBoundaryError("no usable address for pinned connection")
+        # Literal IP: getaddrinfo never hits DNS for a literal, so the
+        # default backend cannot silently re-resolve past us.
+        return await self._default.connect_tcp(
+            pinned,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+class _PinnedHTTPTransport(httpx.AsyncHTTPTransport):
+    """httpx transport whose connection pool pins every TCP connection
+    to the validated address set."""
+
+    def __init__(self, allowed_ips: frozenset[str]) -> None:
+        super().__init__()
+        # Replace the pool httpx built with one that uses the pinning
+        # backend; keep the parent's SSL context so certificate
+        # verification behaves identically.
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=getattr(self, "_ssl_context", None),
+            network_backend=_PinningNetworkBackend(allowed_ips),
+        )
+
+
 async def guarded_get(
     url: str,
     *,
@@ -133,16 +216,19 @@ async def guarded_get(
     (streamed, capped) before returning; callers get a complete httpx
     Response with `response.content` capped at policy.max_bytes.
 
-    Every redirect hop is re-validated against the same rules.
+    Every redirect hop is re-validated against the same rules. When no
+    explicit transport is supplied, the connection is PINNED to the
+    addresses validated for this fetch (anti-rebinding).
     """
     policy = policy or FetchPolicy()
-    current_url, _resolved = validate_url(url)
+    current_url, resolved = validate_url(url)
 
     for _hop in range(MAX_REDIRECTS + 1):
+        hop_transport = transport or _PinnedHTTPTransport(frozenset(resolved))
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(policy.total_timeout, connect=policy.connect_timeout),
             follow_redirects=False,
-            transport=transport,
+            transport=hop_transport,
         ) as client:
             response = await client.get(current_url, headers=headers or {})
 
@@ -154,7 +240,7 @@ async def guarded_get(
                 raise NetworkBoundaryError("redirect without location")
             next_url = str(httpx.URL(current_url).join(location))
             # The hop itself crosses the boundary again.
-            current_url, _ = validate_url(next_url)
+            current_url, resolved = validate_url(next_url)
             continue
         break
 

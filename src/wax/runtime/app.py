@@ -101,7 +101,12 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             wa_client = WhatsAppClient(
                 access_token=settings.whatsapp_access_token,
                 phone_number_id=settings.whatsapp_phone_number_id,
-                app_secret=settings.whatsapp_app_secret or "unset",
+                # CV-17 fix: no "unset" sentinel fallback. An HMAC key of
+                # "unset" makes webhook signatures forgeable (identity
+                # seeding under misconfiguration). The client fail-fasts
+                # on an empty secret; misconfiguration must stop startup,
+                # not silently weaken the identity boundary.
+                app_secret=settings.whatsapp_app_secret,
                 verify_token=settings.whatsapp_verify_token,
             )
             app.state.whatsapp_client = wa_client
