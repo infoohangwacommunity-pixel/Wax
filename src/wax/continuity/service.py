@@ -62,6 +62,15 @@ class ConversationService:
             conversation_id, execution_id=execution_id
         )
 
+    async def attach_objective(
+        self, conversation_id: str, objective_id: str
+    ) -> bool:
+        """Link the conversation to the objective its current interaction
+        is pursuing. This link is what the priority-0 OBJECTIVE evidence
+        section reads (ADR-0012/ADR-0023); leaving it unwritten made the
+        section dead in every live flow (constitutional audit fix)."""
+        return await self._repo.attach_objective(conversation_id, objective_id)
+
     async def close(self, conversation_id: str) -> bool:
         return await self._repo.close(conversation_id)
 

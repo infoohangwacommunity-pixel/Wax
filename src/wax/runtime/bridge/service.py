@@ -359,6 +359,12 @@ class RuntimeBridge:
                 principal.id, request.interface_kind.value
             )
             conversation_id = conversation.id
+        # Constitutional audit fix: the conversation→objective link is what
+        # feeds the priority-0 OBJECTIVE evidence section. It existed as a
+        # column and a section builder but NOBODY ever wrote it — the
+        # section could never fire in any live flow. Write it here, at the
+        # moment both ends of the link exist.
+        await conversations.attach_objective(conversation_id, objective.id)
 
         # 7. Budget allocation for this execution
         self._services.resource_accountant.allocate(execution.id, **_DEFAULT_EXECUTION_BUDGET)
@@ -399,7 +405,29 @@ class RuntimeBridge:
             await objective_repo.record_execution_end(
                 objective.id, execution.id, outcome="succeeded"
             )
-            await objective_repo.transition(objective.id, ObjectiveStatus.SUCCEEDED)
+            # Constitutional audit fix: `succeeded` may only land when the
+            # runtime holds NO outstanding durable work for this objective.
+            # If the interaction scheduled work, the objective IS waiting —
+            # a fabricated terminal state is permanent (terminal states are
+            # immutable), so the runtime checks DB truth instead of
+            # trusting the flow.
+            from wax.objective.evidence import (
+                objective_has_outstanding_work,
+                sync_waiting_for_execution,
+            )
+
+            if await objective_has_outstanding_work(session, objective.id):
+                await sync_waiting_for_execution(session, execution.id)
+                log.info(
+                    "objective.stays_waiting",
+                    objective_id=objective.id,
+                    execution_id=execution.id,
+                    reason="durable_work_outstanding",
+                )
+            else:
+                await objective_repo.transition(
+                    objective.id, ObjectiveStatus.SUCCEEDED
+                )
             await conversations.touch(conversation_id, execution_id=execution.id)
 
             record.outcome = "success"

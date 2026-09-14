@@ -129,6 +129,33 @@ async def sync_active_for_execution(
         return False
 
 
+async def objective_has_outstanding_work(
+    session: AsyncSession, objective_id: str
+) -> bool:
+    """DB truth: does this objective still have pending durable work?
+
+    Consulted before any terminal transition. `succeeded` with outstanding
+    work would be a PERMANENT lie (terminal states are immutable), so the
+    runtime checks the evidence itself instead of trusting the flow that
+    asked for the transition.
+    """
+    result = await session.execute(
+        select(ObjectiveExecutionRecord.execution_id).where(
+            ObjectiveExecutionRecord.objective_id == objective_id
+        )
+    )
+    execution_ids = [row[0] for row in result.all()]
+    if not execution_ids:
+        return False
+    result = await session.execute(
+        select(WorkItemRecord.id)
+        .where(WorkItemRecord.execution_id.in_(execution_ids))
+        .where(WorkItemRecord.status.in_(_OUTSTANDING_WORK_STATUSES))
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 async def sync_failure_for_work(
     session: AsyncSession, work_item: WorkItemRecord
 ) -> bool:

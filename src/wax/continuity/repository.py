@@ -96,6 +96,19 @@ class ConversationRepository:
         await self._session.flush()
         return True
 
+    async def attach_objective(
+        self, conversation_id: str, objective_id: str
+    ) -> bool:
+        """Point the conversation at the objective its current interaction
+        pursues. The OBJECTIVE evidence section is sourced from this link;
+        the bridge writes it when both ends of the link exist."""
+        record = await self.get(conversation_id)
+        if record is None:
+            return False
+        record.objective_id = objective_id
+        await self._session.flush()
+        return True
+
     async def archive_stale(
         self,
         *,
