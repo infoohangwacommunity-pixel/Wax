@@ -55,6 +55,19 @@ def services(test_settings):
 from wax.runtime.services import RuntimeServices  # noqa: E402
 
 
+def _pil_available() -> bool:
+    """The OCR test builds its image with Pillow: skip honestly when the
+    rendering dependency is absent (the gate used to check the tesseract
+    binary only, so a Pillow-less host failed instead of skipping)."""
+    try:
+        import PIL  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+
 async def _grant_admin(principal_id: str) -> None:
     async with db_session() as session:
         admin = await get_role_by_name(session, "admin")
@@ -161,8 +174,8 @@ class TestSandboxedComposition:
         assert "42" in evidence
 
     @pytest.mark.skipif(
-        shutil.which("tesseract") is None,
-        reason="tesseract not installed on host",
+        shutil.which("tesseract") is None or not _pil_available(),
+        reason="tesseract or Pillow not installed on host",
     )
     async def test_media_ocr_feeds_the_ai_not_bytes(self, fresh_db, services) -> None:
         """The media pipeline extracts REAL text (OCR) so the model sees
@@ -172,6 +185,7 @@ class TestSandboxedComposition:
         from PIL import Image, ImageDraw, ImageFont
 
         from wax.media.contracts import MediaKind, MediaSource
+
         from wax.media.pipeline import MediaPipeline
 
         img = Image.new("RGB", (600, 160), "white")

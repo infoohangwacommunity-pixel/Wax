@@ -32,15 +32,30 @@ log = get_logger(__name__)
 
 
 class IntelligenceService:
-    """Routes LLM requests to the configured provider.
+    """Routes LLM requests to the configured provider, with failover.
 
     Use:
         svc = IntelligenceService.from_settings(settings)
         response = await svc.complete(request)
+
+    Failover (ADR-0024, mission §33/§34): candidates are tried IN ORDER —
+    the primary first, then each configured fallback. Each candidate
+    already carries its own classified retry + circuit breaker, so a
+    candidate is only abandoned after its own retry budget exhausts;
+    when every candidate fails, the LAST error is raised honestly. The
+    response records which provider actually served the request.
     """
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self, provider: LLMProvider, fallbacks: list[LLMProvider] | None = None
+    ) -> None:
         self._provider = provider
+        self._fallbacks: list[LLMProvider] = list(fallbacks or [])
+
+    @property
+    def candidates(self) -> list[LLMProvider]:
+        """The provider candidates in failover order (primary first)."""
+        return [self._provider, *self._fallbacks]
 
     @property
     def inner_provider(self) -> LLMProvider:
@@ -66,7 +81,10 @@ class IntelligenceService:
         provider_kind = settings.llm_default_provider.strip().lower()
         if not provider_kind or provider_kind == ProviderKind.MOCK.value:
             log.warning("intelligence.using_mock_provider")
-            return cls(cls._resilient(MockLLMProvider(), settings))
+            return cls(
+                cls._resilient(MockLLMProvider(), settings),
+                fallbacks=cls._build_fallbacks(settings, exclude={provider_kind}),
+            )
 
         if provider_kind == ProviderKind.OPENAI.value:
             if not settings.openai_api_key:
@@ -86,7 +104,8 @@ class IntelligenceService:
                         default_model=settings.llm_model or "gpt-4o-mini",
                     ),
                     settings,
-                )
+                ),
+                fallbacks=cls._build_fallbacks(settings, exclude={provider_kind}),
             )
 
         if provider_kind == ProviderKind.ANTHROPIC.value:
@@ -106,7 +125,8 @@ class IntelligenceService:
                         or "claude-3-5-haiku-latest",
                     ),
                     settings,
-                )
+                ),
+                fallbacks=cls._build_fallbacks(settings, exclude={provider_kind}),
             )
 
         raise WaxConfigurationError(
@@ -139,6 +159,70 @@ class IntelligenceService:
             ),
         )
 
+    @staticmethod
+    def _build_fallbacks(
+        settings: WaxSettings, *, exclude: set[str]
+    ) -> list[LLMProvider]:
+        """Parse WAX_LLM_PROVIDER_FALLBACKS into resilient candidates.
+
+        A misconfigured fallback is a BOOT error, not a 3am surprise:
+        unknown kinds raise WaxConfigurationError loudly. Duplicates of
+        the primary (or of an earlier fallback) are skipped — failing
+        over to the same broken provider helps nobody.
+        """
+        raw = (getattr(settings, "llm_provider_fallbacks", "") or "").strip()
+        if not raw:
+            return []
+        fallbacks: list[LLMProvider] = []
+        seen: set[str] = set(exclude)
+        for part in raw.split(","):
+            kind = part.strip().lower()
+            if not kind or kind in seen:
+                continue
+            seen.add(kind)
+            fallbacks.append(
+                IntelligenceService._resilient(
+                    IntelligenceService._build_provider(kind, settings), settings
+                )
+            )
+            log.info("intelligence.fallback_registered", provider=kind)
+        return fallbacks
+
+    @staticmethod
+    def _build_provider(kind: str, settings: WaxSettings) -> LLMProvider:
+        """Construct one provider adapter by kind (boot-time, loud)."""
+        if kind == ProviderKind.MOCK.value:
+            return MockLLMProvider()
+        if kind == ProviderKind.OPENAI.value:
+            if not settings.openai_api_key:
+                raise WaxConfigurationError(
+                    "provider fallback 'openai' requires WAX_OPENAI_API_KEY"
+                )
+            from wax.intelligence.adapters.openai_provider import OpenAIProvider
+
+            return OpenAIProvider(
+                api_key=settings.openai_api_key,
+                base_url=settings.llm_base_url or "https://api.openai.com/v1",
+                default_model=settings.llm_model or "gpt-4o-mini",
+            )
+        if kind == ProviderKind.ANTHROPIC.value:
+            if not settings.anthropic_api_key:
+                raise WaxConfigurationError(
+                    "provider fallback 'anthropic' requires WAX_ANTHROPIC_API_KEY"
+                )
+            from wax.intelligence.adapters.anthropic_provider import (
+                AnthropicProvider,
+            )
+
+            return AnthropicProvider(
+                api_key=settings.anthropic_api_key,
+                base_url=settings.llm_base_url or "https://api.anthropic.com/v1",
+                default_model=settings.llm_model or "claude-3-5-haiku-latest",
+            )
+        raise WaxConfigurationError(
+            f"Unknown LLM provider fallback: {kind!r}. Supported: mock, openai, anthropic"
+        )
+
     @property
     def provider_kind(self) -> ProviderKind:
         return self._provider.kind
@@ -160,16 +244,32 @@ class IntelligenceService:
                 self._provider, request.messages
             ),
         )
-        try:
-            response = await self._provider.complete(request)
-        except Exception as e:
-            log.error(
-                "intelligence.complete.error",
-                provider=self._provider.kind.value,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            raise
+        last_error: Exception | None = None
+        for candidate in self.candidates:
+            try:
+                response = await candidate.complete(request)
+            except Exception as e:  # noqa: BLE001 — failover is the point
+                last_error = e
+                log.error(
+                    "intelligence.complete.error",
+                    provider=candidate.kind.value,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    failover_remaining=len(self.candidates)
+                    - self.candidates.index(candidate)
+                    - 1,
+                )
+                continue
+            if candidate is not self._provider:
+                log.warning(
+                    "intelligence.failover_served",
+                    primary=self._provider.kind.value,
+                    served_by=candidate.kind.value,
+                    model=response.model,
+                )
+            break
+        else:
+            raise last_error  # type: ignore[misc]
         log.info(
             "intelligence.complete.ok",
             provider=response.provider.value,
@@ -185,4 +285,5 @@ class IntelligenceService:
             yield chunk
 
     async def close(self) -> None:
-        await self._provider.close()
+        for candidate in self.candidates:
+            await candidate.close()

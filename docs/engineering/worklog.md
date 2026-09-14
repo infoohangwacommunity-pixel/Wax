@@ -511,3 +511,30 @@ Work Log:
 Stage Summary:
 - 625 tests passing (620 before batch); live probe PASS; chain head
   e1a3c5e7b9d2. Commit local pending fresh GitHub credentials.
+
+---
+Task ID: PASS-7-BATCH-EF
+Agent: main (Super Z)
+Task: Batches E+F of cycle 3 — provider failover (ADR-0024), memory
+evaluation suite (Phase 4), OCR skip-gate fix; reconciliation-6.
+
+Work Log:
+- IntelligenceService gained ordered failover candidates from
+  WAX_LLM_PROVIDER_FALLBACKS: per-candidate retry+breaker, boot-time
+  loud misconfiguration, duplicate skipping, honest last-error raise,
+  response records the serving provider, close() closes all. 5 tests
+- tests/evaluation/test_memory_evaluation.py: the mission's ten memory
+  dimensions as scenario tests. THE SUITE FOUND A REAL BUG: the recall
+  arm matched substrings while the rank arm required exact tokens, so
+  recalled candidates scored zero and silently vanished ('study' vs
+  'studying'). BM25 scoring is now prefix-aware (lightweight stemming,
+  no dependencies); the update/temporal scenarios assert end-to-end
+- OCR test skip gate now checks both tesseract and Pillow
+- reconciliation-6 written; ADR-0024 written
+
+Stage Summary:
+- 640 tests passing (585 at cycle start; +55). Live probe PASS after
+  every batch. Alembic head e1a3c5e7b9d2, migration discipline green.
+- Cycle 3 CLOSED locally: 5 commits ahead of origin/main, clean tree,
+  linear history. Push blocked on credentials (user action required —
+  the old token must be rotated; it was exposed in chat history).

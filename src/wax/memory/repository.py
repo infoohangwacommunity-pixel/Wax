@@ -387,6 +387,22 @@ class MemoryRepository:
         avg_len = (sum(len(t) for t in doc_terms) / n_docs) or 1.0
         k1, b = cls._BM25_K1, cls._BM25_B
 
+        def _hits(counts: Counter, term: str) -> int:
+            """Occurrences of `term` in one document, prefix-aware.
+
+            The recall arm matches SUBSTRINGS (ilike %term%), so ranking
+            must agree or recalled candidates score zero and silently
+            vanish (the evaluation suite caught exactly that: query
+            'study' recalled 'studying', then ranked it out). A query
+            term matches document tokens that ARE it or START with it —
+            lightweight stemming, no dependencies.
+            """
+            return sum(
+                count
+                for token, count in counts.items()
+                if token == term or token.startswith(term)
+            )
+
         scores: list[float] = []
         for counts, terms in zip(doc_counts, doc_terms):
             score = 0.0
@@ -395,10 +411,10 @@ class MemoryRepository:
                 if term in seen:
                     continue
                 seen.add(term)
-                tf = counts.get(term, 0)
+                tf = _hits(counts, term)
                 if tf == 0:
                     continue
-                df = sum(1 for c in doc_counts if term in c)
+                df = sum(1 for c in doc_counts if _hits(c, term) > 0)
                 idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
                 score += (
                     idf

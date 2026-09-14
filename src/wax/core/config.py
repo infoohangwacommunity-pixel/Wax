@@ -125,6 +125,14 @@ class WaxSettings(BaseSettings):
     # limit before the evidence budget is derived.
     llm_output_reserve_tokens: int = 4096
 
+    # --- Provider failover (ADR-0024, mission §33/§34) ---
+    # Comma-separated provider kinds to try IN ORDER after the default
+    # provider fails (e.g. "anthropic,mock"). Empty = primary only.
+    # Each candidate gets its own retry+breaker; failover happens after a
+    # candidate's own retry budget exhausts. Misconfigured kinds fail at
+    # boot (loud), not at 3am.
+    llm_provider_fallbacks: str = "" 
+
     # --- Human approval primitive (ADR-0013) ---
     # How long a pending approval stays decidable before it honestly
     # expires (swept by the maintenance loop).
