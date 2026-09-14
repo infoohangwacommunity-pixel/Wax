@@ -625,3 +625,26 @@ Work Log:
 Stage Summary:
 - 7 pages, plain-English, before/after tables, mechanism/policy boundary
   figure, real-world walkthrough, 4 founder decisions, verification table
+
+---
+Task ID: POST-OMEGA-1
+Agent: main (Super Z)
+Task: POST-OMEGA cycle — reconcile mission against reality; complete the interrupted CV-15..19 batch (fix + tests + docs), commit, push.
+
+Work Log:
+- Read + preserved the POST-OMEGA mission (3,516 lines) at docs/mission/post-omega-mission.md; redacted an embedded access token from the in-repo copy before it ever reached git
+- Recovered the interrupted working-tree batch: five tracked violations CV-15..19 (code present, tests partially missing, register not updated)
+- CV-15: model-facing objective.update_status now refuses fabricated `succeeded` while durable work is outstanding (same evidence rule as the bridge path, CV-7); test added (refused -> stays in_progress -> honest close after work terminal)
+- CV-16: credential-kind legality now DERIVES from the interface boundary table (INTERFACE_CREDENTIAL_KINDS + non-interface set); gate channels derive from the principal's actual credentials; derivation property tested as an invariant
+- CV-17: no guessable whatsapp_verify_token default, no "unset" app_secret HMAC sentinel — empty values fail-fast at the wiring point
+- CV-18: pinning network backend — guarded_get connects only to addresses validate_url classified for THIS fetch; DNS divergence (rebinding) fails the connection; TLS validates the original hostname; 17 network-boundary tests
+- CV-19: capability-invocation idempotency ledger (migration a8c2e6f0b4d6, table capability_invocations, full unique index); claim-before-effect; replay returns the RECORDED outcome (idempotent_replay=true); executing claims refused as duplicate; failed attempts retryable; expired-lease takeover = honest at-least-once; key lifted before the authority gate so approval fingerprints stay about the operation; ADR-0028
+- Failure-matrix tests (mission §29): replay-no-reexecute, concurrent exactly-once, live-claim refusal, failed-retry, expired-lease takeover, principal isolation, no-key pass-through, append-only evidence, denied-request key preservation
+- Fixed two real defects the new tests exposed: SQLite naive-datetime lease comparison (dialect-honest _aware normalization) and ORM evaluate-strategy fence bypass (synchronize_session=False keeps the takeover a pure DB conditional UPDATE)
+- Migration tests extended: fresh schema carries the ledger + unique index; downgrade -1 drops exactly the ledger; roundtrip verified
+- Verification: 673 tests passed (0 failures); probe 13/13 PASS; register updated (19 corrected total; open item 5 partially closed); ADR-0028 added
+
+Stage Summary:
+- 19 violations corrected across three audit cycles; 0 open.
+- Remaining honest boundaries unchanged: ADR-0025 retention policy, ADR-0026 open registry, ADR-0027 multi-instance perimeter, output_schema/provenance.
+- Next frontier per mission §92: memory correctness/lifecycle (Phase 3) — re-audit first.

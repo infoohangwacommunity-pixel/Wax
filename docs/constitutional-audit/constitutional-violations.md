@@ -32,3 +32,22 @@ in the domain documents as LIVE / IMPLEMENTED-BUT-UNWIRED / TEST-ONLY /
 DOCUMENTATION-ONLY / PLACEHOLDER / DEAD. Residual designed-but-deferred
 boundaries are recorded in ADR-0025 (retention policy), ADR-0026 (open
 registry), and ADR-0027 (multi-server enforcement perimeter).
+
+## POST-OMEGA reconciliation → **FIXED in the POST-OMEGA cycle**
+
+The POST-OMEGA forensic reconciliation of the OMEGA reports against
+repository reality found five further violations. All are fixed in code
+in this cycle, each with tests:
+
+| ID | Location | Why it violates | Fix shipped | Reversibility | Confidence |
+|---|---|---|---|---|---|
+| CV-15 | `capabilities/runtime_capabilities.py objective_update_status_impl` (pre-fix) | The model-facing close path accepted `succeeded` while durable work was outstanding — the bridge path was guarded (CV-7) but the capability path could still fabricate a PERMANENT terminal lie | **FIXED (this cycle)**: the same `objective_has_outstanding_work` runtime evidence guard enforced on the capability path; outstanding work ⇒ loud refusal; tested (`test_update_status_succeeded_with_outstanding_work_is_refused`) | High | High |
+| CV-16 | `authority/gate.py` (hardcoded credential-kind tuple) + `identity/contracts.py ALLOWED_CREDENTIAL_KINDS` (hand-maintained frozenset) | Interface attachment required editing identity allowlist semantics in TWO places — a drift machine violating the boundary-table invariant (INV-02: one mapping is the single source of truth) | **FIXED (this cycle)**: allowed kinds DERIVE from `INTERFACE_CREDENTIAL_KINDS` (∪ non-interface kinds); gate channels derive from the principal's ACTUAL credentials; derivation property tested as an invariant | High (pure derivation) | High |
+| CV-17 | `core/config.py whatsapp_verify_token` default + `runtime/app.py app_secret or "unset"` (pre-fix) | A publicly-known default verify token silently accepted webhook verification; an HMAC key of `"unset"` made webhook signatures forgeable — identity seeding under misconfiguration | **FIXED (this cycle)**: no guessable defaults; empty values fail-fast at the wiring point; misconfiguration stops startup instead of silently weakening the identity boundary | High | High |
+| CV-18 | `security/network.py guarded_get` (pre-fix) | `validate_url` resolved the hostname, then httpx re-resolved it at connect time — a TOCTOU: DNS could answer differently (rebinding to private/loopback/metadata addresses) between validation and connection, defeating the entire boundary | **FIXED (this cycle)**: pinning network backend — the transport resolves the hostname itself and connects ONLY to addresses `validate_url` classified as public for THIS fetch; any divergence (including rebinding) fails the connection; TLS still validates against the original hostname; tested (`test_network_boundary.py`) | Medium-high (new transport layer; behavior-preserving on the happy path) | High |
+| CV-19 | `capabilities/contracts.py idempotency_key` (declared, unread) | The contract promised the runtime honors idempotency keys; nothing read the field — a false mechanism at the SOLE effect point (the exact class the constitution forbids) | **FIXED (this cycle)**: database-owned claim ledger (migration `a8c2e6f0b4d6`), claim-before-effect, recorded-outcome replay, lease + honest at-least-once takeover, full failure matrix tested; ADR-0028 | Medium-high (new table + semantics; additive) | High |
+
+No constitutional violations remain open after the POST-OMEGA cycle.
+Residual designed-but-deferred boundaries remain exactly as registered:
+ADR-0025 (retention policy — founder decision sheet), ADR-0026 (open
+registry build order), ADR-0027 (multi-server enforcement perimeter).
