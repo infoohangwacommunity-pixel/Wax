@@ -414,3 +414,39 @@ Stage Summary:
   (D) context sections active_work/artifacts, (E) provider failover,
   (F) memory evaluation suite. Batches land as separate reviewed
   commits with tests, ADRs, and probe evidence.
+
+---
+Task ID: PASS-7-BATCH-AB
+Agent: main (Super Z)
+Task: Batches A+B of cycle 3 — objective lifecycle completion (ADR-0020)
+and durable outbound delivery lifecycle (ADR-0021).
+
+Work Log:
+- Batch A (commit 48b56cd): waiting/awaiting_human/cancelled states;
+  objective_executions history table (migration b9c1d3e5f7a2);
+  wax.objective.evidence runtime-owned syncs (work scheduled → waiting,
+  woken/consumed → active, approval pending → awaiting_human, last-work
+  death → failed); cross-session staleness defect found by the live-path
+  test (interaction could close a waiting objective via an identity-map
+  copy) fixed with DB-fresh reads on every transition decision;
+  objective.list/resume/update_status capabilities under the gate chain
+  with objective.read/write permissions (member+admin; ai stays zero).
+  16 tests in test_objective_lifecycle.py
+- Batch B (this commit): delivery_records table (migration
+  c4d6e8f0a2b3) + DeliveryQueue (enqueue/attempt/retry_due with
+  exponential backoff, deliverability horizon, honest exhaustion);
+  maintenance pass gained the leader-elected delivery-retry sweep
+  (services-aware; skips honestly without the live container);
+  bridge reply send-failure now enqueues a recoverable record with the
+  first attempt spent — replaces the whatsapp.send dead-letter
+  graveyard. 5 tests in test_delivery_lifecycle.py incl. the full
+  failure → maintenance-retry → delivered arc over the real ASGI app
+
+Stage Summary:
+- 606 tests passing (585 at cycle start); live probe PASS after both
+  batches; alembic chain head c4d6e8f0a2b3
+- Commits 48b56cd (A) + this commit (B) are LOCAL ONLY: no GitHub
+  credentials exist in this environment (the token used by earlier
+  cycles was never persisted here and must be rotated anyway — it was
+  exposed in chat). Batches will be pushed as soon as a fresh token is
+  provided; git history and working tree stay clean meanwhile.

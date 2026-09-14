@@ -138,6 +138,16 @@ class WaxSettings(BaseSettings):
     # oldest prune-safe rows beyond the bound are removed.
     signal_max_ledger_rows: int = 100_000
 
+    # --- Durable outbound delivery (ADR-0021) ---
+    # A completed result whose interface send fails becomes recoverable
+    # state: the maintenance loop retries with exponential backoff until
+    # delivered, attempts are exhausted, or the deliverability horizon
+    # passes (interface-agnostic; 24h matches the WhatsApp
+    # customer-service window for template-less sends).
+    delivery_retry_backoff_seconds: float = 60.0
+    delivery_max_attempts: int = 5
+    delivery_max_age_seconds: float = 86400.0
+
     # --- Artifact acquisition (ADR-0015) ---
     # Comma-separated hostnames a workspace.acquire may download from.
     # Empty list = acquisition disabled (honest refusal).

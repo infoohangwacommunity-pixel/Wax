@@ -161,12 +161,16 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         lifecycle.on_shutdown("memory_reaper", stop_memory_maintenance(memory_task))
 
         # Runtime maintenance: approval expiry + signal-ledger retention
-        # (lifecycle hygiene the runtime owns; ADR-0013/0015).
+        # + delivery retries (lifecycle hygiene the runtime owns;
+        # ADR-0013/0015/0021). The delivery sweep needs the LIVE services
+        # container — the interface senders are registered on it.
         from wax.runtime.maintenance import maintenance_loop
         from wax.runtime.maintenance import stop_maintenance as stop_runtime_maintenance
 
         maintenance_task = asyncio.create_task(
-            maintenance_loop(settings, interval_seconds=300.0),
+            maintenance_loop(
+                settings, interval_seconds=300.0, services=app.state.services
+            ),
             name="wax-maintenance",
         )
         lifecycle.on_shutdown(
@@ -469,32 +473,79 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             return None
 
         async def _on_send_failure(message, response_text: str, error: Exception) -> None:
-            """Record a lost reply in the dead-letter table (the audit found
-            replies were silently dropped when the outbound send failed)."""
-            from wax.reliability.dead_letter import DeadLetterRepository
+            """A completed reply that could not be delivered becomes
+            RECOVERABLE STATE, not a graveyard row (ADR-0021, mission
+            §55): a delivery record (pending, one attempt spent) the
+            maintenance loop retries until delivered, exhausted, or past
+            the deliverability horizon. The execution result is separate
+            from the delivery result — the reply text is preserved
+            verbatim on the record.
+            """
+            from sqlalchemy import select
+
             from wax.state.engine import db_session
+            from wax.state.identity_models import PrincipalCredential
+            from wax.runtime.delivery_queue import DeliveryQueue
 
             svc = getattr(app.state, "services", None)
             if svc is not None:
                 svc.metrics.send_failure("whatsapp")
             try:
                 async with db_session() as session:
-                    await DeadLetterRepository(session).record(
-                        kind="whatsapp.send",
-                        error_type=type(error).__name__,
-                        error_message=str(error)[:5000],
-                        attempts=1,
-                        payload={
-                            "to_phone": message.from_phone,
-                            "response_text": response_text[:2000],
-                            "interface_message_id": message.message_id,
-                        },
+                    # Resolve the principal from the verified credential
+                    # (the recipient is always an existing principal's
+                    # interface identity — the conversation just happened).
+                    credential = (
+                        await session.execute(
+                            select(PrincipalCredential).where(
+                                PrincipalCredential.kind == "whatsapp_phone",
+                                PrincipalCredential.value == message.from_phone,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if credential is None:
+                        log.critical(
+                            "whatsapp.send_failure.unresolvable_principal",
+                            message_id=message.message_id,
+                            to=message.from_phone,
+                        )
+                        return
+
+                    queue = DeliveryQueue(
+                        session,
+                        svc,
+                        retry_backoff_seconds=float(
+                            settings.delivery_retry_backoff_seconds
+                        ),
+                        max_age_seconds=float(settings.delivery_max_age_seconds),
                     )
+                    record = await queue.enqueue(
+                        principal_id=credential.principal_id,
+                        interface_kind="whatsapp",
+                        recipient_id=message.from_phone,
+                        text=response_text,
+                        source="bridge_reply",
+                        max_attempts=int(settings.delivery_max_attempts),
+                    )
+                    # One attempt already happened (the adapter's send) —
+                    # record it so the backoff chain starts honestly.
+                    record.attempts = 1
+                    record.last_error = f"{type(error).__name__}: {error}"[:2000]
+                    if record.attempts >= record.max_attempts:
+                        record.status = "failed"
+                    else:
+                        from datetime import UTC, datetime, timedelta
+
+                        record.next_attempt_at = datetime.now(UTC) + timedelta(
+                            seconds=float(settings.delivery_retry_backoff_seconds)
+                        )
                     await session.commit()
-            except Exception as dl_error:
+                    if svc is not None:
+                        svc.metrics.delivery_retrying("whatsapp")
+            except Exception as delivery_error:
                 log.critical(
-                    "whatsapp.dead_letter_write_failed",
-                    error=str(dl_error),
+                    "whatsapp.delivery_record_write_failed",
+                    error=str(delivery_error),
                     message_id=message.message_id,
                 )
 

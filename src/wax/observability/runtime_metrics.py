@@ -69,6 +69,17 @@ class RuntimeMetrics:
     def send_ok(self, interface: str) -> None:
         self._registry.counter("delivery_send_total", interface=interface).inc()
 
+    # --- Delivery queue (ADR-0021) ---------------------------------------
+
+    def delivery_delivered(self, interface: str) -> None:
+        self._registry.counter("delivery_records_delivered_total", interface=interface).inc()
+
+    def delivery_retrying(self, interface: str) -> None:
+        self._registry.counter("delivery_records_retrying_total", interface=interface).inc()
+
+    def delivery_failed(self, interface: str) -> None:
+        self._registry.counter("delivery_records_failed_total", interface=interface).inc()
+
     # --- Background work (Phase V) ---------------------------------------
 
     def work_woken(self, outcome: str, kind: str) -> None:
