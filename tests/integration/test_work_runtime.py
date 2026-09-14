@@ -471,7 +471,10 @@ class TestRecoveryScan:
             execution = await session.get(ExecutionRecord, execution.id)
             record = await session.get(ProcessedMessageRecord, record.id)
         assert execution.status == "failed"
-        assert "restart" in (execution.error or "")
+        # ADR-0035: the recovery layer now classifies the crash point and
+        # produces a more specific error message. The execution had no
+        # recorded steps, so it's classified as "crash before model call".
+        assert "crash before model call" in (execution.error or "")
         assert record.outcome == "failed"
 
 

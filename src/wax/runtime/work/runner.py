@@ -363,8 +363,16 @@ class WorkRunner:
     async def recover_orphans(self) -> dict[str, int]:
         """Reconcile state a dead process left behind.
 
-        - executions stuck in "running" since before the stale threshold →
-          failed ("runtime restart"), so the record is honest.
+        ADR-0035: instead of blindly marking crashed executions as
+        `failed`, classify the crash point and apply the appropriate
+        recovery semantics:
+
+        - `crash_before_model_call` → mark failed (no effect produced)
+        - `crash_after_model_response` → mark failed (model output lost)
+        - `crash_after_external_effect_before_result` → use idempotency
+          lookup; mark `unknown_effect` if outcome cannot be proven
+        - `crash_after_result_persistence` → replay the terminal write
+
         - processed_messages stuck in "pending" (work was accepted, the
           process died mid-LLM) → "failed", which the bridge treats as
           retryable on Meta redelivery.
@@ -373,13 +381,20 @@ class WorkRunner:
         """
         from sqlalchemy import select
 
+        from wax.execution.recovery import (
+            RecoveryOutcome,
+            recover_execution,
+        )
         from wax.state.bridge_models import ProcessedMessageRecord
         from wax.state.engine import db_session
         from wax.state.execution_models import ExecutionRecord
 
         cutoff = datetime.now(UTC) - timedelta(seconds=self._stale_execution_seconds)
-        stale_ids: list[str] = []
+        recovered_ids: list[str] = []
         retriable_messages = 0
+        unknown_effect_count = 0
+        replayed_count = 0
+
         async with db_session() as session:
             result = await session.execute(
                 select(ExecutionRecord).where(ExecutionRecord.status == "running")
@@ -389,32 +404,41 @@ class WorkRunner:
                 if started is not None and started.tzinfo is None:
                     started = started.replace(tzinfo=UTC)
                 if started is not None and started < cutoff:
-                    execution.status = "failed"
-                    execution.ended_at = datetime.now(UTC)
-                    execution.error = "runtime restart or crash (recovered by work runner)"
-                    stale_ids.append(execution.id)
-            if stale_ids:
+                    # Use the recovery layer instead of blindly marking failed
+                    recovery_result = await recover_execution(
+                        session, execution.id, principal_id=execution.principal_id
+                    )
+                    recovered_ids.append(execution.id)
+                    if recovery_result.outcome == RecoveryOutcome.UNKNOWN_EFFECT:
+                        unknown_effect_count += 1
+                    elif recovery_result.outcome == RecoveryOutcome.REPLAY_FROM_CHECKPOINT:
+                        replayed_count += 1
+            if recovered_ids:
                 # Their idempotency locks become retryable: a redelivery of
                 # the same message ID will re-run the work.
                 message_result = await session.execute(
                     select(ProcessedMessageRecord).where(
                         ProcessedMessageRecord.outcome == "pending",
-                        ProcessedMessageRecord.execution_id.in_(stale_ids),
+                        ProcessedMessageRecord.execution_id.in_(recovered_ids),
                     )
                 )
                 for record in message_result.scalars():
                     record.outcome = "failed"
                     retriable_messages += 1
                 await session.commit()
-        failed_executions = len(stale_ids)
+        failed_executions = len(recovered_ids)
 
         if failed_executions or retriable_messages:
             log.warning(
                 "work.recovered_orphans",
                 failed_executions=failed_executions,
                 retriable_messages=retriable_messages,
+                unknown_effect=unknown_effect_count,
+                replayed=replayed_count,
             )
         return {
             "failed_executions": failed_executions,
             "retriable_messages": retriable_messages,
+            "unknown_effect": unknown_effect_count,
+            "replayed": replayed_count,
         }
