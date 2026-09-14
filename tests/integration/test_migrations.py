@@ -210,22 +210,18 @@ class TestUpgradeFromProductionSchema:
             await dispose_engine()
 
     async def test_downgrade_drops_idempotency_ledger(self, tmp_path) -> None:
-        """head → -4 removes Phase 3 (memory) + Phase 5 (environment)
-        + Phase 6 (terminal) columns/tables AND the idempotency ledger
-        table; evidence lives in the database, so the downgrade boundary
-        must match the upgrade.
+        """head → -5 removes Phase 3 (memory) + Phase 5 (environment)
+        + Phase 6 (terminal) + Phase 7 (vault) columns/tables AND the
+        idempotency ledger table.
 
-        Note: ADR-0036 (Phase 3), ADR-0038 (Phase 5), and ADR-0039
-        (Phase 6) added new migrations after the idempotency ledger
-        migration. To drop the idempotency ledger table, we now
-        downgrade by -4 (skipping Phase 6 terminal sessions, Phase 5
-        env tables, Phase 3 memory columns, AND the idempotency
-        ledger table).
+        As more migrations are added after the idempotency ledger
+        migration, this downgrade step count increases. The test's
+        intent is to verify the downgrade boundary matches the upgrade.
         """
         db_file = tmp_path / "ledgerdown.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-4")
+        _alembic(url, "downgrade", "-5")
 
         settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
         init_engine(settings)

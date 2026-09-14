@@ -34,6 +34,7 @@ from wax.resources.accountant import ResourceAccountant
 from wax.runtime.delivery import DeliveryRouter
 from wax.runtime.environment.planner import EnvironmentPlanner
 from wax.runtime.logging import get_logger
+from wax.runtime.vault.service import CredentialVault
 from wax.security.abuse import AbuseDetector
 from wax.security.cost_protection import CostProtector
 from wax.security.input_sanitizer import InputSanitizer
@@ -76,6 +77,10 @@ class RuntimeServices:
     # intelligence calls the `environment.request` capability, which
     # delegates to this planner.
     environment_planner: EnvironmentPlanner | None = field(default=None)
+    # ADR-0040 (Phase 7): credential vault. Provider-neutral secret
+    # storage. The vault NEVER exposes secrets to the model — only
+    # opaque connection_ids and grant handles.
+    credential_vault: CredentialVault | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
@@ -102,6 +107,7 @@ class RuntimeServices:
             capability_registry=registry,
             delivery=DeliveryRouter(),
             environment_planner=EnvironmentPlanner(settings),
+            credential_vault=CredentialVault(settings),
         )
         # Runtime mechanisms exposed to the AI as capabilities
         # (work.schedule / work.cancel / work.list / message.send) —

@@ -12,42 +12,41 @@ Run migrations:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
-
 # Make wax.* importable when running `alembic` from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from wax.core.config import WaxSettings  # noqa: E402
-from wax.state.models import Base  # noqa: E402
+import wax.reliability.dead_letter
+import wax.state.approval_models
+import wax.state.artifact_models
+import wax.state.audit_models
+import wax.state.authority_models
+import wax.state.bridge_models
+import wax.state.capability_models
+import wax.state.continuity_models
+import wax.state.credential_models
+import wax.state.delivery_models
+import wax.state.environment_models
+import wax.state.execution_models
 
 # Import all model modules here so they register with Base.metadata.
 # As new models are added in wax.state.* subpackages, import them here too.
-import wax.state.identity_models  # noqa: E402,F401  (Phase D)
-import wax.state.audit_models  # noqa: E402,F401  (Phase C)
-import wax.state.authority_models  # noqa: E402,F401  (Phase E)
-import wax.state.memory_models  # noqa: E402,F401  (Phase F)
-import wax.state.execution_models  # noqa: E402,F401  (Phase H)
-import wax.state.objective_models  # noqa: E402,F401  (Phase L)
-import wax.state.bridge_models  # noqa: E402,F401  (Phase R)
-import wax.state.work_models  # noqa: E402,F401  (Phase R/V durable work)
-import wax.state.provisioning_models  # noqa: E402,F401  (Phase S provisioning)
-import wax.state.continuity_models  # noqa: E402,F401  (Phase U)
-import wax.reliability.dead_letter  # noqa: E402,F401  (Phase V)
-import wax.state.approval_models  # noqa: E402,F401  (approval primitive)
-import wax.state.capability_models  # noqa: E402,F401  (CV-19 idempotency ledger)
-import wax.state.delivery_models  # noqa: E402,F401  (ADR-0021 durable delivery)
-import wax.state.artifact_models  # noqa: E402,F401  (ADR-0023 artifacts)
-import wax.state.environment_models  # noqa: E402,F401  (ADR-0038 environment leases)
-import wax.state.terminal_models  # noqa: E402,F401  (ADR-0039 terminal sessions)
+import wax.state.identity_models
+import wax.state.memory_models
+import wax.state.objective_models
+import wax.state.provisioning_models
+import wax.state.terminal_models
+import wax.state.work_models  # noqa: F401  (Phase R/V durable work)
+from wax.core.config import WaxSettings
+from wax.state.models import Base
 
 config = context.config
 

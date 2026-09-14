@@ -86,6 +86,11 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
 
         async with db_session() as session:
             await seed_builtin_roles(session)
+            # ADR-0040 (Phase 7): seed the universal connector definitions
+            # so the vault knows about git_host, package_registry, etc.
+            from wax.runtime.vault import seed_builtin_connectors
+
+            await seed_builtin_connectors(session)
             await session.commit()
 
         # Initialize RuntimeBridge (Phase R) with the service container

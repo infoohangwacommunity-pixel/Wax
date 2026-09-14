@@ -1212,7 +1212,139 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(TERMINAL_SESSION_OPEN_DESCRIPTOR, terminal_session_open_impl)
     registry.register(TERMINAL_EXECUTE_DESCRIPTOR, terminal_execute_impl)
     registry.register(TERMINAL_SESSION_CLOSE_DESCRIPTOR, terminal_session_close_impl)
-    log.info("capability.runtime_registered", count=23)
+
+    # ========================================================================
+    # ADR-0040 (Phase 7): Credential Vault
+    # ========================================================================
+
+    async def credential_connect_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        connector_name = inputs.get("connector")
+        if not isinstance(connector_name, str) or not connector_name:
+            raise ValueError("connector is required")
+        secret = inputs.get("secret")
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("secret is required")
+        if len(secret) > 8192:
+            raise ValueError("secret exceeds 8192 chars")
+        scopes = inputs.get("scopes", [])
+        if not isinstance(scopes, list):
+            raise ValueError("scopes must be a list")
+
+        if services.credential_vault is None:
+            raise ValueError("credential vault not configured")
+
+        async with db_session() as session:
+            try:
+                connection_id = await services.credential_vault.connect(
+                    session,
+                    principal_id=ctx.principal_id,
+                    connector_name=connector_name,
+                    secret=secret,
+                    scopes=scopes,
+                )
+                await session.commit()
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(f"credential connect failed: {e}") from e
+
+        return {"connection_id": connection_id, "connector": connector_name, "scopes": scopes}
+
+    async def credential_request_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        connection_id = inputs.get("connection_id")
+        if not isinstance(connection_id, str) or not connection_id:
+            raise ValueError("connection_id is required")
+        scopes = inputs.get("scopes", [])
+        if not isinstance(scopes, list):
+            raise ValueError("scopes must be a list")
+        purpose = inputs.get("purpose")
+        if purpose is not None and not isinstance(purpose, str):
+            raise ValueError("purpose must be a string")
+        if purpose and len(purpose) > 500:
+            raise ValueError("purpose exceeds 500 chars")
+        ttl_seconds = inputs.get("ttl_seconds", 3600)
+        try:
+            ttl_seconds = int(ttl_seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError("ttl_seconds must be an integer") from e
+        if not 1 <= ttl_seconds <= 86400:
+            raise ValueError("ttl_seconds must be between 1 and 86400")
+
+        if services.credential_vault is None:
+            raise ValueError("credential vault not configured")
+
+        async with db_session() as session:
+            try:
+                grant = await services.credential_vault.request_grant(
+                    session,
+                    principal_id=ctx.principal_id,
+                    connection_id=connection_id,
+                    scopes=scopes,
+                    purpose=purpose,
+                    objective_id=inputs.get("objective_id"),
+                    execution_id=ctx.request_id or ctx.execution_id,
+                    ttl_seconds=ttl_seconds,
+                )
+                await session.commit()
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(f"credential request failed: {e}") from e
+
+        return grant
+
+    async def credential_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        if services.credential_vault is None:
+            raise ValueError("credential vault not configured")
+
+        async with db_session() as session:
+            connections = await services.credential_vault.list_connections(
+                session, principal_id=ctx.principal_id
+            )
+            await session.commit()
+
+        return {"connections": connections, "count": len(connections)}
+
+    async def credential_revoke_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        connection_id = inputs.get("connection_id")
+        grant_id = inputs.get("grant_id")
+        if not connection_id and not grant_id:
+            raise ValueError("either connection_id or grant_id is required")
+        reason = inputs.get("reason")
+
+        if services.credential_vault is None:
+            raise ValueError("credential vault not configured")
+
+        async with db_session() as session:
+            try:
+                result = await services.credential_vault.revoke(
+                    session,
+                    principal_id=ctx.principal_id,
+                    connection_id=connection_id,
+                    grant_id=grant_id,
+                    reason=reason,
+                )
+                await session.commit()
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(f"credential revoke failed: {e}") from e
+
+        return result
+
+    registry.register(CREDENTIAL_CONNECT_DESCRIPTOR, credential_connect_impl)
+    registry.register(CREDENTIAL_REQUEST_DESCRIPTOR, credential_request_impl)
+    registry.register(CREDENTIAL_LIST_DESCRIPTOR, credential_list_impl)
+    registry.register(CREDENTIAL_REVOKE_DESCRIPTOR, credential_revoke_impl)
+    log.info("capability.runtime_registered", count=27)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -2336,6 +2468,128 @@ TERMINAL_SESSION_CLOSE_DESCRIPTOR = CapabilityDescriptor(
             "session_id": {"type": "string"},
             "closed": {"type": "boolean"},
             "state": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=True,
+    is_destructive=True,
+)
+
+
+# ============================================================================
+# ADR-0040 (Phase 7): Credential Vault — module-level descriptors
+# ============================================================================
+
+CREDENTIAL_CONNECT_DESCRIPTOR = CapabilityDescriptor(
+    name="credential.connect",
+    description=(
+        "Register a credential for a connector (resource type, NOT a "
+        "brand: git_host, package_registry, cloud_deployment, file_storage, "
+        "messaging). The secret is encrypted at rest; the runtime NEVER "
+        "exposes it to the model. Returns an opaque connection_id."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "connector": {
+                "type": "string",
+                "description": "Resource type: git_host, package_registry, cloud_deployment, file_storage, messaging",
+            },
+            "secret": {"type": "string", "maxLength": 8192},
+            "scopes": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["connector", "secret"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "connection_id": {"type": "string"},
+            "connector": {"type": "string"},
+            "scopes": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+CREDENTIAL_REQUEST_DESCRIPTOR = CapabilityDescriptor(
+    name="credential.request",
+    description=(
+        "Request a scoped grant for an objective/execution. The runtime "
+        "validates the connection exists + has the requested scopes, "
+        "creates a grant with TTL, returns an opaque handle. The vault "
+        "injects the actual secret into the environment boundary at "
+        "provisioning time — NEVER into the model's prompt."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "connection_id": {"type": "string"},
+            "scopes": {"type": "array", "items": {"type": "string"}},
+            "purpose": {"type": "string", "maxLength": 500},
+            "objective_id": {"type": "string"},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400, "default": 3600},
+        },
+        "required": ["connection_id", "scopes"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "grant_id": {"type": "string"},
+            "handle": {"type": "string"},
+            "expires_at": {"type": "string"},
+            "scopes": {"type": "array", "items": {"type": "string"}},
+            "connector": {"type": "string"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=False,
+    is_destructive=False,
+)
+
+CREDENTIAL_LIST_DESCRIPTOR = CapabilityDescriptor(
+    name="credential.list",
+    description="List the principal's connections. Metadata only — NO secrets.",
+    version="1.0.0",
+    input_schema={"type": "object", "properties": {}},
+    output_schema={
+        "type": "object",
+        "properties": {
+            "connections": {"type": "array", "items": {"type": "object"}},
+            "count": {"type": "integer"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+CREDENTIAL_REVOKE_DESCRIPTOR = CapabilityDescriptor(
+    name="credential.revoke",
+    description=(
+        "Revoke a connection OR a grant. Immediate. The secret is purged "
+        "from any in-flight injection."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "connection_id": {"type": "string"},
+            "grant_id": {"type": "string"},
+            "reason": {"type": "string", "maxLength": 500},
+        },
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "revoked": {"type": "array", "items": {"type": "string"}},
         },
     },
     required_permission="capability.invoke:built_in",
