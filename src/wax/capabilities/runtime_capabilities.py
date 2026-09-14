@@ -958,7 +958,7 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
             "superseded": {"type": "string"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="memory.write",
     timeout_seconds=5.0,
     idempotent=False,
     is_destructive=False,
@@ -984,7 +984,7 @@ MEMORY_SEARCH_DESCRIPTOR = CapabilityDescriptor(
             "memories": {"type": "array"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="memory.read",
     timeout_seconds=5.0,
     idempotent=True,
     is_destructive=False,
@@ -1004,7 +1004,7 @@ MEMORY_FORGET_DESCRIPTOR = CapabilityDescriptor(
         "type": "object",
         "properties": {"memory_id": {"type": "string"}, "forgotten": {"type": "boolean"}},
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="memory.write",
     timeout_seconds=5.0,
     idempotent=True,
     is_destructive=True,  # crosses the destructive agency gate
@@ -1067,7 +1067,7 @@ MEMORY_CONSOLIDATE_DESCRIPTOR = CapabilityDescriptor(
             "superseded_ids": {"type": "array"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="memory.write",
     timeout_seconds=5.0,
     idempotent=False,
     is_destructive=False,
@@ -1178,7 +1178,13 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
             )
         )
         if supersedes_id:
-            await repo.supersede(supersedes_id, record.id)
+            superseded_rows = await repo.supersede(supersedes_id, record.id)
+            if not superseded_rows:
+                raise ValueError(
+                    f"memory {supersedes_id} could not be superseded (it is "
+                    "not an active memory of yours) — the new record was "
+                    "created and linked to nothing it did not replace"
+                )
         linked: list[dict] = []
         for entry in links or []:
             edge = await repo.link(
@@ -1241,11 +1247,21 @@ async def memory_forget_impl(inputs: dict[str, Any], ctx: InvocationContext) -> 
     async with db_session() as session:
         repo = MemoryRepository(session)
         memory = await repo.get(memory_id)
-        if memory is None or memory.status != "active":
-            raise ValueError(f"No active memory {memory_id}")
+        if memory is None:
+            raise ValueError(f"No memory {memory_id}")
         if memory.principal_id != ctx.principal_id:
             # Ownership boundary: a principal cannot forget another's memory.
             raise ValueError("memory_id belongs to a different principal")
+        if memory.status == "forgotten":
+            # The descriptor declares this capability idempotent — make the
+            # implementation honor its own contract: forgetting an already
+            # forgotten memory is an honest no-op, not a failure.
+            await session.commit()
+            return {"memory_id": memory_id, "forgotten": True, "already_forgotten": True}
+        if memory.status != "active":
+            raise ValueError(
+                f"memory {memory_id} is {memory.status} and cannot be forgotten"
+            )
         forgotten = await repo.forget(memory_id)
         await session.commit()
 
@@ -1400,7 +1416,7 @@ MEMORY_LINK_DESCRIPTOR = CapabilityDescriptor(
             "existed": {"type": "boolean"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="memory.write",
     timeout_seconds=5.0,
     idempotent=True,
     is_destructive=False,

@@ -100,8 +100,14 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
-    # Sensitivity level: 0 (public) to 3 (highly sensitive)
-    # Affects what gets logged, what gets surfaced to the model, retention.
+    # Sensitivity level: 0 (public) to 3 (highly sensitive).
+    # CONSTITUTIONAL AUDIT NOTE: this column is currently RESERVED — no
+    # runtime path reads it, and no retention/logging/access behavior is
+    # keyed on it. The honest contract is the default 0 with this comment;
+    # claiming enforcement that does not exist would be a false mechanism.
+    # Wiring sensitivity into evidence assembly + retention is documented
+    # in docs/constitutional-audit/memory-deep-audit.md as the planned
+    # remediation.
     sensitivity: Mapped[int] = mapped_column(
         nullable=False, default=0, server_default="0"
     )
