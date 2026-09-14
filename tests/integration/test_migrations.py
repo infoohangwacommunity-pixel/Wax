@@ -210,19 +210,20 @@ class TestUpgradeFromProductionSchema:
             await dispose_engine()
 
     async def test_downgrade_drops_idempotency_ledger(self, tmp_path) -> None:
-        """head → -2 removes the Phase 3 columns AND the idempotency
-        ledger table; evidence lives in the database, so the downgrade
-        boundary must match the upgrade.
+        """head → -3 removes Phase 3 (memory) + Phase 5 (environment)
+        columns/tables AND the idempotency ledger table; evidence lives
+        in the database, so the downgrade boundary must match the upgrade.
 
-        Note: ADR-0036 (Phase 3) added a new migration after the
-        idempotency ledger migration. To drop the idempotency ledger
-        table, we now downgrade by -2 (skipping the Phase 3 columns
-        AND the idempotency ledger table).
+        Note: ADR-0036 (Phase 3) and ADR-0038 (Phase 5) added new
+        migrations after the idempotency ledger migration. To drop the
+        idempotency ledger table, we now downgrade by -3 (skipping
+        Phase 5 env tables, Phase 3 memory columns, AND the idempotency
+        ledger table).
         """
         db_file = tmp_path / "ledgerdown.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-2")
+        _alembic(url, "downgrade", "-3")
 
         settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
         init_engine(settings)
@@ -235,7 +236,7 @@ class TestUpgradeFromProductionSchema:
                 ).scalars().all()
                 assert "capability_invocations" not in set(tables)
                 assert "pending_approvals" in set(tables), (
-                    "only the ledger table is dropped by the -2 step"
+                    "only the ledger table is dropped by the -3 step"
                 )
         finally:
             await dispose_engine()

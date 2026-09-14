@@ -32,6 +32,7 @@ from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
 from wax.runtime.delivery import DeliveryRouter
+from wax.runtime.environment.planner import EnvironmentPlanner
 from wax.runtime.logging import get_logger
 from wax.security.abuse import AbuseDetector
 from wax.security.cost_protection import CostProtector
@@ -70,6 +71,11 @@ class RuntimeServices:
     # was built without re-entry wiring (e.g. a stripped-down test
     # container) — the intelligence_handler fails honestly in that case.
     reentry_callback: ReentryCallback | None = field(default=None)
+    # ADR-0038 (Phase 5): environment planner. Resolves an
+    # EnvironmentRequirement into a concrete plan + lease. The
+    # intelligence calls the `environment.request` capability, which
+    # delegates to this planner.
+    environment_planner: EnvironmentPlanner | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
@@ -95,6 +101,7 @@ class RuntimeServices:
             resource_accountant=ResourceAccountant(),
             capability_registry=registry,
             delivery=DeliveryRouter(),
+            environment_planner=EnvironmentPlanner(settings),
         )
         # Runtime mechanisms exposed to the AI as capabilities
         # (work.schedule / work.cancel / work.list / message.send) —

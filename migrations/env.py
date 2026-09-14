@@ -43,6 +43,10 @@ import wax.state.provisioning_models  # noqa: E402,F401  (Phase S provisioning)
 import wax.state.continuity_models  # noqa: E402,F401  (Phase U)
 import wax.reliability.dead_letter  # noqa: E402,F401  (Phase V)
 import wax.state.approval_models  # noqa: E402,F401  (approval primitive)
+import wax.state.capability_models  # noqa: E402,F401  (CV-19 idempotency ledger)
+import wax.state.delivery_models  # noqa: E402,F401  (ADR-0021 durable delivery)
+import wax.state.artifact_models  # noqa: E402,F401  (ADR-0023 artifacts)
+import wax.state.environment_models  # noqa: E402,F401  (ADR-0038 environment leases)
 
 config = context.config
 

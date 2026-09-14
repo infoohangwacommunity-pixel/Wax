@@ -947,7 +947,66 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(OBJECTIVE_RESUME_DESCRIPTOR, objective_resume_impl)
     registry.register(OBJECTIVE_UPDATE_STATUS_DESCRIPTOR, objective_update_status_impl)
     registry.register(MEMORY_LINK_DESCRIPTOR, memory_link_impl)
-    log.info("capability.runtime_registered", count=19)
+
+
+    # ========================================================================
+    # ADR-0038 (Phase 5): Environment Negotiation
+    # ========================================================================
+
+    async def environment_request_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        """Plan + provision an environment lease."""
+        from wax.runtime.environment.contracts import (
+            EnvironmentValidationError,
+            validate_environment_requirement,
+        )
+        from wax.state.engine import db_session
+
+        try:
+            validate_environment_requirement(inputs)
+        except EnvironmentValidationError as e:
+            raise ValueError(f"Invalid environment requirement: {e}") from e
+
+        if services.environment_planner is None:
+            raise ValueError(
+                "Environment planner not configured in this runtime "
+                "(services.environment_planner is None)"
+            )
+
+        ttl_seconds = inputs.get("ttl_seconds")
+        if ttl_seconds is not None:
+            ttl_seconds = int(ttl_seconds)
+
+        async with db_session() as session:
+            try:
+                plan = await services.environment_planner.plan(
+                    session,
+                    principal_id=ctx.principal_id,
+                    execution_id=ctx.request_id or ctx.execution_id,
+                    requirement_dict=inputs,
+                )
+                lease = await services.environment_planner.provision_lease(
+                    session,
+                    principal_id=ctx.principal_id,
+                    execution_id=ctx.request_id or ctx.execution_id,
+                    plan=plan,
+                    ttl_seconds=ttl_seconds,
+                )
+                await session.commit()
+            except EnvironmentValidationError as e:
+                raise ValueError(f"Environment validation failed: {e}") from e
+
+        return {
+            "environment_id": lease.environment_id,
+            "expires_at": lease.expires_at.isoformat(),
+            "state": lease.state.value,
+            "degraded": lease.plan.degraded,
+            "workspace_id": lease.plan.workspace_id,
+            "credential_handles": lease.plan.credential_handles,
+            "notes": lease.plan.notes,
+        }
+
+    registry.register(ENVIRONMENT_REQUEST_DESCRIPTOR, environment_request_impl)
+    log.info("capability.runtime_registered", count=20)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -1905,3 +1964,79 @@ async def objective_update_status_impl(
         "status": status,
         "history_rows_closed": closed,
     }
+
+
+# ============================================================================
+# ADR-0038 (Phase 5): Environment Negotiation — module-level descriptor
+# ============================================================================
+# The impl is defined inside register_runtime_capabilities so it can close
+# over . The descriptor is at module level so it can be imported
+# by tests.
+
+ENVIRONMENT_REQUEST_DESCRIPTOR = CapabilityDescriptor(
+    name="environment.request",
+    description=(
+        "Declare an environment requirement and have the runtime plan + "
+        "provision a bounded environment (workspace, isolation, network "
+        "policy, tools, credential handles). The intelligence receives "
+        "opaque handles; it NEVER sees host paths or raw secrets."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "purpose": {"type": "string", "maxLength": 200},
+            "workspace": {"type": "object", "properties": {
+                "persistent": {"type": "boolean"},
+                "disk_bytes": {"type": "integer", "minimum": 0},
+                "description": {"type": "string", "maxLength": 200},
+            }},
+            "execution": {"type": "object", "properties": {
+                "cpu_seconds": {"type": "integer", "minimum": 0},
+                "memory_bytes": {"type": "integer", "minimum": 0},
+                "processes": {"type": "integer", "minimum": 0},
+                "timeout_seconds": {"type": "integer", "minimum": 0},
+            }},
+            "tools": {"type": "array", "maxItems": 20, "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "acquire_if_missing": {"type": "boolean"},
+                },
+                "required": ["name"],
+            }},
+            "credentials": {"type": "array", "maxItems": 10, "items": {
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string"},
+                    "scopes": {"type": "array", "items": {"type": "string"}},
+                    "purpose": {"type": "string"},
+                },
+                "required": ["connector"],
+            }},
+            "network": {"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["none", "allowlisted", "open"]},
+                "allowlist": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+            }},
+            "isolation": {"type": "string", "enum": ["none", "namespace", "container"], "default": "none"},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        },
+        "required": ["purpose"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "environment_id": {"type": "string"},
+            "expires_at": {"type": "string"},
+            "state": {"type": "string"},
+            "degraded": {"type": "array", "items": {"type": "string"}},
+            "workspace_id": {"type": ["string", "null"]},
+            "credential_handles": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": ["string", "null"]},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=30.0,
+    idempotent=False,
+    is_destructive=False,
+)
