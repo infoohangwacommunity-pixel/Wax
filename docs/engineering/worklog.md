@@ -573,3 +573,36 @@ Stage Summary:
 - The push-blocked state is resolved. Next cycle: re-audit per mission
   120, next foundational gaps are the evaluation datasets (90) and
   failure-injection consolidation (91).
+
+---
+Task ID: CONSTITUTIONAL-AUDIT
+Agent: main (Super Z)
+Task: Founder-directed constitutional audit — every file/table/capability/
+prompt/state machine interrogated against "the runtime provides
+mechanisms, the intelligence decides what to do with them"; drift
+permanently corrected; 13 audit documents + founder PDF.
+
+Work Log:
+- Reality snapshot: d639f6e, clean tree, parity, 640 tests, probe 11/11,
+  migration head e1a3c5e7b9d2, 24 ADRs, 121 py files / 19.6k LOC
+- 5 parallel audit tracks traced memory, context+objective,
+  capabilities+execution, provider+interface+prompt, database+config+state
+- 10 constitutional violations found + classified; 6 severe ones FIXED in
+  five batches (47887cb, 74e1561, f44a067, 67357e0, bcec2a5):
+  CV-1 Meta window + whatsapp default -> adapter-declared DeliveryPolicy +
+  identity-derived interface selection + unified credential mapping;
+  CV-2 approval consume race -> conditional UPDATE + expiry guard;
+  CV-3 memory.read/write enforced; CV-4 phantom INV-02/03 tests created;
+  CV-5 invoker declared-contract validation; CV-6 conversation.objective_id
+  now written (OBJECTIVE section lives); CV-7 evidence-guarded auto-succeed
+- Also fixed: forget idempotency, supersede rowcount, sensitivity RESERVED,
+  dead_letter UTC, anthropic_base_url split, interface mapping unification
+- docs/constitutional-audit/ — 13 documents (report, violations register,
+  hardcoding inventory, memory/context/capability/objective/provider/
+  interface/database/execution/prompt/boundary audits)
+- 644 tests passing; probe 13/13 PASS after every batch; pushed each batch
+
+Stage Summary:
+- Audit verdict: spine constitutional (19 mechanisms, 0 features); drift
+  was honesty-of-mechanism failures, now corrected or registered with
+  designed fixes (CV-11..14) and 4 founder-level questions documented
