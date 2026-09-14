@@ -216,7 +216,10 @@ class IntelligenceService:
 
             return AnthropicProvider(
                 api_key=settings.anthropic_api_key,
-                base_url=settings.llm_base_url or "https://api.anthropic.com/v1",
+                # Deliberately anthropic_base_url, NOT llm_base_url: a
+                # mixed-vendor fallback chain must not hand the Anthropic
+                # candidate an OpenAI-compatible proxy URL (audit fix).
+                base_url=settings.anthropic_base_url or "https://api.anthropic.com/v1",
                 default_model=settings.llm_model or "claude-3-5-haiku-latest",
             )
         raise WaxConfigurationError(

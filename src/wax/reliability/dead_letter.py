@@ -97,7 +97,7 @@ class DeadLetterRepository:
             error_message=error_message[:10000],  # truncate
             attempts=attempts,
             payload=payload,
-            failed_at=datetime.now(),
+            failed_at=datetime.now(UTC),
             reprocessed=False,
         )
         self._session.add(entry)

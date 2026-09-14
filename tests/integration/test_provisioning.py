@@ -245,4 +245,7 @@ class TestScratchWorkspaceCapability:
                 )
             )
         assert result.outcome == "failure"
-        assert "24-hour" in result.error
+        # The invoker now enforces the DECLARED contract (audit fix):
+        # ttl_seconds above the descriptor's maximum is refused at the
+        # boundary with the bound named, before the implementation runs.
+        assert "86400" in result.error

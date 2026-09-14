@@ -103,6 +103,21 @@ class CapabilityInvoker:
                 error=f"Principal lacks permission: {descriptor.required_permission}",
             )
 
+        # 3.5 VALIDATE inputs against the descriptor's declared contract.
+        # (Constitutional audit fix: the docstring promised this validation
+        # while the code did none — a false mechanism. Implementations
+        # still own full semantic validation; this is the honest first
+        # pass over the DECLARED contract: required fields present, basic
+        # types, declared length/size bounds.)
+        try:
+            self._validate_inputs(request.inputs, descriptor.input_schema)
+        except ValueError as e:
+            return self._failure_result(
+                request, execution_id, started_at, start_perf,
+                outcome="failure",
+                error=f"Invalid inputs: {e}",
+            )
+
         # 4. Execute with timeout. The implementation receives an
         # InvocationContext (who/what/why) — never authorization power.
         context = InvocationContext(
@@ -184,3 +199,73 @@ class CapabilityInvoker:
             ended_at=ended_at,
             duration_ms=round(duration_ms, 2),
         )
+
+    # --- Declared-contract validation (constitutional audit fix) ------------
+
+    @staticmethod
+    def _validate_inputs(
+        inputs: dict, schema: dict | None
+    ) -> None:
+        """Enforce the descriptor's DECLARED input contract.
+
+        Covers the JSON-schema subset the descriptors actually use:
+        required fields, basic types, maxLength/minLength, minimum/maximum,
+        minItems/maxItems, enum. Implementations keep full semantic
+        validation — this pass exists so the declared contract is not
+        decoration: the invoker's documented step 5 is real code now.
+        """
+        if not schema:
+            return
+        if not isinstance(inputs, dict):
+            raise ValueError("inputs must be a JSON object")
+        for name in schema.get("required", []):
+            if name not in inputs or inputs[name] is None:
+                raise ValueError(f"missing required input: {name}")
+        properties = schema.get("properties", {})
+        for name, value in inputs.items():
+            spec = properties.get(name)
+            if spec is None:
+                continue
+            declared = spec.get("type")
+            if declared and not CapabilityInvoker._type_ok(value, declared):
+                raise ValueError(f"input {name} must be of type {declared}")
+            if isinstance(value, str):
+                max_len = spec.get("maxLength")
+                if max_len is not None and len(value) > max_len:
+                    raise ValueError(f"input {name} exceeds {max_len} characters")
+                min_len = spec.get("minLength")
+                if min_len is not None and len(value) < min_len:
+                    raise ValueError(
+                        f"input {name} is shorter than {min_len} characters"
+                    )
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                minimum = spec.get("minimum")
+                if minimum is not None and value < minimum:
+                    raise ValueError(f"input {name} must be >= {minimum}")
+                maximum = spec.get("maximum")
+                if maximum is not None and value > maximum:
+                    raise ValueError(f"input {name} must be <= {maximum}")
+            if isinstance(value, list):
+                min_items = spec.get("minItems")
+                if min_items is not None and len(value) < min_items:
+                    raise ValueError(f"input {name} needs at least {min_items} items")
+                max_items = spec.get("maxItems")
+                if max_items is not None and len(value) > max_items:
+                    raise ValueError(f"input {name} allows at most {max_items} items")
+            enum = spec.get("enum")
+            if enum and value not in enum:
+                raise ValueError(f"input {name} must be one of {list(enum)}")
+
+    @staticmethod
+    def _type_ok(value: object, declared: str) -> bool:
+        checks = {
+            "string": lambda v: isinstance(v, str),
+            "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+            "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+            "boolean": lambda v: isinstance(v, bool),
+            "array": lambda v: isinstance(v, list),
+            "object": lambda v: isinstance(v, dict),
+            "null": lambda v: v is None,
+        }
+        check = checks.get(declared)
+        return check is None or check(value)

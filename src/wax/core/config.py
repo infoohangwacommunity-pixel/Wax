@@ -87,6 +87,11 @@ class WaxSettings(BaseSettings):
     # Empty string = the provider's official endpoint. Making this configurable
     # keeps the runtime model-independent by configuration, not by code change.
     llm_base_url: str = ""
+    # Base URL for the Anthropic API. Deliberately SEPARATE from
+    # llm_base_url (constitutional audit fix): a shared default made a
+    # mixed-vendor fallback chain silently point the Anthropic candidate
+    # at an OpenAI-compatible proxy. Empty string = the official endpoint.
+    anthropic_base_url: str = ""
     # Default model override (provider-specific name).
     llm_model: str = ""
     # Provider resilience (wired via intelligence.resilience.ResilientProvider).
