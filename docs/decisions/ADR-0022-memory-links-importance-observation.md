@@ -45,8 +45,9 @@ The two mechanisms stay composable but non-overlapping.
 `search_relevant` expands the top-3 hits with their ACTIVE one-hop
 neighbors (≤5 per anchor), scoring each neighbor at 0.6× the current
 top score. Neighbors never displace directly-relevant records (damped
-scores sort below anchors), superseded/archived neighbors are excluded
-(lifecycle governs expansion), and the expansion cannot fabricate
+scores sort below anchors), superseded or forgotten neighbors are
+excluded (lifecycle governs expansion; there is no archive state), and
+the expansion cannot fabricate
 relevance for memories with no link path to a hit.
 
 ### Importance weights rank, never relevance

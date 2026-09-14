@@ -1011,7 +1011,17 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
         "properties": {
             "memory_id": {"type": "string"},
             "kind": {"type": "string"},
-            "superseded": {"type": "string"},
+            "superseded": {"type": ["string", "null"]},
+            "linked": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string"},
+                        "kind": {"type": "string"},
+                    },
+                },
+            },
         },
     },
     required_permission="memory.write",
@@ -1058,7 +1068,11 @@ MEMORY_FORGET_DESCRIPTOR = CapabilityDescriptor(
     },
     output_schema={
         "type": "object",
-        "properties": {"memory_id": {"type": "string"}, "forgotten": {"type": "boolean"}},
+        "properties": {
+            "memory_id": {"type": "string"},
+            "forgotten": {"type": "boolean"},
+            "already_forgotten": {"type": "boolean"},
+        },
     },
     required_permission="memory.write",
     timeout_seconds=5.0,
@@ -1425,16 +1439,24 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
                 record.id, sid, "derived_from", execution_id=ctx.execution_id
             )
         superseded_ids: list[str] = []
+        supersede_refused_ids: list[str] = []
         if supersede_sources:
             for sid in source_ids:
                 if await repo.supersede(sid, record.id):
                     superseded_ids.append(sid)
+                else:
+                    # A verified source failed to supersede (a racing
+                    # writer changed its state between verify and
+                    # supersede). Swallowing this would make the
+                    # reported outcome a partial lie — report it.
+                    supersede_refused_ids.append(sid)
         await session.commit()
 
     return {
         "memory_id": record.id,
         "consolidated_count": len(source_ids),
         "superseded_ids": superseded_ids,
+        "supersede_refused_ids": supersede_refused_ids,
     }
 
 

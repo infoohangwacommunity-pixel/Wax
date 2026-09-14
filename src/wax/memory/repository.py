@@ -238,6 +238,11 @@ class MemoryRepository:
     ) -> bool:
         """Remove a typed edge. Returns True when a row was deleted.
 
+        INTERNAL PRIMITIVE (honest marking): no capability surface
+        exposes unlink today — only tests and future runtime paths call
+        it. Deliberately kept: it completes the repository's ownership
+        story for graph management.
+
         OWNERSHIP (defense in depth): links are principal-scoped through
         their endpoints — the edge is deleted only when BOTH endpoint
         memories exist and belong to the SAME principal. A missing or
@@ -315,8 +320,10 @@ class MemoryRepository:
     async def expire_due(self, now: datetime | None = None) -> list[MemoryRecord]:
         """Find active memories whose expires_at has passed.
 
-        Returns them; caller decides whether to forget, archive, or extend.
-        The runtime lifecycle worker (memory/lifecycle.py) forgets them.
+        Returns them; the caller decides what happens next. The runtime
+        lifecycle worker (memory/lifecycle.py) forgets them — the only
+        lifecycle action any production caller takes (there is no
+        archive state).
         """
         if now is None:
             now = datetime.now(UTC)
@@ -505,8 +512,10 @@ class MemoryRepository:
         Portable across SQLite and Postgres: the lexical arm matches the
         top query terms against summary + serialized content. Terms are
         pre-sanitized (alnum-only by `_terms`), so no LIKE escaping is
-        needed. On Postgres with the ADR-0019 schema, callers with
-        `use_postgres_fts=True` get the GIN-indexed path instead.
+        needed. This is the ONLY retrieval path: there is no Postgres-FTS
+        arm — the ADR-0019 tsvector/GIN columns exist in the schema but
+        have ZERO application readers today (reserved for a future
+        indexed path if evidence justifies it).
         """
         from sqlalchemy import String as SAString
         from sqlalchemy import cast, or_
@@ -556,12 +565,12 @@ class MemoryRepository:
         """Rank a principal's active memories against a query.
 
         Two-stage retrieval (ADR-0019): portable recall (newest pool ∪
-        lexical matches; the Postgres indexed path replaces the lexical
-        arm there) followed by BM25-style ranking blended with recency
-        and confidence. Returns [(record, score)] descending; zero-score
-        records excluded. Considers ALL kinds — evidence lives at every
-        layer, and kind filtering is the caller's policy, not the
-        storage's.
+        lexical matches — the only path; the ADR-0019 tsvector/GIN
+        columns are unread reserved schema) followed by BM25-style
+        ranking blended with recency and confidence. Returns
+        [(record, score)] descending; zero-score records excluded.
+        Considers ALL kinds — evidence lives at every layer, and kind
+        filtering is the caller's policy, not the storage's.
         """
         query_terms = self._terms(query)
         if not query_terms:

@@ -36,3 +36,34 @@ Traced reality across `src/wax/memory/`, `state/memory_models.py`, capability im
 ## Verdict
 
 The memory spine honors the constitution: flat principal-scoped records, provenance columns, explicit supersession, runtime-owned forgetting, evidence-not-recipe delivery, zero domain contamination. Its failures were honesty failures — surfaces claiming more than they do — now corrected or honestly flagged. Remediation queue: structural data-role for evidence lines; observed_at surfaced to the model; contradicts rendered as conflict; provenance made an input of memory.store; bridge rows linked to their execution.
+
+---
+
+## POST-OMEGA re-audit (this cycle)
+
+An independent read-only re-audit of the full memory substrate against
+the POST-OMEGA mission §10–§16 confirmed the prior fixes hold (CV-3
+permission enforcement, CV-8 sensitivity RESERVED, CV-9 forget
+contract) and that the substrate is mechanisms-only: no domain
+assumptions, no hardcoded scheduling, forgotten memories excluded from
+every retrieval path, retention still a founder boundary (ADR-0025).
+
+Findings and dispositions:
+
+| ID | Classification | Disposition |
+|---|---|---|
+| MEM-1 retrieval docstring claimed a `use_postgres_fts` path that does not exist (tsvector/GIN columns have zero application readers) | FALSE-MECHANISM CLAIM | **FIXED this cycle**: docstrings corrected to state the single portable retrieval path; the indexed columns are honestly marked reserved-for-future |
+| MEM-2 untrusted memory text delivered as `MessageRole.SYSTEM` lines (lexical `[evidence: …]` label only) | CARRIED FLAGGED-RISK | OPEN — designed follow-up: structural data-role boundary for evidence (prompt-architecture scope, own cycle) |
+| MEM-3 `contradicts` edges traversed identically to `supports`, never rendered as conflict markers | IMPLEMENTED-BUT-UNWIRED | OPEN — designed follow-up: conflict-marker rendering in evidence assembly |
+| MEM-4 `observed_at` drives ranking but is not surfaced in search/context outputs; recency pool sorts by `created_at` | IMPLEMENTED-BUT-UNWIRED | OPEN — designed follow-up: observation-time surfacing + ordering |
+| MEM-5 bridge episodic rows: `provenance="user_statement"` for mixed content, `source_execution_id` NULL; `memory.store` hardcodes provenance | CARRIED PROVENANCE GAP | OPEN — designed follow-up: execution-id provenance + model-declarable provenance (validated) |
+| MEM-6 dead `MemoryRead` contract (never instantiated, incomplete fields) | DEAD | **FIXED this cycle**: deleted, including re-exports |
+| MEM-7 `unlink()` has no production/capability caller | TEST-ONLY | **MARKED HONESTLY this cycle**: docstring states it is an internal primitive with no capability surface, deliberately kept |
+| MEM-8 doc rot: "future MemoryService" claim, "archive" state in `expire_due` docstring, "archived neighbors" in ADR-0022 | DOC-ROT | **FIXED this cycle**: all three surfaces state present reality (no archive state exists; compression absent and unclaimed) |
+| MEM-9 `memory.consolidate` silently omitted sources it failed to supersede | MINOR HONESTY | **FIXED this cycle**: partial supersession now reported loudly (`supersede_refused_ids`) |
+| MEM-10 founder decision map cites "ADR-0024 memory evaluation"; repo ADR-0024 is provider failover | DOC DISCREPANCY | Noted — no repo change; the evaluation suite is evidence-harness TEST-ONLY testing real machinery |
+| Declared output schemas omitted fields the impls actually return (`linked`, `already_forgotten`) | CONTRACT DRIFT | **FIXED this cycle**: schemas completed |
+
+Open behavioral follow-ups (MEM-2/3/4/5) are designed follow-ups, not
+violations: they change prompt-assembly and output shapes and deserve
+their own verification cycle.
