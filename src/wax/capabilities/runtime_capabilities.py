@@ -813,7 +813,8 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(OBJECTIVE_LIST_DESCRIPTOR, objective_list_impl)
     registry.register(OBJECTIVE_RESUME_DESCRIPTOR, objective_resume_impl)
     registry.register(OBJECTIVE_UPDATE_STATUS_DESCRIPTOR, objective_update_status_impl)
-    log.info("capability.runtime_registered", count=18)
+    registry.register(MEMORY_LINK_DESCRIPTOR, memory_link_impl)
+    log.info("capability.runtime_registered", count=19)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -827,14 +828,22 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
 MEMORY_KINDS = ("episodic", "semantic", "procedural", "contextual", "external")
 
+# Typed evidence relationships (ADR-0022). Supersession is NOT here: it
+# is lifecycle (supersedes=), not a knowledge edge.
+MEMORY_LINK_KINDS = ("supports", "contradicts", "derived_from", "related_to")
+
 MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
     name="memory.store",
     description="Persist a memory for the current principal (structured "
     "evidence, not a frozen category). Pass expires_at for anything that "
     "should be forgotten automatically. Pass supersedes=<memory_id> when "
     "this record REPLACES an older active memory of the same principal "
-    "(revision: the old record stays for audit but leaves retrieval).",
-    version="1.1.0",
+    "(revision: the old record stays for audit but leaves retrieval). "
+    "Optional importance (0-1) weights retrieval; observed_at records "
+    "when the fact was observed (vs written); links=[{memory_id, kind}] "
+    "adds typed edges (supports/contradicts/derived_from/related_to) to "
+    "existing memories.",
+    version="1.2.0",
     input_schema={
         "type": "object",
         "properties": {
@@ -853,6 +862,37 @@ MEMORY_STORE_DESCRIPTOR = CapabilityDescriptor(
                 "description": "ISO-8601 datetime; after this the runtime forgets it",
             },
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "importance": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "How much this matters for retrieval (default neutral)",
+            },
+            "observed_at": {
+                "type": "string",
+                "description": "ISO-8601: when the fact was observed (may differ from now)",
+            },
+            "links": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "supports",
+                                "contradicts",
+                                "derived_from",
+                                "related_to",
+                            ],
+                        },
+                    },
+                    "required": ["memory_id", "kind"],
+                },
+                "description": "Typed edges from this record to existing memories",
+            },
             "supersedes": {
                 "type": "string",
                 "description": "memory_id this record replaces (ownership-checked)",
@@ -1014,6 +1054,36 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
     if confidence is not None and not (0.0 <= float(confidence) <= 1.0):
         raise ValueError("confidence must be between 0 and 1")
 
+    importance = inputs.get("importance")
+    if importance is not None and not (0.0 <= float(importance) <= 1.0):
+        raise ValueError("importance must be between 0 and 1")
+
+    observed_at = None
+    if inputs.get("observed_at"):
+        try:
+            observed_at = datetime.fromisoformat(
+                str(inputs["observed_at"]).replace("Z", "+00:00")
+            )
+        except ValueError as e:
+            raise ValueError(
+                f"observed_at is not a valid ISO-8601 datetime: {e}"
+            ) from e
+
+    links = inputs.get("links")
+    if links is not None:
+        if not isinstance(links, list) or len(links) > 10:
+            raise ValueError("links must be a list of at most 10 {memory_id, kind}")
+        for entry in links:
+            if (
+                not isinstance(entry, dict)
+                or not entry.get("memory_id")
+                or entry.get("kind") not in MEMORY_LINK_KINDS
+            ):
+                raise ValueError(
+                    "each link must be {memory_id, kind} with kind one of "
+                    f"{list(MEMORY_LINK_KINDS)}"
+                )
+
     supersedes_id = inputs.get("supersedes")
     if supersedes_id is not None and not (isinstance(supersedes_id, str) and supersedes_id):
         raise ValueError("supersedes must be a memory_id string")
@@ -1021,14 +1091,27 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
     async with db_session() as session:
         repo = MemoryRepository(session)
 
-        # Revision path: verify the target BEFORE creating the replacement
-        # so a bad supersedes request creates nothing (no orphan evidence).
+        # Verify BEFORE creating the replacement so a bad request creates
+        # nothing (no orphan evidence) — same discipline for supersedes
+        # and links: a refused link target is a LOUD error, never a
+        # silently skipped edge (the model must know its link did not land).
         if supersedes_id:
             old = await repo.get(supersedes_id)
             if old is None or old.status != "active":
                 raise ValueError(f"No active memory {supersedes_id} to supersede")
             if old.principal_id != ctx.principal_id:
                 raise ValueError("supersedes targets another principal's memory")
+        for entry in links or []:
+            target = await repo.get(str(entry["memory_id"]))
+            if target is None or target.status != "active":
+                raise ValueError(
+                    f"No active memory {entry['memory_id']} to link to"
+                )
+            if target.principal_id != ctx.principal_id:
+                raise ValueError(
+                    "links target another principal's memory "
+                    f"({entry['memory_id']})"
+                )
 
         record = await repo.create(
             MemoryCreate(
@@ -1038,18 +1121,33 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
                 provenance="model_observation",
                 source_execution_id=ctx.execution_id,
                 confidence=float(confidence) if confidence is not None else None,
+                importance=float(importance) if importance is not None else None,
+                observed_at=observed_at,
                 expires_at=expires_at,
                 summary=summary[:2000] if summary else None,
             )
         )
         if supersedes_id:
             await repo.supersede(supersedes_id, record.id)
+        linked: list[dict] = []
+        for entry in links or []:
+            edge = await repo.link(
+                record.id,
+                str(entry["memory_id"]),
+                str(entry["kind"]),
+                execution_id=ctx.execution_id,
+            )
+            if edge is not None:
+                linked.append(
+                    {"memory_id": edge.to_memory_id, "kind": edge.kind}
+                )
         await session.commit()
 
     return {
         "memory_id": record.id,
         "kind": record.kind,
         "superseded": supersedes_id,
+        "linked": linked,
     }
 
 
@@ -1196,6 +1294,14 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
             )
         )
 
+        # Structured provenance edges (ADR-0022): the consolidation is
+        # derived_from every source — queryable, not just JSON-in-content.
+        # Created BEFORE supersession: sources must still be ACTIVE for
+        # edges to be valid.
+        for sid in source_ids:
+            await repo.link(
+                record.id, sid, "derived_from", execution_id=ctx.execution_id
+            )
         superseded_ids: list[str] = []
         if supersede_sources:
             for sid in source_ids:
@@ -1207,6 +1313,93 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
         "memory_id": record.id,
         "consolidated_count": len(source_ids),
         "superseded_ids": superseded_ids,
+    }
+
+
+# --- memory.link (typed evidence relationships, ADR-0022) -----------------
+#
+# The intelligence may propose how memories relate; the runtime retains
+# authority: both endpoints must be the principal's ACTIVE memories, the
+# kind is validated against the fixed vocabulary, self-links and
+# cross-principal edges are refused, and every edge carries provenance.
+# Supersession deliberately is NOT a link kind — it is lifecycle.
+
+MEMORY_LINK_DESCRIPTOR = CapabilityDescriptor(
+    name="memory.link",
+    description="Record a typed relationship between two of this "
+    "principal's memories: supports, contradicts, derived_from, or "
+    "related_to. Retrieval uses links to pull in related evidence. "
+    "Idempotent: re-linking the same pair returns the existing edge.",
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "from_memory_id": {"type": "string"},
+            "to_memory_id": {"type": "string"},
+            "kind": {"type": "string", "enum": list(MEMORY_LINK_KINDS)},
+        },
+        "required": ["from_memory_id", "to_memory_id", "kind"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "link_id": {"type": "string"},
+            "from_memory_id": {"type": "string"},
+            "to_memory_id": {"type": "string"},
+            "kind": {"type": "string"},
+            "existed": {"type": "boolean"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+
+async def memory_link_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    from wax.memory.repository import MemoryRepository
+    from wax.state.engine import db_session
+
+    from_id = inputs.get("from_memory_id")
+    to_id = inputs.get("to_memory_id")
+    kind = inputs.get("kind")
+    if not from_id or not isinstance(from_id, str):
+        raise ValueError("from_memory_id is required")
+    if not to_id or not isinstance(to_id, str):
+        raise ValueError("to_memory_id is required")
+    if kind not in MEMORY_LINK_KINDS:
+        raise ValueError(f"kind must be one of {list(MEMORY_LINK_KINDS)}")
+
+    async with db_session() as session:
+        repo = MemoryRepository(session)
+        # Ownership is enforced HERE (both endpoints), not just in the
+        # repository: a cross-principal edge attempt is a loud denial.
+        for mid in (from_id, to_id):
+            memory = await repo.get(mid)
+            if memory is None:
+                raise ValueError(f"No such memory: {mid}")
+            if memory.principal_id != ctx.principal_id:
+                raise ValueError(f"memory {mid} belongs to a different principal")
+        preexisting = [
+            edge
+            for edge, _ in await repo.links_for(from_id, kind=kind)
+            if edge.to_memory_id == to_id
+        ]
+        edge = await repo.link(from_id, to_id, kind, execution_id=ctx.execution_id)
+        if edge is None:
+            raise ValueError(
+                "link refused: both memories must be ACTIVE and belong to "
+                "the same principal (and kind must be valid)"
+            )
+        await session.commit()
+
+    return {
+        "link_id": edge.id,
+        "from_memory_id": edge.from_memory_id,
+        "to_memory_id": edge.to_memory_id,
+        "kind": edge.kind,
+        "existed": bool(preexisting),
     }
 
 

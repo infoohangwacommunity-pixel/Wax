@@ -24,7 +24,7 @@ from ulid import ULID
 
 from wax.memory.contracts import MemoryCreate, MemoryKind, MemoryStatus
 from wax.runtime.logging import get_logger
-from wax.state.memory_models import MemoryRecord
+from wax.state.memory_models import MemoryLinkRecord, MemoryRecord
 
 log = get_logger(__name__)
 
@@ -54,6 +54,8 @@ class MemoryRepository:
             provenance=payload.provenance,
             source_execution_id=payload.source_execution_id,
             confidence=payload.confidence,
+            importance=payload.importance,
+            observed_at=payload.observed_at,
             expires_at=payload.expires_at,
             sensitivity=payload.sensitivity,
             summary=payload.summary,
@@ -156,6 +158,134 @@ class MemoryRepository:
             return True
         return False
 
+    # --- typed memory links (ADR-0022, mission Phase 3) --------------------
+
+    async def link(
+        self,
+        from_memory_id: str,
+        to_memory_id: str,
+        kind: str,
+        *,
+        execution_id: str | None = None,
+    ) -> MemoryLinkRecord | None:
+        """Create (or return the existing) typed edge between two memories.
+
+        Rules: both endpoints must be ACTIVE memories of the SAME
+        principal; a memory cannot link to itself; the edge is idempotent
+        (re-linking the same pair+kind returns the existing row). Returns
+        None when ownership/state validation fails — callers decide how
+        honestly to surface that.
+        """
+        from wax.memory.contracts import MemoryLinkKind
+
+        if isinstance(kind, MemoryLinkKind):
+            kind = kind.value
+        if kind not in {k.value for k in MemoryLinkKind}:
+            log.warning("memory.link.invalid_kind", kind=kind)
+            return None
+        if from_memory_id == to_memory_id:
+            log.warning("memory.link.self_link_denied", memory_id=from_memory_id)
+            return None
+
+        source = await self.get(from_memory_id)
+        target = await self.get(to_memory_id)
+        if (
+            source is None
+            or target is None
+            or source.status != MemoryStatus.ACTIVE.value
+            or target.status != MemoryStatus.ACTIVE.value
+            or source.principal_id != target.principal_id
+        ):
+            log.warning(
+                "memory.link.validation_failed",
+                from_memory_id=from_memory_id,
+                to_memory_id=to_memory_id,
+            )
+            return None
+
+        existing = await self._session.execute(
+            select(MemoryLinkRecord).where(
+                MemoryLinkRecord.from_memory_id == from_memory_id,
+                MemoryLinkRecord.to_memory_id == to_memory_id,
+                MemoryLinkRecord.kind == kind,
+            )
+        )
+        found = existing.scalars().first()
+        if found is not None:
+            return found
+
+        edge = MemoryLinkRecord(
+            id=_new_ulid(),
+            from_memory_id=from_memory_id,
+            to_memory_id=to_memory_id,
+            kind=kind,
+            principal_id=source.principal_id,
+            created_by_execution_id=execution_id,
+        )
+        self._session.add(edge)
+        await self._session.flush()
+        log.info(
+            "memory.link.created",
+            link_id=edge.id,
+            from_memory_id=from_memory_id,
+            to_memory_id=to_memory_id,
+            kind=kind,
+        )
+        return edge
+
+    async def unlink(self, from_memory_id: str, to_memory_id: str, kind: str) -> bool:
+        """Remove a typed edge. Returns True when a row was deleted."""
+        from sqlalchemy import delete
+
+        from wax.memory.contracts import MemoryLinkKind
+
+        if isinstance(kind, MemoryLinkKind):
+            kind = kind.value
+        result = await self._session.execute(
+            delete(MemoryLinkRecord).where(
+                MemoryLinkRecord.from_memory_id == from_memory_id,
+                MemoryLinkRecord.to_memory_id == to_memory_id,
+                MemoryLinkRecord.kind == kind,
+            )
+        )
+        if result.rowcount > 0:
+            await self._session.flush()
+            log.info(
+                "memory.link.removed",
+                from_memory_id=from_memory_id,
+                to_memory_id=to_memory_id,
+                kind=kind,
+            )
+            return True
+        return False
+
+    async def links_for(
+        self, memory_id: str, *, kind: str | None = None
+    ) -> list[tuple[MemoryLinkRecord, str]]:
+        """All edges touching a memory, either direction.
+
+        Returns [(edge, direction)] with direction "outgoing" | "incoming".
+        """
+        from wax.memory.contracts import MemoryLinkKind
+
+        kind_value = kind.value if isinstance(kind, MemoryLinkKind) else kind
+        outgoing = await self._session.execute(
+            select(MemoryLinkRecord).where(
+                MemoryLinkRecord.from_memory_id == memory_id,
+                *([MemoryLinkRecord.kind == kind_value] if kind_value else []),
+            )
+        )
+        incoming = await self._session.execute(
+            select(MemoryLinkRecord).where(
+                MemoryLinkRecord.to_memory_id == memory_id,
+                *([MemoryLinkRecord.kind == kind_value] if kind_value else []),
+            )
+        )
+        edges = [
+            (edge, "outgoing") for edge in outgoing.scalars().all()
+        ] + [(edge, "incoming") for edge in incoming.scalars().all()]
+        return edges
+
     async def expire_due(self, now: datetime | None = None) -> list[MemoryRecord]:
         """Find active memories whose expires_at has passed.
 
@@ -202,6 +332,10 @@ class MemoryRepository:
     # BM25 parameters (standard Okapi values).
     _BM25_K1 = 1.2
     _BM25_B = 0.75
+
+    # Linked-memory expansion bound: at most this many one-hop neighbors
+    # join the evidence set per top-scoring anchor (ADR-0022).
+    _LINKED_PER_ANCHOR = 5
 
     @staticmethod
     def _terms(text: str) -> list[str]:
@@ -283,18 +417,22 @@ class MemoryRepository:
         bm25_max: float,
         bm25_score: float,
     ) -> float:
-        """Final relevance = normalized BM25 × recency/confidence blend.
+        """Final relevance = normalized BM25 × recency/confidence blend
+        + importance weight (ADR-0022, mission §6.3/§75).
 
         - bm25_norm: raw BM25 divided by the pool max — the relative
           lexical strength of this memory among the candidates
         - recency: exp(-age_days / 14) — a relevant old memory still
           beats a coincidentally-worded new one
         - confidence: small boost, honors the record's own confidence field
+        - importance: small boost for what the intelligence explicitly
+          marked as mattering (NULL = neutral 0.5); it can lift or sink
+          a memory but cannot fabricate relevance (multiplied by bm25_norm)
         """
         if not query_terms or bm25_max <= 0.0 or bm25_score <= 0.0:
             return 0.0
         bm25_norm = bm25_score / bm25_max
-        created = record.created_at
+        created = record.observed_at or record.created_at
         if created is not None:
             if created.tzinfo is None:
                 created = created.replace(tzinfo=UTC)
@@ -303,7 +441,14 @@ class MemoryRepository:
             age_days = 0.0
         recency = pow(2.718281828, -age_days / 14.0)
         confidence = float(record.confidence) if record.confidence is not None else 0.5
-        return bm25_norm * (0.7 + 0.3 * recency) + 0.1 * confidence
+        importance = (
+            float(record.importance) if record.importance is not None else 0.5
+        )
+        return (
+            bm25_norm * (0.7 + 0.3 * recency)
+            + 0.1 * confidence
+            + 0.1 * (importance - 0.5) * bm25_norm
+        )
 
     async def _recall_candidates(
         self,
@@ -394,4 +539,41 @@ class MemoryRepository:
         ]
         scored = [(r, s) for r, s in scored if s > 0.0]
         scored.sort(key=lambda pair: pair[1], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+
+        # Linked-memory expansion (ADR-0022, mission Phase 3/§49): the
+        # ACTIVE one-hop neighbors of a hit join the evidence set with a
+        # DAMPED score — if this memory matters for the query, the memory
+        # it supports or contradicts plausibly matters too. Bounded per
+        # anchor; never displaces directly-relevant records because the
+        # damped score sorts below the anchor.
+        if results:
+            expansions: list[tuple[MemoryRecord, float]] = []
+            seen = {r.id for r, _ in results}
+            anchors = [r for r, _ in results[:3]]
+            for anchor in anchors:
+                edges = await self.links_for(anchor.id)
+                neighbor_ids = [
+                    (
+                        e.to_memory_id
+                        if e.from_memory_id == anchor.id
+                        else e.from_memory_id
+                    )
+                    for e, _ in edges
+                ]
+                for nid in neighbor_ids[: self._LINKED_PER_ANCHOR]:
+                    if nid in seen:
+                        continue
+                    neighbor = await self.get(nid)
+                    if (
+                        neighbor is None
+                        or neighbor.status != MemoryStatus.ACTIVE.value
+                        or neighbor.principal_id != principal_id
+                    ):
+                        continue
+                    seen.add(nid)
+                    expansions.append((neighbor, results[0][1] * 0.6))
+            if expansions:
+                results = sorted(results + expansions, key=lambda p: p[1], reverse=True)
+                results = results[:limit]
+        return results

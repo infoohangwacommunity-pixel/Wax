@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -81,6 +81,19 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # If this memory was superseded by a newer one, the newer one's ID
     superseded_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
+    # How much this memory matters, 0.0-1.0 (mission §6.3). NULL = the
+    # intelligence has not expressed an importance; ranking treats it as
+    # neutral (0.5). Importance weights the RANK, never the lifecycle.
+    importance: Mapped[float | None] = mapped_column(nullable=True)
+
+    # When the fact was OBSERVED (mission §6.3 observation time). Differs
+    # from created_at when evidence enters the runtime late ("yesterday I
+    # finished the exam"). NULL = observed at creation time. Temporal
+    # reasoning reads this, not created_at, when present.
+    observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # When this memory should be considered for forgetting (UTC)
     # NULL = retain indefinitely
     expires_at: Mapped[datetime | None] = mapped_column(
@@ -95,3 +108,48 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Optional short human-readable summary (for fast retrieval / display)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MemoryLinkRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
+    """A typed edge between two of the principal's memories (ADR-0022).
+
+    Evidence relationships — supports / contradicts / derived_from /
+    related_to — traversable by retrieval. Supersession stays a lifecycle
+    mechanism (superseded_by column) and is deliberately NOT a link kind.
+    Links are principal-scoped: both endpoints must belong to the owner.
+    """
+
+    __tablename__ = "memory_links"
+    __table_args__ = (
+        Index("ix_memlinks_from", "from_memory_id"),
+        Index("ix_memlinks_to", "to_memory_id"),
+        UniqueConstraint(
+            "from_memory_id", "to_memory_id", "kind", name="uq_memlink_edge"
+        ),
+    )
+
+    from_memory_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("memory_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    to_memory_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("memory_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+
+    # Ownership: both endpoint memories already carry principal_id; this
+    # column makes ownership checks index-friendly and asserts the link
+    # itself is principal-scoped (privacy, mission §94).
+    principal_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("principals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Provenance of the LINK decision (which execution proposed it).
+    created_by_execution_id: Mapped[str | None] = mapped_column(
+        String(26), nullable=True
+    )

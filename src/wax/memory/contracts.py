@@ -43,6 +43,44 @@ class MemoryProvenance(StrEnum):
     EXTERNAL_API = "external_api"
 
 
+class MemoryLinkKind(StrEnum):
+    """Typed relationships between memories (ADR-0022, mission Phase 3).
+
+    Knowledge relationships the retrieval engine can traverse. Deliberate
+    split of responsibilities:
+
+    - supersession is a LIFECYCLE mechanism (MemoryRecord.superseded_by +
+      MemoryStatus.superseded) — it changes what is retrieved;
+    - these link kinds are EVIDENCE relationships — they say how memories
+      relate and are traversable, but never rewrite lifecycle state.
+
+    Relational table, not a graph database: the abstraction is the typed
+    edge; the storage is a detail (mission §8).
+    """
+
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    DERIVED_FROM = "derived_from"
+    RELATED_TO = "related_to"
+
+
+class MemoryLinkCreate(BaseModel):
+    """One typed edge between two of the principal's memories."""
+
+    to_memory_id: str
+    kind: MemoryLinkKind
+
+
+class MemoryLinkRead(BaseModel):
+    """A typed edge as returned from the API."""
+
+    id: str
+    from_memory_id: str
+    to_memory_id: str
+    kind: str
+    created_at: datetime
+
+
 class MemoryCreate(BaseModel):
     """Payload to create a memory record."""
 
@@ -52,6 +90,18 @@ class MemoryCreate(BaseModel):
     provenance: str = Field(..., description="Where this memory came from")
     source_execution_id: str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    importance: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="How much this memory matters (mission §6.3); "
+        "NULL = neutral (0.5) in ranking",
+    )
+    observed_at: datetime | None = Field(
+        default=None,
+        description="When the fact was observed (may differ from write "
+        "time); NULL = observed at creation",
+    )
     expires_at: datetime | None = None
     sensitivity: int = Field(default=0, ge=0, le=3)
     summary: str | None = Field(default=None, max_length=2000)

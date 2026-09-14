@@ -450,3 +450,35 @@ Stage Summary:
   cycles was never persisted here and must be rotated anyway — it was
   exposed in chat). Batches will be pushed as soon as a fresh token is
   provided; git history and working tree stay clean meanwhile.
+
+---
+Task ID: PASS-7-BATCH-C
+Agent: main (Super Z)
+Task: Batch C of cycle 3 — Phase 3 typed memory relationships +
+importance/observation-time metadata (ADR-0022).
+
+Work Log:
+- memory_links table (migration d6f8a2b4c9e1): supports / contradicts /
+  derived_from / related_to edges, principal-scoped, unique per
+  (from,to,kind), provenance of the link decision; supersession stays a
+  lifecycle column, deliberately NOT a link kind
+- memory_records.importance (rank weight, NULL=neutral) and
+  .observed_at (observation time, distinct from write time) — recency
+  in the rank now reads observed_at (temporal reasoning, mission 4.3)
+- search_relevant: one-hop linked-neighbor expansion (top-3 anchors,
+  <=5 neighbors each, score damped 0.6x, lifecycle-respected) —
+  "which memories matter" becomes traversable without embeddings
+- memory.store v1.2.0: importance/observed_at/links inputs with
+  verify-BEFORE-create (a refused link is a loud error — found and
+  fixed a silent-skip during implementation); new memory.link
+  capability (idempotent, loud ownership refusals, existed reporting);
+  memory.consolidate writes derived_from edges to every source BEFORE
+  superseding (edges-after-supersession could never exist — found and
+  fixed)
+- 14 tests in test_memory_links.py
+
+Stage Summary:
+- 620 tests passing (606 before batch); live probe PASS; head
+  d6f8a2b4c9e1. Two fake-mechanism patterns eliminated during
+  implementation (silent link skip; doomed edge ordering). Commits
+  remain local pending fresh GitHub credentials (see BATCH-AB entry).
