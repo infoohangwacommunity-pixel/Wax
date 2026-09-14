@@ -31,6 +31,7 @@ from wax.capabilities.runtime_capabilities import register_runtime_capabilities
 from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
+from wax.runtime.connectors.service import ConnectorRuntime
 from wax.runtime.delivery import DeliveryRouter
 from wax.runtime.environment.planner import EnvironmentPlanner
 from wax.runtime.logging import get_logger
@@ -81,6 +82,11 @@ class RuntimeServices:
     # storage. The vault NEVER exposes secrets to the model — only
     # opaque connection_ids and grant handles.
     credential_vault: CredentialVault | None = field(default=None)
+    # ADR-0041 (Phase 8): connector runtime. Resource-type-based
+    # discovery + resolution. The intelligence discovers services
+    # (GitHub, GitLab, npm, PyPI, Railway, etc.) through the
+    # environment — no architectural change when a new platform appears.
+    connector_runtime: ConnectorRuntime | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
@@ -108,6 +114,7 @@ class RuntimeServices:
             delivery=DeliveryRouter(),
             environment_planner=EnvironmentPlanner(settings),
             credential_vault=CredentialVault(settings),
+            connector_runtime=ConnectorRuntime(settings),
         )
         # Runtime mechanisms exposed to the AI as capabilities
         # (work.schedule / work.cancel / work.list / message.send) —

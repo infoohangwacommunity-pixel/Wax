@@ -1344,7 +1344,57 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(CREDENTIAL_REQUEST_DESCRIPTOR, credential_request_impl)
     registry.register(CREDENTIAL_LIST_DESCRIPTOR, credential_list_impl)
     registry.register(CREDENTIAL_REVOKE_DESCRIPTOR, credential_revoke_impl)
-    log.info("capability.runtime_registered", count=27)
+
+    # ========================================================================
+    # ADR-0041 (Phase 8): Generic Connector Runtime
+    # ========================================================================
+
+    async def connector_discover_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        if services.connector_runtime is None:
+            raise ValueError("connector runtime not configured")
+
+        connector_filter = inputs.get("connector")
+        if connector_filter is not None and (not isinstance(connector_filter, str) or not connector_filter):
+            raise ValueError("connector must be a non-empty string")
+
+        async with db_session() as session:
+            connectors = await services.connector_runtime.discover(
+                session, connector_filter=connector_filter
+            )
+            await session.commit()
+
+        return {"connectors": connectors, "count": len(connectors)}
+
+    async def connector_resolve_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        grant_handle = inputs.get("grant_handle")
+        if not isinstance(grant_handle, str) or not grant_handle:
+            raise ValueError("grant_handle is required")
+
+        if services.connector_runtime is None:
+            raise ValueError("connector runtime not configured")
+
+        async with db_session() as session:
+            try:
+                binding = await services.connector_runtime.resolve(
+                    session,
+                    grant_handle=grant_handle,
+                    principal_id=ctx.principal_id,
+                )
+                await session.commit()
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(f"connector resolve failed: {e}") from e
+
+        return binding
+
+    registry.register(CONNECTOR_DISCOVER_DESCRIPTOR, connector_discover_impl)
+    registry.register(CONNECTOR_RESOLVE_DESCRIPTOR, connector_resolve_impl)
+    log.info("capability.runtime_registered", count=29)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------
@@ -2596,4 +2646,87 @@ CREDENTIAL_REVOKE_DESCRIPTOR = CapabilityDescriptor(
     timeout_seconds=10.0,
     idempotent=True,
     is_destructive=True,
+)
+
+
+# ============================================================================
+# ADR-0041 (Phase 8): Generic Connector Runtime — module-level descriptors
+# ============================================================================
+
+CONNECTOR_DISCOVER_DESCRIPTOR = CapabilityDescriptor(
+    name="connector.discover",
+    description=(
+        "Discover available connector definitions (resource types: "
+        "git_host, package_registry, cloud_deployment, file_storage, "
+        "messaging). The runtime understands resource types, NOT brands. "
+        "The intelligence learns actual services (GitHub, GitLab, npm, "
+        "PyPI, Railway, Fly.io, Google Drive, Dropbox) through the "
+        "environment — no architectural change when a new platform appears."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "connector": {
+                "type": "string",
+                "description": "Optional filter: return only this connector type",
+            },
+        },
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "connectors": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "supported_scopes": {"type": "array", "items": {"type": "string"}},
+                        "auth_methods": {"type": "array", "items": {"type": "string"}},
+                        "version": {"type": "string"},
+                    },
+                },
+            },
+            "count": {"type": "integer"},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=5.0,
+    idempotent=True,
+    is_destructive=False,
+)
+
+CONNECTOR_RESOLVE_DESCRIPTOR = CapabilityDescriptor(
+    name="connector.resolve",
+    description=(
+        "Resolve a grant handle (from credential.request) to a service "
+        "binding. Returns an opaque binding_handle + the discovered "
+        "service_kind (e.g. github, gitlab — learned through the "
+        "environment, NOT hardcoded) + available_operations for the "
+        "granted scopes. The intelligence never sees raw secrets."
+    ),
+    version="1.0.0",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "grant_handle": {"type": "string"},
+        },
+        "required": ["grant_handle"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "binding_handle": {"type": "string"},
+            "service_kind": {"type": "string"},
+            "connector": {"type": "string"},
+            "scopes": {"type": "array", "items": {"type": "string"}},
+            "available_operations": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+    required_permission="capability.invoke:built_in",
+    timeout_seconds=10.0,
+    idempotent=True,
+    is_destructive=False,
 )
