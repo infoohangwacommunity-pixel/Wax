@@ -771,7 +771,10 @@ class RuntimeBridge:
         fp = fingerprint_request(principal_id, call.name, call.arguments)
 
         # 1. An approved, unconsumed approval for this exact request?
-        approved = await approvals.find_approved_unconsumed(principal_id, fp)
+        approved = await approvals.find_approved_unconsumed(
+            principal_id, fp,
+            approval_ttl_seconds=self._services.settings.approval_expiry_seconds,
+        )
         if approved is not None:
             consumed = await approvals.consume(approved.id, execution_id=execution_id)
             if consumed:

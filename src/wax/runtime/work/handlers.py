@@ -124,7 +124,9 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
             # authorizes one attempt — consumed here, so the action runs
             # exactly once per human decision (replay impossible).
             approved = await approvals.find_approved_unconsumed(
-                item.principal_id, fp
+                item.principal_id,
+                fp,
+                approval_ttl_seconds=services.settings.approval_expiry_seconds,
             )
             if approved is not None and await approvals.consume(
                 approved.id, execution_id=item.execution_id

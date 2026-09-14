@@ -37,7 +37,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
@@ -195,9 +195,17 @@ class ApprovalService:
         return result.scalar_one_or_none()
 
     async def find_approved_unconsumed(
-        self, principal_id: str, fingerprint: str
+        self,
+        principal_id: str,
+        fingerprint: str,
+        *,
+        approval_ttl_seconds: float = DEFAULT_EXPIRY_SECONDS,
     ) -> PendingApprovalRecord | None:
-        """An approved, unconsumed, unexpired approval for this request."""
+        """An approved, unconsumed, unexpired approval for this request.
+
+        The staleness window is the deployment's configured approval TTL
+        (WAX_APPROVAL_EXPIRY_SECONDS), not a module constant — callers pass
+        settings.approval_expiry_seconds so the runtime has one expiry law."""
         now = datetime.now(UTC)
         result = await self._session.execute(
             select(PendingApprovalRecord)
@@ -218,7 +226,7 @@ class ApprovalService:
             if decided is not None:
                 if decided.tzinfo is None:
                     decided = decided.replace(tzinfo=UTC)
-                if (now - decided) > timedelta(seconds=DEFAULT_EXPIRY_SECONDS):
+                if (now - decided) > timedelta(seconds=approval_ttl_seconds):
                     return None
         return record
 
@@ -244,15 +252,32 @@ class ApprovalService:
 
     async def consume(self, approval_id: str, *, execution_id: str | None) -> bool:
         """Consume an approved approval. Returns False if it was already
-        consumed (replay attempt) or is not in consumable state."""
+        consumed (replay attempt) or is not in consumable state.
+
+        The claim is a SINGLE CONDITIONAL UPDATE
+        (… WHERE status='approved' AND consumed_at IS NULL): the rowcount
+        decides who won. A read-then-write sequence here would let two
+        concurrent gate passes (live bridge + work handler, or two
+        replicas) both observe consumed_at IS NULL and both execute —
+        breaking the exactly-once-per-human-decision guarantee."""
+        result = await self._session.execute(
+            update(PendingApprovalRecord)
+            .where(
+                PendingApprovalRecord.id == approval_id,
+                PendingApprovalRecord.status == STATUS_APPROVED,
+                PendingApprovalRecord.consumed_at.is_(None),
+            )
+            .values(
+                consumed_at=datetime.now(UTC),
+                consumed_by_execution_id=execution_id,
+            )
+        )
+        if result.rowcount != 1:
+            return False
+
         record = await self.get(approval_id)
-        if record is None or record.status != STATUS_APPROVED:
+        if record is None:  # vanished mid-flight; the UPDATE already decided
             return False
-        if record.consumed_at is not None:
-            return False
-        record.consumed_at = datetime.now(UTC)
-        record.consumed_by_execution_id = execution_id
-        await self._session.flush()
         await record_audit_event(
             self._session,
             actor_principal_id=record.principal_id,
@@ -292,6 +317,16 @@ class ApprovalService:
 
         if record.status != STATUS_PENDING:
             raise ApprovalDecisionError(f"approval is {record.status}, not pending")
+
+        # EXPIRY: a request whose validity window has closed is dead even
+        # if the maintenance sweep has not reached it yet. Approving an
+        # expired request would let a stale authorization land.
+        expires_at = record.expires_at
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at < datetime.now(UTC):
+                raise ApprovalDecisionError("approval has expired")
 
         record.status = STATUS_APPROVED if approve else STATUS_DENIED
         record.decided_by = decided_by
