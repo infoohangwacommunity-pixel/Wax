@@ -118,6 +118,34 @@ class RuntimeMetrics:
         """A terminal.execute ran under the given isolation kind (P0-Terminal)."""
         self._registry.counter("terminal_executions_total", isolation=isolation).inc()
 
+    # --- Control plane (ADR-0048 dashboard) ----------------------------------
+
+    def control_handoff_submitted(self) -> None:
+        """An operator submitted a handoff through the control plane."""
+        self._registry.counter("control_handoffs_submitted_total").inc()
+
+    def control_blob_gc_run(self, *, removed: int, reclaimed_bytes: int) -> None:
+        """A blob GC sweep ran (operator-triggered or scheduled)."""
+        self._registry.counter("control_blob_gc_runs_total").inc()
+        self._registry.counter("control_blob_gc_removed_total").inc(float(removed))
+        self._registry.counter("control_blob_gc_reclaimed_bytes_total").inc(float(reclaimed_bytes))
+
+    def snapshot_counters(self) -> dict[str, float]:
+        """Aggregate counter totals by metric name (labels summed).
+
+        Feeds the dashboard's runtime-activity card: the operator sees a
+        compact pulse of what the runtime has been doing without exposing
+        the full registry (or its label cardinality). Registry keys are
+        ``name|k=v,k=v`` composites; the name part is recovered before
+        summing so label variants collapse into one total.
+        """
+        snap = self._registry.snapshot()
+        totals: dict[str, float] = {}
+        for key, entry in snap["counters"].items():
+            name = key.split("|", 1)[0]
+            totals[name] = totals.get(name, 0.0) + float(entry["value"])
+        return totals
+
     # --- Maintenance leadership ----------------------------------------------
 
     def maintenance_led(self) -> None:

@@ -45,6 +45,36 @@
     <label>Instructions for you</label>
     <pre class="instructions">{{ h.instructions }}</pre>
     {% endif %}
+
+    <label>Activity</label>
+    <ul class="timeline">
+      <li class="mute">
+        <div class="t-what">Requested</div>
+        <div class="t-when">{{ h.created_at or "—" }}</div>
+      </li>
+      {% if h.opened_at %}
+      <li class="info">
+        <div class="t-what">Opened by an operator</div>
+        <div class="t-when">{{ h.opened_at }}</div>
+      </li>
+      {% endif %}
+      {% if h.completed_at %}
+      <li class="done">
+        <div class="t-what">Completed — value encrypted &amp; stored</div>
+        <div class="t-when">{{ h.completed_at }}</div>
+      </li>
+      {% elif h.expired %}
+      <li class="bad">
+        <div class="t-what">Expired — challenge deadline passed</div>
+        <div class="t-when">{{ h.expires_at or "—" }}</div>
+      </li>
+      {% elif h.open %}
+      <li class="warn">
+        <div class="t-what">Awaiting the secret value</div>
+        <div class="t-when">expires {{ h.expires_at or "—" }}</div>
+      </li>
+      {% endif %}
+    </ul>
   </div>
 
   {% if h.submittable %}

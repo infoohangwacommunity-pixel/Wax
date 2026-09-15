@@ -511,3 +511,117 @@ class TestLoginRateLimit:
         finally:
             app.state.settings.control_plane_token = ""
             _login_limiter.reset()
+
+
+class TestHandoffTimeline:
+    async def test_timeline_shows_requested_and_awaiting_state(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        resp = await client.get(f"/control/handoffs/{handoff_id}")
+        assert resp.status_code == 200
+        assert "Activity" in resp.text
+        assert "Requested" in resp.text
+        assert "Awaiting the secret value" in resp.text
+        # Not yet opened on first render? It IS opened by this very view —
+        # the opened entry must exist with a timestamp.
+        assert "Opened by an operator" in resp.text
+
+    async def test_timeline_shows_completed_entry_after_submit(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        assert resp.status_code == 200
+        assert "Completed — value encrypted &amp; stored" in resp.text
+        assert "Awaiting the secret value" not in resp.text
+
+    async def test_timeline_shows_expired_entry(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            handoff.challenge_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            await s.commit()
+        resp = await client.get(f"/control/handoffs/{handoff_id}")
+        assert resp.status_code == 200
+        assert "Expired — challenge deadline passed" in resp.text
+
+
+class TestDashboardLivePolling:
+    async def test_poll_script_and_meta_refresh_both_rendered_while_open(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert 'http-equiv="refresh"' in resp.text  # no-JS fallback
+        assert 'meta[http-equiv="refresh"]' in resp.text  # JS removes it
+        assert "live-dot" in resp.text
+
+    async def test_no_poll_script_without_open_handoffs(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": "value-1"},
+        )
+        resp = await client.get("/control")
+        assert 'http-equiv="refresh"' not in resp.text
+        assert "setInterval" not in resp.text
+
+
+class TestDashboardRuntimeActivity:
+    async def test_quiet_state_without_services(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert "quiet — no activity recorded yet" in resp.text
+
+    async def test_counters_render_when_services_present(self, client, app):
+        if getattr(app.state, "services", None) is None:
+            from wax.runtime.services import RuntimeServices
+
+            app.state.services = RuntimeServices.build(app.state.settings)
+        app.state.services.metrics.capability_invoked("success", "test.capability")
+        app.state.services.metrics.terminal_executed(isolation="namespace")
+
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert "Capability invocations" in resp.text
+        assert "Terminal executions" in resp.text
+        assert "since process start" in resp.text
+
+    async def test_handoff_submission_increments_control_metric(self, client, app):
+        if getattr(app.state, "services", None) is None:
+            from wax.runtime.services import RuntimeServices
+
+            app.state.services = RuntimeServices.build(app.state.settings)
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        # The metrics registry is a process-global singleton — assert on
+        # the DELTA, never on an absolute value.
+        before = app.state.services.metrics.snapshot_counters()
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        assert resp.status_code == 200
+        after = app.state.services.metrics.snapshot_counters()
+        delta = after.get("control_handoffs_submitted_total", 0.0) - before.get(
+            "control_handoffs_submitted_total", 0.0
+        )
+        assert delta == 1.0
+
+
+class TestFooterVersion:
+    async def test_footer_shows_version_on_all_pages(self, client, app):
+        for url in ("/control", "/control/login"):
+            resp = await client.get(url)
+            assert "WAX Runtime v" in resp.text

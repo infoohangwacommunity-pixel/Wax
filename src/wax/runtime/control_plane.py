@@ -54,6 +54,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
+from wax import __version__ as _wax_version
 from wax.runtime.authority.contracts import (
     AuthorityStatus,
     HandoffStatus,
@@ -68,6 +69,20 @@ from wax.state.engine import db_session
 from wax.state.workspace_models import WorkspaceSnapshotRecord
 
 log = get_logger(__name__)
+
+# Metrics names surfaced on the dashboard's runtime-activity card,
+# in display order. Only counters that EXIST are rendered — a quiet
+# runtime shows an honest "quiet" state, never fabricated numbers.
+_DASHBOARD_COUNTERS = (
+    ("bridge_messages_total", "Messages processed"),
+    ("capability_invocations_total", "Capability invocations"),
+    ("code_executions_total", "Code executions"),
+    ("terminal_executions_total", "Terminal executions"),
+    ("control_handoffs_submitted_total", "Handoffs submitted"),
+    ("control_blob_gc_removed_total", "GC objects removed"),
+    ("approvals_requested_total", "Approvals requested"),
+    ("work_items_processed_total", "Work items processed"),
+)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -381,8 +396,11 @@ def register_control_plane(app) -> None:
                 "dev_open": auth.dev_open,
                 "blob_objects": blob_stats["objects"] if blob_stats else None,
                 "blob_bytes": blob_stats["bytes"] if blob_stats else None,
+                "blob_gc_enabled": bool(getattr(settings, "blob_gc_enabled", False)),
                 "gc_result": gc_result,
                 "gc_csrf": auth.make_csrf("gc") if blob_stats is not None else "",
+                "runtime_counters": _runtime_counters(app),
+                "wax_version": _wax_version,
             },
         )
 
@@ -402,7 +420,11 @@ def register_control_plane(app) -> None:
                 },
                 status_code=503,
             )
-        return _html_response(request, "login.html", {"dev_open": auth.dev_open})
+        return _html_response(
+            request,
+            "login.html",
+            {"dev_open": auth.dev_open, "wax_version": _wax_version},
+        )
 
     @app.post("/control/login", tags=["control"], include_in_schema=False)
     async def control_login(request: Request):
@@ -494,7 +516,12 @@ def register_control_plane(app) -> None:
         return _html_response(
             request,
             "handoff_detail.html",
-            {"h": view, "csrf": csrf, "material_labels": _material_choices(view["kind"])},
+            {
+                "h": view,
+                "csrf": csrf,
+                "material_labels": _material_choices(view["kind"]),
+                "wax_version": _wax_version,
+            },
         )
 
     @app.post("/control/handoffs/{handoff_id}/submit", tags=["control"], include_in_schema=False)
@@ -528,6 +555,7 @@ def register_control_plane(app) -> None:
                         "h": view,
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
+                        "wax_version": _wax_version,
                         "error": "Session expired — the form token is stale. Please submit again.",
                     },
                     status_code=403,
@@ -542,6 +570,7 @@ def register_control_plane(app) -> None:
                         "h": view,
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
+                        "wax_version": _wax_version,
                         "error": "The value must not be empty.",
                     },
                     status_code=400,
@@ -585,6 +614,7 @@ def register_control_plane(app) -> None:
                         "h": view,
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
+                        "wax_version": _wax_version,
                         "error": str(e),
                     },
                     status_code=400,
@@ -593,6 +623,9 @@ def register_control_plane(app) -> None:
         # SUCCESS: the secret is already encrypted. From here on only
         # opaque handles exist — the submitted value is NEVER echoed.
         log.info("control.handoff_submitted", handoff_id=handoff_id)
+        metrics = getattr(getattr(app.state, "services", None), "metrics", None)
+        if metrics is not None:
+            metrics.control_handoff_submitted()
         return _redirect(f"/control/handoffs/{handoff_id}?submitted=1")
 
     @app.post("/control/maintenance/gc", tags=["control"], include_in_schema=False)
@@ -632,6 +665,11 @@ def register_control_plane(app) -> None:
                             live.add(digest)
 
         gc = blob_store.collect_garbage(live)
+        metrics = getattr(getattr(app.state, "services", None), "metrics", None)
+        if metrics is not None:
+            metrics.control_blob_gc_run(
+                removed=gc["removed"], reclaimed_bytes=gc["reclaimed_bytes"]
+            )
         log.info("control.gc_run", removed=gc["removed"], reclaimed_bytes=gc["reclaimed_bytes"])
         return _redirect(f"/control?gc={gc['removed']}:{gc['reclaimed_bytes']}")
 
@@ -654,6 +692,25 @@ def _parse_gc_flash(value: str) -> dict[str, Any] | None:
         if removed_s.isdigit() and bytes_s.isdigit():
             return {"kind": "ok", "removed": int(removed_s), "reclaimed_bytes": int(bytes_s)}
     return None
+
+
+def _runtime_counters(app) -> list[tuple[str, float]]:
+    """Dashboard runtime-activity rows: (label, value) for counters that
+    exist. Aggregation sums label variants so the card stays compact."""
+    metrics = getattr(getattr(app.state, "services", None), "metrics", None)
+    if metrics is None:
+        return []
+    try:
+        totals = metrics.snapshot_counters()
+    except Exception:
+        log.warning("control.metrics_snapshot_failed")
+        return []
+    rows: list[tuple[str, float]] = []
+    for name, label in _DASHBOARD_COUNTERS:
+        value = totals.get(name)
+        if value:
+            rows.append((label, value))
+    return rows
 
 
 def _blob_stats(app) -> dict[str, int] | None:
@@ -730,6 +787,7 @@ def _handoff_view(h: HumanHandoffRecord) -> dict[str, Any]:
         "actions": [a for a in actions if a],
         "created_at": _fmt_dt(h.created_at_col or h.created_at),
         "created_rel": _rel_dt(h.created_at_col or h.created_at),
+        "opened_at": _fmt_dt(h.opened_at),
         "expires_at": _fmt_dt(h.challenge_expires_at),
         "completed_at": _fmt_dt(h.completed_at),
         "evidence": h.completion_evidence_json or {},

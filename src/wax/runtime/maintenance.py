@@ -123,6 +123,41 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
         if archived:
             log.info("runtime.conversation_lifecycle_pass", count=archived)
 
+        # 5. Blob-store garbage collection (OPT-IN via WAX_BLOB_GC_ENABLED).
+        # Deletion is an explicit operator decision, never a silent
+        # default: when the gate is off this sweep does nothing at all.
+        # When enabled, blobs no longer referenced by ANY live workspace
+        # snapshot are unreachable by construction and their disk space
+        # is reclaimed (the blob store refuses everything else).
+        results["blob_gc"] = {"skipped": "disabled"}
+        if getattr(settings, "blob_gc_enabled", False) and services is not None:
+            from sqlalchemy import select
+
+            from wax.state.workspace_models import WorkspaceSnapshotRecord
+
+            blob_store = getattr(services, "blob_store", None)
+            if blob_store is not None:
+                async with db_session() as session:
+                    rows = await session.execute(select(WorkspaceSnapshotRecord.files_json))
+                    await session.commit()
+                live: set[str] = set()
+                for files in rows.scalars():
+                    if isinstance(files, list):
+                        for entry in files:
+                            if isinstance(entry, dict):
+                                digest = entry.get("sha256")
+                                if isinstance(digest, str) and digest:
+                                    live.add(digest)
+                gc = blob_store.collect_garbage(live)
+                results["blob_gc"] = gc
+                _metric().control_blob_gc_run(
+                    removed=gc["removed"], reclaimed_bytes=gc["reclaimed_bytes"]
+                )
+                if gc["removed"]:
+                    log.info("runtime.blob_gc_pass", **gc)
+            else:
+                results["blob_gc"] = {"skipped": "no_blob_store"}
+
         _metric().maintenance_led()
         if results["expired_approvals"] or pruned or results["delivery_retries"].get("due", 0):
             log.info("runtime.maintenance_pass", **results)

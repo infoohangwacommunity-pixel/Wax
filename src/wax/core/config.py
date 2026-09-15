@@ -128,6 +128,14 @@ class WaxSettings(BaseSettings):
     # require this token (Authorization: Bearer, X-Control-Token, ?token=
     # or the session cookie issued after login).
     control_plane_token: str = ""
+    # Scheduled blob-store garbage collection (runtime maintenance pass).
+    # OFF by default: deletion is an explicit operator decision, never a
+    # silent default. When enabled, the maintenance pass sweeps blobs no
+    # longer referenced by any live workspace snapshot.
+    blob_gc_enabled: bool = False
+    # How often the maintenance pass runs; the GC sweep rides on it. The
+    # pass itself has its own cadence; this only gates whether GC participates.
+    blob_gc_interval_seconds: int = 3600
     # Maximum active provisioned resources per principal (Phase S limit).
     provisioning_max_active_per_principal: int = 5
     # Character budget for evidence assembly (~4 chars/token). The runtime

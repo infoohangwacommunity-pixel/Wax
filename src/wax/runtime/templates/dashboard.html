@@ -12,7 +12,7 @@
   {% endif %}
 
   {% if gc_result %}
-  <div class="gc-flash">
+  <div class="gc-flash" aria-live="polite">
     {% if gc_result.kind == "ok" %}
     <div class="ok-note">Garbage collection finished: removed <strong>{{ gc_result.removed }}</strong>
     unreferenced blob{{ "s" if gc_result.removed != 1 }}, reclaimed
@@ -31,7 +31,7 @@
     </div>
     <div class="card ok">
       <div class="k">Active authority grants</div>
-      <div class="v{% if active_grants == 0 %}{{ "" }}{% else %} ok{% endif %}">{{ active_grants }}</div>
+      <div class="v">{{ active_grants }}</div>
       <div class="sub">live delegations</div>
     </div>
     <div class="card info">
@@ -43,7 +43,20 @@
         n/a
         {% endif %}
       </div>
-      <div class="sub">content-addressed store</div>
+      <div class="sub">content-addressed · scheduled GC {{ "on" if blob_gc_enabled else "off" }}</div>
+    </div>
+    <div class="card">
+      <div class="k">Runtime activity</div>
+      <div class="metric-rows">
+        {% if runtime_counters %}
+        {% for label, value in runtime_counters[:4] %}
+        <div class="m-row"><span class="m-label">{{ label }}</span><span class="m-value">{{ value | int }}</span></div>
+        {% endfor %}
+        {% else %}
+        <span class="m-empty">quiet — no activity recorded yet</span>
+        {% endif %}
+      </div>
+      <div class="sub">since process start</div>
     </div>
     <div class="card">
       <div class="k">Runtime</div>
@@ -55,7 +68,7 @@
   <div class="section-head">
     <h2>Human handoffs</h2>
     <span class="note">
-      {% if open_count > 0 %}auto-refreshes every 15s while handoffs are open{% else %}showing latest 50{% endif %}
+      {% if open_count > 0 %}<span class="live-dot" id="live-dot" aria-hidden="true"></span>auto-refreshes every 15s while handoffs are open{% else %}showing latest 50{% endif %}
     </span>
   </div>
 
@@ -94,7 +107,7 @@
     </thead>
     <tbody>
       {% for h in handoffs %}
-      <tr>
+      <tr class="{% if h.display_status == "completed" %}row-completed{% elif h.display_status == "expired" %}row-expired{% endif %}">
         <td class="mono nowrap"><a class="link" href="/control/handoffs/{{ h.id }}" title="{{ h.id }}">{{ h.id[:12] }}…</a></td>
         <td class="truncate" title="{{ h.purpose }}">{{ h.purpose }}</td>
         <td><span class="kind">{{ h.kind }}</span></td>
@@ -115,5 +128,40 @@
     No handoffs match the <strong>{{ status_filter }}</strong> filter.
     {% endif %}
   </div>
+  {% endif %}
+
+  {% if open_count > 0 %}
+  <script>
+    // Live polling: replaces the meta-refresh fallback with same-origin
+    // fetch + DOM patching (no full page reload — scroll, focus and the
+    // fresh per-render CSRF are preserved). If JavaScript is disabled the
+    // meta refresh tag stays and the page still updates. The script is
+    // rendered inside <main>; after the first patch the server-rendered
+    // copy disappears (innerHTML scripts never execute), while THIS
+    // interval keeps running — so there is always exactly one poller.
+    (function () {
+      var meta = document.querySelector('meta[http-equiv="refresh"]');
+      if (meta) meta.remove();
+      var INTERVAL = 15000;
+      function patch() {
+        if (document.hidden) return;
+        fetch(location.href, { headers: { "Accept": "text/html" } })
+          .then(function (r) { return r.ok ? r.text() : null; })
+          .then(function (html) {
+            if (!html) return;
+            var doc = new DOMParser().parseFromString(html, "text/html");
+            var fresh = doc.querySelector("main");
+            var current = document.querySelector("main");
+            if (fresh && current) {
+              current.innerHTML = fresh.innerHTML;
+              var dot = document.getElementById("live-dot");
+              if (dot) dot.classList.add("on");
+            }
+          })
+          .catch(function () { /* transient failure — retry next tick */ });
+      }
+      setInterval(patch, INTERVAL);
+    })();
+  </script>
   {% endif %}
 {% endblock %}
