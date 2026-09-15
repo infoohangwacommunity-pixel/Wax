@@ -387,6 +387,16 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         }
 
     # -------------------------------------------------------------------
+    # ADR-0048: secure control plane (server-rendered same-origin
+    # dashboard). The human handoff surface — dashboard home, operator
+    # login, handoff detail + submit. Registered as its own module so the
+    # composition root stays wiring-only.
+    # -------------------------------------------------------------------
+    from wax.runtime.control_plane import register_control_plane
+
+    register_control_plane(app)
+
+    # -------------------------------------------------------------------
     # WhatsApp webhook endpoints (Phase Q)
     # -------------------------------------------------------------------
     @app.get("/webhooks/whatsapp", tags=["webhook"])

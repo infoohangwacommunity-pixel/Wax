@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sign in — WAX Control Plane{% endblock %}
+{% block content %}
+  <div class="panel" style="max-width:460px;margin:48px auto 0">
+    <h2 style="margin:0 0 6px;font-size:17px">Operator sign-in</h2>
+    <p class="muted" style="margin:0;font-size:13.5px">
+      Enter the deployment's control-plane access token
+      (<span class="mono">WAX_CONTROL_PLANE_TOKEN</span>). A signed, HttpOnly session
+      cookie will be issued; the token itself is not stored in the browser.
+    </p>
+    {% if dev_open %}
+    <div class="banner" style="margin-top:16px">
+      <strong>Development mode:</strong> no token is configured — you can proceed without signing in.
+    </div>
+    {% endif %}
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/control/login" autocomplete="off">
+      <label for="token">Access token</label>
+      <input type="password" id="token" name="token" autocomplete="off" spellcheck="false" autofocus>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+{% endblock %}

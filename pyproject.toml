@@ -15,6 +15,9 @@ dependencies = [
     # --- Validation / contracts ---
     "pydantic>=2.9.0",
     "pydantic-settings>=2.5.0",
+    # --- Server-rendered control plane (ADR-0048) ---
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",  # form parsing for the control-plane POST endpoints
     # --- Persistence ---
     "sqlalchemy[asyncio]>=2.0.35",
     "alembic>=1.13.0",

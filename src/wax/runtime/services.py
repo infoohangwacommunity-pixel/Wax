@@ -32,9 +32,11 @@ from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
 from wax.runtime.authority.broker import AuthorityBroker
+from wax.runtime.blob_store import ContentAddressedBlobStore
 from wax.runtime.connectors.service import ConnectorRuntime
 from wax.runtime.delivery import DeliveryRouter
 from wax.runtime.environment.planner import EnvironmentPlanner
+from wax.runtime.isolation_runtime import RuntimeIsolation
 from wax.runtime.logging import get_logger
 from wax.runtime.vault.service import CredentialVault
 from wax.security.abuse import AbuseDetector
@@ -93,6 +95,14 @@ class RuntimeServices:
     # NEVER supplies a raw secret — it requests a handoff; the user
     # completes it through the secure control plane.
     authority_broker: AuthorityBroker | None = field(default=None)
+    # P0-Workspace: content-addressed blob store. workspace.snapshot
+    # persists file bytes here so workspace.restore works even after the
+    # source workspace has been released and deleted.
+    blob_store: ContentAddressedBlobStore | None = field(default=None)
+    # P0-Terminal: shared isolation decision. code.run and terminal.execute
+    # BOTH route through this — the isolation grade is a runtime decision
+    # from configuration, never the caller's, never the model's.
+    isolation_runtime: RuntimeIsolation | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
@@ -146,11 +156,19 @@ class RuntimeServices:
             credential_vault=CredentialVault(settings),
             connector_runtime=ConnectorRuntime(settings),
             authority_broker=AuthorityBroker(),
+            blob_store=ContentAddressedBlobStore(settings.snapshot_blob_root),
+            isolation_runtime=RuntimeIsolation(settings),
         )
         # Runtime mechanisms exposed to the AI as capabilities
         # (work.schedule / work.cancel / work.list / message.send) —
         # registered after construction so they close over this container.
         register_runtime_capabilities(registry, services)
+        # P0-Browser: browser handoff capability (browser.handoff) —
+        # a human completes a browser step; the runtime stores a
+        # browser_session_reference, never a raw credential in the model.
+        from wax.capabilities.browser_capabilities import register_browser_capabilities
+
+        register_browser_capabilities(registry, services)
         log.info(
             "runtime.services.built",
             capabilities=len(registry),

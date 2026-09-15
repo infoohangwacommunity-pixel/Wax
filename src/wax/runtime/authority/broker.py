@@ -108,6 +108,24 @@ class AuthorityBroker:
         challenge_hash = hashlib.sha256(challenge.encode()).hexdigest()
         challenge_expires = datetime.now(UTC) + timedelta(minutes=15)
 
+        # P0-Browser: the handoff kind decides what the control plane asks
+        # the human for — a credential ("secret") or a browser session
+        # reference ("browser"). Unknown kinds are refused loudly (never
+        # silently downgraded to a secret prompt).
+        handoff_kind = (request.handoff_kind or "secret").strip().lower()
+        if handoff_kind not in ("secret", "browser"):
+            raise ValueError(f"unknown handoff kind: {request.handoff_kind!r}")
+
+        if request.instructions_text:
+            instructions = request.instructions_text.strip()[:4000]
+        else:
+            instructions = (
+                f"A secure authority step is waiting.\n"
+                f"Purpose: {request.purpose}\n"
+                f"Open the WAX control panel to complete this step.\n"
+                f"The value you enter will be encrypted immediately and never displayed again."
+            )
+
         handoff = HumanHandoffRecord(
             id=str(ULID()),
             principal_id=principal_id,
@@ -115,13 +133,11 @@ class AuthorityBroker:
             execution_id=execution_id,
             origin_reference=request.origin_reference,
             purpose=request.purpose,
-            requested_actions_json={"actions": request.requested_actions},
-            instructions_text=(
-                f"A secure authority step is waiting.\n"
-                f"Purpose: {request.purpose}\n"
-                f"Open the WAX control panel to complete this step.\n"
-                f"The value you enter will be encrypted immediately and never displayed again."
-            ),
+            requested_actions_json={
+                "actions": request.requested_actions,
+                "handoff_kind": handoff_kind,
+            },
+            instructions_text=instructions,
             status=HandoffStatus.PENDING.value,
             challenge_hash=challenge_hash,
             challenge_expires_at=challenge_expires,
@@ -178,8 +194,34 @@ class AuthorityBroker:
             raise ValueError(f"No such handoff: {handoff_id}")
         if handoff.principal_id != principal_id:
             raise ValueError("handoff belongs to a different principal")
-        if handoff.status not in (HandoffStatus.PENDING.value, HandoffStatus.AWAITING_HUMAN.value):
+        # OPENED is accepted: the control plane marks a handoff opened when
+        # the human views it — that is still a submittable state.
+        if handoff.status not in (
+            HandoffStatus.PENDING.value,
+            HandoffStatus.OPENED.value,
+            HandoffStatus.AWAITING_HUMAN.value,
+        ):
             raise ValueError(f"handoff is {handoff.status}; cannot submit")
+
+        # The material type must MATCH the handoff kind: a browser handoff
+        # yields a browser session reference, a secret handoff yields an
+        # opaque secret (or session material / delegated grant).
+        handoff_kind = "secret"
+        if isinstance(handoff.requested_actions_json, dict):
+            handoff_kind = handoff.requested_actions_json.get("handoff_kind", "secret")
+        allowed_material_types = {
+            "secret": {
+                MaterialType.OPAQUE_SECRET.value,
+                MaterialType.SESSION_MATERIAL.value,
+                MaterialType.DELEGATED_GRANT.value,
+            },
+            "browser": {MaterialType.BROWSER_SESSION_REFERENCE.value},
+        }
+        if material_type not in allowed_material_types.get(handoff_kind, set()):
+            raise ValueError(
+                f"material_type {material_type!r} does not match this handoff's kind "
+                f"({handoff_kind!r})"
+            )
 
         # Check challenge expiry
         if handoff.challenge_expires_at is not None:
@@ -324,6 +366,10 @@ class AuthorityBroker:
                     result["authority_ref"] = grant.handle
                     result["grant_status"] = grant.status
                     result["grant_expires_at"] = grant.expires_at.isoformat()
+                # P0-Browser: report WHAT kind of material was stored so
+                # the intelligence can reason about the reference it holds
+                # (e.g. a browser_session_reference vs an opaque secret).
+                result["material_type"] = material.material_type
 
         return result
 

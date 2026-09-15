@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — WAX Control Plane{% endblock %}
+{% block content %}
+  {% if dev_open %}
+  <div class="banner">
+    <strong>Development mode:</strong> no access token is configured, so this dashboard is open to
+    anyone who can reach it. Set <span class="mono">WAX_CONTROL_PLANE_TOKEN</span> before any
+    non-development use. Production deployments refuse to serve this page without a token.
+  </div>
+  {% endif %}
+
+  <div class="cards">
+    <div class="card">
+      <div class="k">Open handoffs</div>
+      <div class="v">{{ open_count }}</div>
+    </div>
+    <div class="card">
+      <div class="k">Active authority grants</div>
+      <div class="v">{{ active_grants }}</div>
+    </div>
+    <div class="card">
+      <div class="k">Environment</div>
+      <div class="v small">{{ env }}</div>
+    </div>
+    <div class="card">
+      <div class="k">Isolation backend</div>
+      <div class="v small">{{ isolation_backend }}</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:16px;margin:0 0 12px">Human handoffs</h2>
+  {% if handoffs %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Purpose</th><th>Kind</th><th>Status</th><th>Created</th><th>Expires</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in handoffs %}
+      <tr>
+        <td class="mono"><a class="link" href="/control/handoffs/{{ h.id }}">{{ h.id[:12] }}…</a></td>
+        <td class="truncate" title="{{ h.purpose }}">{{ h.purpose }}</td>
+        <td><span class="kind">{{ h.kind }}</span></td>
+        <td><span class="badge {{ h.status }}">{{ h.status }}</span></td>
+        <td class="mono muted">{{ h.created_at or "—" }}</td>
+        <td class="mono muted">{{ h.expires_at or "—" }}</td>
+        <td><a class="link" href="/control/handoffs/{{ h.id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No human handoffs yet. When the intelligence needs external authority, the request appears here.</div>
+  {% endif %}
+{% endblock %}

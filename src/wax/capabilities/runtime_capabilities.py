@@ -1082,8 +1082,6 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     async def terminal_execute_impl(
         inputs: dict[str, Any], ctx: InvocationContext
     ) -> dict[str, Any]:
-        import asyncio
-        import os
         from datetime import UTC, datetime
 
         from wax.state.engine import db_session
@@ -1126,10 +1124,15 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     await session.commit()
                     raise ValueError("session has expired")
 
-            # Execute the command in a subprocess with process group
-            # (governed by the session's environment lease — workspace +
-            # isolation boundary are inherited from the environment).
-            # SECURITY (P0-3): DO NOT inherit os.environ
+            # Execute the command through the RUNTIME'S ISOLATION DECISION
+            # (P0-Terminal). Historically this path spawned a raw
+            # `asyncio.create_subprocess_shell` and bypassed
+            # IsolationService entirely — no sandbox, no rlimits, only a
+            # scrubbed env. Now it routes through the same boundary as
+            # code.run: the namespace sandbox when the host supports it,
+            # the (loudly degraded) subprocess boundary otherwise.
+            # SECURITY: the env below stays scrubbed — no os.environ
+            # inheritance — and the boundary applies its own filter on top.
             env = {
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/tmp",
@@ -1150,48 +1153,47 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     if ws and ws.uri:
                         cwd = ws.uri
 
+            # The isolation grade is a runtime decision from configuration —
+            # shared with code.run via RuntimeServices (never the model's).
+            if services.isolation_runtime is None:
+                from wax.runtime.isolation_runtime import RuntimeIsolation
+
+                services.isolation_runtime = RuntimeIsolation(services.settings)
+            isolation_service, isolation_kind = services.isolation_runtime.select()
+            boundary = isolation_service.boundary
+
+            from wax.isolation.contracts import IsolationRequest
+
             try:
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                    cwd=cwd,
-                    preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout_seconds
+                result = await boundary.execute(
+                    IsolationRequest(
+                        code=command,
+                        language="shell",
+                        timeout_seconds=timeout_seconds,
+                        max_output_bytes=max_output_bytes,
+                        env=env,
+                        working_dir=cwd,
+                        # Resource-governance rlimits (anti-bomb budgets).
+                        memory_limit_mb=int(services.settings.isolation_memory_limit_mb),
+                        max_processes=int(services.settings.isolation_max_processes),
+                        max_file_bytes=int(services.settings.isolation_max_file_bytes),
                     )
-                    timed_out = False
-                except TimeoutError:
-                    # Kill the entire process group
-                    if hasattr(os, "killpg"):
-                        import contextlib
-
-                        with contextlib.suppress(ProcessLookupError):
-                            os.killpg(os.getpgid(proc.pid), 9)
-                    await proc.wait()
-                    stdout = b""
-                    stderr = b"command timed out"
-                    timed_out = True
-
-                # Truncate output
-                stdout_str = stdout.decode("utf-8", errors="replace")[:max_output_bytes]
-                stderr_str = stderr.decode("utf-8", errors="replace")[:max_output_bytes]
-                truncated = len(stdout) > max_output_bytes or len(stderr) > max_output_bytes
+                )
 
                 record.last_command_at = datetime.now(UTC)
-                record.last_exit_code = proc.returncode if proc.returncode is not None else -1
+                record.last_exit_code = result.exit_code
                 await session.commit()
 
+                services.metrics.terminal_executed(isolation=isolation_kind)
+
                 return {
-                    "exit_code": record.last_exit_code,
-                    "stdout": stdout_str,
-                    "stderr": stderr_str,
-                    "timed_out": timed_out,
-                    "truncated": truncated,
-                    "duration_ms": 0,  # not measured here for simplicity
+                    "exit_code": result.exit_code,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "timed_out": result.timed_out,
+                    "truncated": result.truncated,
+                    "duration_ms": result.duration_ms,
+                    "isolation": result.isolation_kind or isolation_kind,
                 }
             except Exception as e:
                 record.status = "failed"
@@ -1550,15 +1552,28 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
             files: list[dict[str, Any]] = []
             total_bytes = 0
+            blob_store = services.blob_store
             for root, _dirs, filenames in os.walk(workspace_path):
                 for fname in filenames:
                     fpath = Path(root) / fname
                     rel_path = str(fpath.relative_to(workspace_path))
                     try:
-                        size = fpath.stat().st_size
-                        with open(fpath, "rb") as f:
-                            sha = hashlib.sha256(f.read()).hexdigest()
-                        files.append({"path": rel_path, "sha256": sha, "size": size})
+                        if blob_store is not None:
+                            # Content-addressed capture: the file's bytes are
+                            # persisted into the blob store NOW, keyed by
+                            # sha256. Restore then works even after the
+                            # source workspace is released and deleted.
+                            sha, size = blob_store.put_file(fpath)
+                            files.append(
+                                {"path": rel_path, "sha256": sha, "size": size, "stored": True}
+                            )
+                        else:
+                            # No blob store wired (legacy container): record
+                            # metadata only, honestly.
+                            size = fpath.stat().st_size
+                            with open(fpath, "rb") as f:
+                                sha = hashlib.sha256(f.read()).hexdigest()
+                            files.append({"path": rel_path, "sha256": sha, "size": size})
                         total_bytes += size
                     except OSError:
                         pass  # skip unreadable files
@@ -1615,6 +1630,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     async def workspace_restore_impl(
         inputs: dict[str, Any], ctx: InvocationContext
     ) -> dict[str, Any]:
+        import hashlib
         from pathlib import Path
 
         from wax.state.engine import db_session
@@ -1644,34 +1660,93 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 raise ValueError(f"target workspace is {target.status}")
 
             target_path = Path(target.uri)
-            # Resolve the source workspace (where the snapshot was taken)
+            # Resolve the source workspace (where the snapshot was taken).
+            # With content-addressed storage this is only a FALLBACK path
+            # for legacy snapshots that captured metadata without blobs.
             source = await session.get(ProvisionedResourceRecord, snapshot.workspace_resource_id)
             source_path = (
                 Path(source.uri) if source and source.status == "active" and source.uri else None
             )
 
+            blob_store = services.blob_store
+
             restored_files = 0
             restored_bytes = 0
             skipped_files = 0
+            integrity_failures = 0
+            from_blob = 0
+            from_source = 0
             for file_entry in snapshot.files_json:
                 rel_path = file_entry["path"]
+                digest = file_entry.get("sha256", "")
                 # SECURITY: use the central path containment utility
-                from wax.security.path_containment import resolve_workspace_path
+                from wax.security.path_containment import (
+                    PathContainmentError,
+                    resolve_workspace_path,
+                )
 
-                target_file = resolve_workspace_path(target_path, rel_path)
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-
-                # If the source workspace still exists, copy real bytes
-                if source_path is not None:
-                    source_file = resolve_workspace_path(source_path, rel_path, must_exist=True)
-                    import shutil
-
-                    shutil.copy2(str(source_file), str(target_file))
-                    restored_bytes += file_entry.get("size", 0)
-                else:
-                    # Source workspace is gone — cannot restore real bytes
-                    target_file.touch()
+                try:
+                    target_file = resolve_workspace_path(target_path, rel_path)
+                except PathContainmentError:
+                    # A hostile/corrupt snapshot entry must never make us
+                    # write outside the target workspace.
+                    log.warning("workspace.restore.containment_violation", path=rel_path[:200])
                     skipped_files += 1
+                    continue
+
+                # 1) Content-addressed blob (P0-Workspace): restore real
+                #    bytes even when the source workspace is long gone.
+                #    copy_to verifies the sha256 before/while writing.
+                if blob_store is not None and digest and blob_store.has(digest):
+                    try:
+                        copied = blob_store.copy_to(digest, target_file)
+                        restored_files += 1
+                        restored_bytes += copied
+                        from_blob += 1
+                        continue
+                    except Exception as e:  # BlobStoreError / OSError
+                        log.warning(
+                            "workspace.restore.blob_failed",
+                            path=rel_path[:200],
+                            error=str(e)[:200],
+                        )
+                        integrity_failures += 1
+                        skipped_files += 1
+                        continue
+
+                # 2) Legacy fallback: copy from the source workspace if it
+                #    still exists — and VERIFY the bytes against the
+                #    recorded digest (honesty, not blind copying).
+                if source_path is not None:
+                    try:
+                        source_file = resolve_workspace_path(source_path, rel_path, must_exist=True)
+                        import shutil
+
+                        shutil.copy2(str(source_file), str(target_file))
+                        with open(target_file, "rb") as f:
+                            actual = hashlib.sha256(f.read()).hexdigest()
+                        if digest and actual != digest:
+                            integrity_failures += 1
+                            skipped_files += 1
+                            continue
+                        restored_files += 1
+                        restored_bytes += file_entry.get("size", 0)
+                        from_source += 1
+                        continue
+                    except PathContainmentError:
+                        log.warning(
+                            "workspace.restore.source_containment_violation",
+                            path=rel_path[:200],
+                        )
+                        skipped_files += 1
+                        continue
+                    except OSError:
+                        pass  # fall through to the honest empty-file path
+
+                # 3) Nothing available — create an empty file and count it
+                #    honestly as skipped (incomplete restore).
+                target_file.touch()
+                skipped_files += 1
                 restored_files += 1
 
             await session.commit()
@@ -1680,7 +1755,10 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "restored_files": restored_files,
             "total_bytes": restored_bytes,
             "skipped_files": skipped_files,
-            "complete": skipped_files == 0,
+            "complete": skipped_files == 0 and integrity_failures == 0,
+            "from_blob": from_blob,
+            "from_source_workspace": from_source,
+            "integrity_failures": integrity_failures,
         }
 
     async def workspace_promote_impl(
@@ -1710,7 +1788,6 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         inputs: dict[str, Any], ctx: InvocationContext
     ) -> dict[str, Any]:
         import hashlib
-        from pathlib import Path
 
         from ulid import ULID
 
@@ -1739,9 +1816,21 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             if resource.status != "active":
                 raise ValueError(f"workspace is {resource.status}")
 
-            file_path = Path(resource.uri) / path
-            if not file_path.exists():
-                raise ValueError(f"file does not exist: {path}")
+            # SECURITY (P0-containment): the path is model-supplied, so it is
+            # resolved through the CENTRAL containment utility. A raw
+            # `Path(resource.uri) / path` join would let "../x" escape the
+            # workspace and hash arbitrary host files into an artifact.
+            from wax.security.path_containment import (
+                PathContainmentError,
+                resolve_workspace_path,
+            )
+
+            try:
+                file_path = resolve_workspace_path(resource.uri, path, must_exist=True)
+            except PathContainmentError as e:
+                # Re-wrap so the model-facing error explains the policy.
+                raise ValueError(f"path rejected by containment policy: {e}") from e
+
             size = file_path.stat().st_size
             with open(file_path, "rb") as f:
                 sha = hashlib.sha256(f.read()).hexdigest()
@@ -1827,7 +1916,6 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         inputs: dict[str, Any], ctx: InvocationContext
     ) -> dict[str, Any]:
         import hashlib
-        from pathlib import Path
 
         from wax.state.artifact_models import ArtifactRecord
         from wax.state.engine import db_session
@@ -1844,22 +1932,41 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             if artifact.principal_id != ctx.principal_id:
                 raise ValueError("artifact belongs to a different principal")
 
-            # Re-verify integrity if the file still exists
+            # Re-verify integrity if the file still exists. The stored path
+            # is re-resolved through containment on EVERY retrieve: if a
+            # hostile/corrupt record ever stored an escaping path, the
+            # retrieval refuses to touch it (defence in depth).
             integrity_verified = False
+            containment_error: str | None = None
             if artifact.workspace_resource_id:
+                from wax.security.path_containment import (
+                    PathContainmentError,
+                    resolve_workspace_path,
+                )
+
                 resource = await session.get(
                     ProvisionedResourceRecord, artifact.workspace_resource_id
                 )
                 if resource and resource.status == "active" and resource.uri:
-                    file_path = Path(resource.uri) / artifact.path
-                    if file_path.exists():
+                    try:
+                        file_path = resolve_workspace_path(
+                            resource.uri, artifact.path, must_exist=True
+                        )
                         with open(file_path, "rb") as f:
                             actual_sha = hashlib.sha256(f.read()).hexdigest()
                         integrity_verified = actual_sha == artifact.sha256
+                    except PathContainmentError as e:
+                        # The stored path escapes the workspace — refuse to
+                        # read it, report honestly, never raise a raw host path.
+                        containment_error = str(e)
+                        log.warning(
+                            "artifact.retrieve.containment_violation",
+                            artifact_id=artifact.id,
+                        )
 
             await session.commit()
 
-        return {
+        result: dict[str, Any] = {
             "artifact": {
                 "artifact_id": artifact.id,
                 "filename": artifact.filename,
@@ -1871,6 +1978,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             },
             "integrity_verified": integrity_verified,
         }
+        if containment_error is not None:
+            result["containment_violation"] = True
+        return result
 
     registry.register(WORKSPACE_SNAPSHOT_DESCRIPTOR, workspace_snapshot_impl)
     registry.register(WORKSPACE_RESTORE_DESCRIPTOR, workspace_restore_impl)

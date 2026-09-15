@@ -232,11 +232,16 @@ class ArtifactAcquirer:
             raise AcquisitionError("filename must be 1-128 characters of [A-Za-z0-9._-]")
 
         workspace = Path(workspace_path)
-        # Containment: the destination is inside the verified workspace and
-        # the workspace's own root is what the caller proved ownership of.
-        dest = workspace / filename
-        if not str(dest.resolve()).startswith(str(workspace.resolve())):
-            raise AcquisitionError("destination escapes the workspace")
+        # Containment (P0-containment): the destination is resolved through
+        # the CENTRAL path-containment utility — the same one every other
+        # workspace capability uses — instead of a hand-rolled prefix check.
+        # It rejects absolute paths, `..` traversal, and escaping symlinks.
+        from wax.security.path_containment import PathContainmentError, resolve_workspace_path
+
+        try:
+            dest = resolve_workspace_path(workspace, filename)
+        except PathContainmentError as e:
+            raise AcquisitionError(f"destination escapes the workspace: {e}") from e
 
         cache_hit = False
         cached = self._verify_cached(sha256)

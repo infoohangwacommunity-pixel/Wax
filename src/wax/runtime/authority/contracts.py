@@ -67,6 +67,15 @@ class AuthorityRequest:
     requested_actions: list[dict[str, Any]] = field(default_factory=list)
     expires_at: datetime | None = None
     human_required: bool = True
+    # P0-Browser: the KIND of human handoff. "secret" (default) asks the
+    # human to paste a credential; "browser" asks the human to complete a
+    # browser step (login, captcha, consent) and hand back a browser
+    # session reference. The control plane renders the matching form.
+    handoff_kind: str = "secret"
+    # Optional safe instruction text shown to the human on the control
+    # plane (what they should do, and why). The model writes this BEFORE
+    # knowing any secret — it must never contain one.
+    instructions_text: str | None = None
 
 
 @dataclass(frozen=True)

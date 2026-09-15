@@ -114,6 +114,10 @@ class RuntimeMetrics:
         """A code execution ran under the given isolation kind."""
         self._registry.counter("code_executions_total", isolation=isolation).inc()
 
+    def terminal_executed(self, *, isolation: str) -> None:
+        """A terminal.execute ran under the given isolation kind (P0-Terminal)."""
+        self._registry.counter("terminal_executions_total", isolation=isolation).inc()
+
     # --- Maintenance leadership ----------------------------------------------
 
     def maintenance_led(self) -> None:

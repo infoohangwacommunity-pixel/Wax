@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Handoff {{ h.id[:12] }} — WAX Control Plane{% endblock %}
+{% block content %}
+  <p style="margin:0 0 14px"><a class="link" href="/control">← Back to dashboard</a></p>
+
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+      <h2 style="margin:0;font-size:17px" class="mono">Handoff {{ h.id }}</h2>
+      <span>
+        <span class="kind">{{ h.kind }}</span>
+        <span class="badge {{ h.status }}" style="margin-left:8px">{{ h.status }}</span>
+      </span>
+    </div>
+
+    <dl class="meta" style="margin-top:18px">
+      <dt>Purpose</dt><dd>{{ h.purpose }}</dd>
+      {% if h.origin_reference %}
+      <dt>Origin</dt><dd class="mono">{{ h.origin_reference }}</dd>
+      {% endif %}
+      <dt>Created</dt><dd class="mono muted">{{ h.created_at or "—" }}</dd>
+      <dt>Expires</dt><dd class="mono muted">{{ h.expires_at or "—" }}</dd>
+      {% if h.completed_at %}
+      <dt>Completed</dt><dd class="mono muted">{{ h.completed_at }}</dd>
+      {% endif %}
+    </dl>
+
+    {% if h.actions %}
+    <label>Requested actions</label>
+    <ul class="actions">
+      {% for a in h.actions %}<li>{{ a }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if h.instructions %}
+    <label>Instructions for you</label>
+    <pre class="instructions">{{ h.instructions }}</pre>
+    {% endif %}
+  </div>
+
+  {% if h.open %}
+  <div class="panel">
+    <h3 style="margin:0 0 4px;font-size:15px">
+      {% if h.kind == "browser" %}Provide the browser session reference{% else %}Provide the secret{% endif %}
+    </h3>
+    <p class="muted" style="margin:0;font-size:13px">
+      The value is encrypted immediately (AES-GCM) and stored. It is never displayed again —
+      by you or by anyone else — and never enters model context. You will only receive an
+      opaque authority reference.
+    </p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/control/handoffs/{{ h.id }}/submit" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      {% if material_labels | length > 1 %}
+      <label for="material_type">Material type</label>
+      <select id="material_type" name="material_type">
+        {% for value, label in material_labels.items() %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <input type="hidden" name="material_type" value="{{ material_labels.keys() | first }}">
+      {% endif %}
+      <label for="secret_value">
+        {% if h.kind == "browser" %}
+        Session reference (cookies / session descriptor — paste exactly as exported)
+        {% else %}
+        Secret value
+        {% endif %}
+      </label>
+      <input type="password" id="secret_value" name="secret_value"
+             autocomplete="new-password" spellcheck="false" autofill="off">
+      <button type="submit">Encrypt &amp; submit</button>
+    </form>
+  </div>
+  {% elif h.status == "completed" %}
+  <div class="panel">
+    <div class="ok-note">This handoff is complete. The submitted value was encrypted at submission
+    time and is only reachable through its opaque authority grant — it cannot be displayed again.</div>
+    <dl class="meta" style="margin-top:16px">
+      <dt>Material type</dt><dd class="mono">{{ h.evidence.get("material_type", "—") }}</dd>
+      <dt>Material ID</dt><dd class="mono muted">{{ h.evidence.get("material_id", "—") }}</dd>
+      <dt>Grant ID</dt><dd class="mono muted">{{ h.evidence.get("grant_id", "—") }}</dd>
+    </dl>
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="banner" style="margin:0">
+      This handoff is <span class="badge {{ h.status }}">{{ h.status }}</span> — no submission is possible.
+    </div>
+  </div>
+  {% endif %}
+{% endblock %}

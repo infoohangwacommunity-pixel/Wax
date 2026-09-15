@@ -118,6 +118,16 @@ class WaxSettings(BaseSettings):
     work_poll_interval_seconds: float = 2.0
     # Root directory for dynamically provisioned ephemeral resources (Phase S).
     provisioning_root: str = "./wax-resources"
+    # Root directory for the content-addressed blob store (P0-Workspace).
+    # workspace.snapshot persists file bytes here (keyed by sha256) so
+    # workspace.restore works even after the source workspace is released.
+    snapshot_blob_root: str = "./wax-blobs"
+    # Shared operator token for the server-rendered control plane
+    # (ADR-0048). When empty: the dashboard is enabled in development (with
+    # a loud warning) and REFUSES to serve in production. When set: routes
+    # require this token (Authorization: Bearer, X-Control-Token, ?token=
+    # or the session cookie issued after login).
+    control_plane_token: str = ""
     # Maximum active provisioned resources per principal (Phase S limit).
     provisioning_max_active_per_principal: int = 5
     # Character budget for evidence assembly (~4 chars/token). The runtime
