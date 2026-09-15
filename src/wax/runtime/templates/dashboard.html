@@ -39,7 +39,7 @@
     <div class="card{% if open_count > 0 %} bad{% endif %}" data-card="open">
       <div class="k">Open handoffs</div>
       <div class="v{% if open_count > 0 %} accent{% endif %}" data-stat="open">{{ open_count }}</div>
-      <div class="sub" data-stat="open-sub">{% if open_count > 0 %}action needed{% else %}nothing waiting{% endif %}</div>
+      <div class="sub" data-stat="open-sub">{% if open_count > 0 %}action needed{% if oldest_open_rel %} · <span title="The oldest open handoff was created {{ oldest_open_rel }} — stale requests deserve attention first">oldest waiting {{ oldest_open_rel }}</span>{% endif %}{% else %}nothing waiting{% endif %}</div>
     </div>
     <div class="card ok" data-card="grants">
       <div class="k">Active authority grants</div>
@@ -310,6 +310,15 @@
       function plural(n, word) {
         return n + " " + word + (n === 1 ? "" : "s");
       }
+      function agoShort(sec) {
+        // coarse staleness figure for the open card ("2h ago", "5m ago") —
+        // mirrors the server's _rel_dt granularity and wording
+        if (sec === null || sec === undefined) return null;
+        if (sec < 60) return "just now";
+        if (sec < 3600) return Math.floor(sec / 60) + "m ago";
+        if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
+        return Math.floor(sec / 86400) + "d ago";
+      }
       function toast(kind, text, href) {
         var el = document.createElement("div");
         el.className = "toast " + kind;
@@ -378,7 +387,10 @@
           if (card) card.classList.toggle("bad", open > 0);
           var openV = document.querySelector('[data-stat="open"]');
           if (openV) openV.classList.toggle("accent", open > 0);
-          setStat("open-sub", open > 0 ? "action needed" : "nothing waiting");
+          var aging = agoShort(counts.handoffs_open_oldest_seconds);
+          setStat("open-sub", open > 0
+            ? "action needed" + (aging && aging !== "just now" ? " · oldest waiting " + aging : "")
+            : "nothing waiting");
         }
         if (counts.authority_grants_active !== undefined) {
           setStat("grants", String(counts.authority_grants_active));

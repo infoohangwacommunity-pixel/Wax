@@ -67,7 +67,7 @@
           <span class="muted">—</span>
           {% endif %}
         </td>
-        <td><span class="badge {{ g.status }}">{{ g.status }}</span>{% if g.status == "active" and g.expires_soon %} <span class="hint" title="Expires in less than 6 hours">expires soon</span>{% endif %}</td>
+        <td><span class="badge {{ g.status }}">{{ g.status }}</span>{% if g.status == "active" and g.expires_soon %} <span class="badge expiring" title="This delegation dies on its own soon — re-delegate through a fresh handoff if the work needs longer">expires {{ g.expires_rel }}</span>{% endif %}</td>
         <td class="time" title="{{ g.created or "" }}">{{ g.created_rel or "—" }}</td>
         <td class="time{% if g.status == "expired" %}" style="color:var(--bad){% endif %}" title="{{ g.expires or "" }}">{{ g.expires_rel or "—" }}</td>
         <td class="time">{% if g.last_used_rel %}{{ g.last_used_rel }}{% else %}<span class="muted">never</span>{% endif %}</td>

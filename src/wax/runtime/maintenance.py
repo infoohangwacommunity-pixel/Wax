@@ -13,7 +13,8 @@ reapers:
    deliverability horizon (ADR-0021, mission §55).
 4. Conversation lifecycle — active → idle → archived marking.
 5. Blob-store garbage collection (opt-in, WAX_BLOB_GC_ENABLED).
-6. Audit-ledger retention (opt-in, WAX_AUDIT_RETENTION_DAYS).
+6. Audit-ledger retention (opt-in: WAX_AUDIT_RETENTION_DAYS age window,
+   WAX_AUDIT_MAX_ROWS row bound — each an explicit operator decision).
 7. Observability — each sweep emits structured logs and metrics so the
    operator sees what the runtime cleaned up.
 
@@ -192,16 +193,20 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
             else:
                 results["blob_gc"] = {"skipped": "no_blob_store"}
 
-        # 6. Audit-ledger retention (OPT-IN via WAX_AUDIT_RETENTION_DAYS).
-        # The audit ledger is append-only (INV-06): the application never
-        # updates or silently deletes history. When the operator sets an
-        # explicit retention window, events older than it are removed by
-        # the scheduled pass — the same "deletion is a decision, never a
-        # default" philosophy as blob GC. Gate off (default) → the sweep
-        # does nothing and the ledger grows unbounded (the audit page
-        # shows a growth warning so the operator always knows).
+        # 6. Audit-ledger retention (OPT-IN via WAX_AUDIT_RETENTION_DAYS
+        # and WAX_AUDIT_MAX_ROWS). The audit ledger is append-only
+        # (INV-06): the application never updates or silently deletes
+        # history. When the operator configures an explicit retention
+        # policy — an age window, a row bound, or both — the scheduled
+        # pass removes what is past it, the same "deletion is a
+        # decision, never a default" philosophy as blob GC. Both gates
+        # off (default) → the sweep does nothing and the ledger grows
+        # unbounded (the audit page shows a growth warning so the
+        # operator always knows).
         results["audit_events_pruned"] = 0
+        results["audit_events_overflow_pruned"] = 0
         retention_days = int(getattr(settings, "audit_retention_days", 0) or 0)
+        max_rows = int(getattr(settings, "audit_max_rows", 0) or 0)
         if retention_days > 0:
             from sqlalchemy import delete
 
@@ -215,12 +220,43 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
                 await session.commit()
             pruned_audit = int(deleted.rowcount or 0)
             results["audit_events_pruned"] = pruned_audit
-            if pruned_audit:
-                log.info(
-                    "runtime.audit_retention_pass",
-                    removed=pruned_audit,
-                    retention_days=retention_days,
-                )
+        if max_rows > 0:
+            from sqlalchemy import delete, func, select
+
+            from wax.state.audit_models import AuditEvent
+
+            async with db_session() as session:
+                total = (
+                    await session.execute(select(func.count()).select_from(AuditEvent))
+                ).scalar_one()
+                overflow = max(0, int(total) - max_rows)
+                if overflow:
+                    # the OLDEST rows beyond the bound go first; ULIDs are
+                    # time-ordered so (created_at, id) ordering is stable
+                    oldest_ids = (
+                        (
+                            await session.execute(
+                                select(AuditEvent.id)
+                                .order_by(AuditEvent.created_at.asc(), AuditEvent.id.asc())
+                                .limit(overflow)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    deleted = await session.execute(
+                        delete(AuditEvent).where(AuditEvent.id.in_(list(oldest_ids)))
+                    )
+                    await session.commit()
+                    results["audit_events_overflow_pruned"] = int(deleted.rowcount or 0)
+        if results["audit_events_pruned"] or results["audit_events_overflow_pruned"]:
+            log.info(
+                "runtime.audit_retention_pass",
+                removed_by_age=results["audit_events_pruned"],
+                removed_by_bound=results["audit_events_overflow_pruned"],
+                retention_days=retention_days,
+                max_rows=max_rows,
+            )
 
         _metric().maintenance_led()
         if results["expired_approvals"] or pruned or results["delivery_retries"].get("due", 0):

@@ -177,6 +177,12 @@ class WaxSettings(BaseSettings):
     # deletion is a decision, never a default). 0 keeps history forever —
     # the audit page then shows a growth warning once the ledger is large.
     audit_retention_days: int = 0
+    # Size-based sibling of the age window: when the ledger exceeds this
+    # many rows, the OLDEST rows beyond the bound are removed by the same
+    # opt-in sweep (both bounds can be active; each does its own pass).
+    # 0 disables the bound — the audit page's growth warning covers this
+    # case honestly until the operator configures one.
+    audit_max_rows: int = 0
 
     # --- Durable outbound delivery (ADR-0021) ---
     # A completed result whose interface send fails becomes recoverable

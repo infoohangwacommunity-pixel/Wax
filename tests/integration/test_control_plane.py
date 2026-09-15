@@ -1416,7 +1416,10 @@ class TestAuthorityGrantsPage:
         p = await _create_principal()
         await _seed_grant(p, handle="E" * 40, expires_in_hours=2.0)
         resp = await client.get("/control/grants")
-        assert "expires soon" in resp.text
+        # round 9: the vague "expires soon" hint became a precise amber
+        # badge carrying the exact remaining time
+        assert "badge expiring" in resp.text
+        assert "expires in 2h" in resp.text
         # future expiry reads as "in Nh" — never clamped to "just now",
         # which would mislead an operator about when the grant dies
         assert "in 2h" in resp.text

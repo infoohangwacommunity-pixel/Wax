@@ -507,6 +507,9 @@ def register_control_plane(app) -> None:
 
         handoffs = [_handoff_view(h) for h in rows]
         blob_stats = _blob_stats(app)
+        oldest_open_at = counts.get("oldest_open_at")
+        if oldest_open_at is not None and oldest_open_at.tzinfo is None:
+            oldest_open_at = oldest_open_at.replace(tzinfo=UTC)
         return _html_response(
             request,
             "dashboard.html",
@@ -516,6 +519,7 @@ def register_control_plane(app) -> None:
                 "failed_count": counts["failed"],
                 "total_count": counts["total"],
                 "active_grants": counts["grants"],
+                "oldest_open_rel": _rel_dt(oldest_open_at) if oldest_open_at else None,
                 "handoffs": handoffs,
                 "status_filter": status_filter,
                 "status_filters": _STATUS_FILTERS,
@@ -834,6 +838,7 @@ def register_control_plane(app) -> None:
             page = 1
         page = max(1, page)
         retention_days = int(getattr(settings, "audit_retention_days", 0) or 0)
+        audit_max_rows = int(getattr(settings, "audit_max_rows", 0) or 0)
 
         async with db_session() as session:
             base_where = _audit_base_where()
@@ -875,8 +880,9 @@ def register_control_plane(app) -> None:
                 "kind_filters": _AUDIT_KIND_FILTERS,
                 "kind_counts": kind_counts,
                 "retention_days": retention_days,
+                "audit_max_rows": audit_max_rows,
                 "retention_warning": _retention_warning(
-                    total, retention_days, threshold=_AUDIT_WARN_ROWS
+                    total, retention_days, max_rows=audit_max_rows, threshold=_AUDIT_WARN_ROWS
                 ),
                 "heartbeat": True,
                 "dev_open": auth.dev_open,
@@ -1416,6 +1422,13 @@ def register_control_plane(app) -> None:
         async with db_session() as session:
             counts = await _handoff_counts(session)
         blob_stats = _blob_stats(app)
+        oldest_open = counts.get("oldest_open_at")
+        if oldest_open is not None:
+            if oldest_open.tzinfo is None:
+                oldest_open = oldest_open.replace(tzinfo=UTC)
+            oldest_open_seconds = max(0, int((datetime.now(UTC) - oldest_open).total_seconds()))
+        else:
+            oldest_open_seconds = None
         payload: dict[str, Any] = {
             "status": "ok",
             "version": _wax_version,
@@ -1428,6 +1441,7 @@ def register_control_plane(app) -> None:
                 "handoffs_failed": counts["failed"],
                 "handoffs_total": counts["total"],
                 "authority_grants_active": counts["grants"],
+                "handoffs_open_oldest_seconds": oldest_open_seconds,
             },
             "blob_gc_enabled": bool(getattr(settings, "blob_gc_enabled", False)),
         }
@@ -1536,12 +1550,25 @@ async def _handoff_counts(session) -> dict[str, int]:
             .where(AuthorityGrantRecord.status == AuthorityStatus.ACTIVE.value)
         )
     ).scalar_one()
+    # How long the oldest waiting handoff has been open — "action needed"
+    # is more useful with an honest staleness figure ("oldest waiting 2h").
+    # min() over the coalesced creation timestamp; None when nothing waits.
+    oldest_open_at = (
+        await session.execute(
+            select(
+                func.min(
+                    func.coalesce(HumanHandoffRecord.created_at_col, HumanHandoffRecord.created_at)
+                )
+            ).where(HumanHandoffRecord.status.in_(OPEN_STATUSES))
+        )
+    ).scalar()
     return {
         "open": open_count,
         "completed": completed_count,
         "failed": failed_count,
         "total": total_count,
         "grants": active_grants,
+        "oldest_open_at": oldest_open_at,
     }
 
 
@@ -1732,21 +1759,21 @@ async def _audit_family_counts(session) -> dict[str, int]:
 
 
 def _retention_warning(
-    total: int, retention_days: int, threshold: int = _AUDIT_WARN_ROWS
+    total: int, retention_days: int, max_rows: int = 0, threshold: int = _AUDIT_WARN_ROWS
 ) -> str | None:
     """Growth warning for the audit page header, or None.
 
     The ledger is append-only (INV-06): with no retention policy it grows
     forever. Once it passes the threshold, the page says so plainly and
-    names the setting that bounds it — a misconfigured deployment must
-    not become a silent storage leak. A configured policy (> 0 days)
-    means the ledger is bounded and never warns."""
-    if retention_days > 0 or total < threshold:
+    names the settings that bound it — a misconfigured deployment must
+    not become a silent storage leak. A configured policy (an age window
+    or a row bound) means the ledger is bounded and never warns."""
+    if retention_days > 0 or max_rows > 0 or total < threshold:
         return None
     return (
         f"The audit ledger holds {total:,} events and no retention policy is "
         "configured — it grows unbounded. Set WAX_AUDIT_RETENTION_DAYS "
-        "(days) to bound its growth."
+        "(age in days) or WAX_AUDIT_MAX_ROWS (row bound) to bound its growth."
     )
 
 

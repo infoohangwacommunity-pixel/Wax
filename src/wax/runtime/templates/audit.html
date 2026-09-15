@@ -6,7 +6,7 @@
     <h2>Audit log</h2>
     <span class="note">append-only record of every operator action (INV-06) · metadata only —
     never secrets, never ciphertext · retention
-    {% if retention_days > 0 %}<span class="chip" title="Events older than this are removed by the scheduled maintenance pass">{{ retention_days }}d</span>{% else %}<span class="muted">off (kept forever)</span>{% endif %}</span>
+    {% if retention_days > 0 %}<span class="chip" title="Events older than this are removed by the scheduled maintenance pass">{{ retention_days }}d</span>{% endif %}{% if audit_max_rows > 0 %}{% if retention_days > 0 %} / {% endif %}<span class="chip" title="When the ledger exceeds this many rows, the oldest events beyond the bound are removed by the scheduled maintenance pass">{{ audit_max_rows }} rows max</span>{% endif %}{% if retention_days == 0 and audit_max_rows == 0 %}<span class="muted">off (kept forever)</span>{% endif %}</span>
   </div>
 
   {% if retention_warning %}

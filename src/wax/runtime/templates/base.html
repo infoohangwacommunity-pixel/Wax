@@ -224,6 +224,7 @@
     }
     .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     .badge.pending, .badge.awaiting_human, .badge.submitted, .badge.verifying { color: var(--warn); background: var(--warn-soft); border-color: rgba(245,158,11,.35); }
+    .badge.expiring { color: var(--warn); background: var(--warn-soft); border-color: rgba(245,158,11,.5); font-variant-numeric: tabular-nums; }
     .badge.opened { color: var(--info); background: var(--info-soft); border-color: rgba(45,212,191,.35); }
     .badge.active { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
     .badge.completed { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
@@ -662,7 +663,7 @@
       var INTERVAL = 30000;
       var failures = 0, stale = false, current = null;
 
-      function build(open, staleNow) {
+      function build(open, staleNow, grants) {
         var cls = "hb-pill";
         var text;
         if (staleNow) {
@@ -670,6 +671,8 @@
         } else if (open > 0) {
           cls += " waiting";
           text = open === 1 ? "1 handoff waiting" : open + " handoffs waiting";
+        } else if (grants > 0) {
+          text = "quiet · " + grants + (grants === 1 ? " live grant" : " live grants");
         } else {
           text = "all quiet";
         }
@@ -686,8 +689,8 @@
           + '" aria-hidden="true"></span>' + text;
         return el;
       }
-      function render(open, staleNow) {
-        var next = build(open, staleNow);
+      function render(open, staleNow, grants) {
+        var next = build(open, staleNow, grants);
         if (current) current.replaceWith(next);
         else document.body.appendChild(next);
         current = next;
@@ -703,11 +706,12 @@
             failures = 0;
             stale = false;
             var open = payload && payload.counts ? Number(payload.counts.handoffs_open || 0) : 0;
-            render(open, false);
+            var grants = payload && payload.counts ? Number(payload.counts.authority_grants_active || 0) : 0;
+            render(open, false, grants);
           })
           .catch(function () {
             failures++;
-            if (failures >= 2 && !stale) { stale = true; render(0, true); }
+            if (failures >= 2 && !stale) { stale = true; render(0, true, 0); }
           });
       }
       poll();
