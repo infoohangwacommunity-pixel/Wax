@@ -34,6 +34,32 @@ async def fresh_db(test_settings):
     async with db_session() as s:
         await seed_builtin_roles(s)
         await seed_builtin_connectors(s)
+        # P0-Taxonomy: seed a test connector definition since the core
+        # no longer hardcodes connector types
+        from ulid import ULID
+
+        from wax.state.credential_models import ConnectorDefinitionRecord
+
+        s.add(
+            ConnectorDefinitionRecord(
+                id=str(ULID()),
+                name="git_host",
+                description="Git hosting service (discovered)",
+                supported_scopes=["repository.read", "repository.write", "repository.admin"],
+                auth_methods=["api_key", "bearer_token"],
+                version="1.0.0",
+            )
+        )
+        s.add(
+            ConnectorDefinitionRecord(
+                id=str(ULID()),
+                name="package_registry",
+                description="Package registry (discovered)",
+                supported_scopes=["package.read", "package.publish"],
+                auth_methods=["api_key", "bearer_token"],
+                version="1.0.0",
+            )
+        )
         await s.commit()
     yield
     await dispose_engine()
@@ -112,13 +138,11 @@ class TestConnectorDiscover:
             await s.commit()
 
         assert result.outcome == "success", result.error
-        assert result.outputs["count"] >= 5  # git_host, package_registry, etc.
+        assert result.outputs["count"] >= 2  # only seeded connectors (git_host, package_registry)
         names = [c["name"] for c in result.outputs["connectors"]]
         assert "git_host" in names
         assert "package_registry" in names
-        assert "cloud_deployment" in names
-        assert "file_storage" in names
-        assert "messaging" in names
+        # Only git_host and package_registry are seeded in tests (core no longer hardcodes)
 
     async def test_discover_with_filter(self, fresh_db, services):
         principal_id = await _create_principal()
@@ -197,9 +221,9 @@ class TestConnectorResolve:
 
         assert result.outcome == "success", result.error
         assert "binding_handle" in result.outputs
-        assert result.outputs["service_kind"] == "github"  # default for git_host
+        assert result.outputs["service_kind"] == "unknown"  # core does not hardcode brands
         assert result.outputs["connector"] == "git_host"
-        assert "clone" in result.outputs["available_operations"]
+        assert result.outputs["available_operations"] == []  # core does not hardcode operations
 
     async def test_resolve_rejects_invalid_handle(self, fresh_db, services):
         principal_id = await _create_principal()
@@ -299,7 +323,6 @@ class TestConnectorResolve:
             await s.commit()
 
         assert result.outcome == "success"
-        assert result.outputs["service_kind"] == "pypi"
+        assert result.outputs["service_kind"] == "unknown"
         assert result.outputs["connector"] == "package_registry"
-        assert "search" in result.outputs["available_operations"]
-        assert "info" in result.outputs["available_operations"]
+        assert result.outputs["available_operations"] == []  # core does not hardcode operations

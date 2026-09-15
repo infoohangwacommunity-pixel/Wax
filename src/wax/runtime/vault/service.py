@@ -36,40 +36,13 @@ from wax.state.credential_models import (
 log = get_logger(__name__)
 
 
-# The universal set of connector resource types. Seeded at startup.
-# NEVER brands — only resource types the runtime understands.
-UNIVERSAL_CONNECTORS = [
-    {
-        "name": "git_host",
-        "description": "Git hosting service (GitHub, GitLab, Codeberg — discovered)",
-        "supported_scopes": ["repository.read", "repository.write", "repository.admin"],
-        "auth_methods": ["api_key", "bearer_token", "oauth2"],
-    },
-    {
-        "name": "package_registry",
-        "description": "Package registry (npm, PyPI — discovered)",
-        "supported_scopes": ["package.read", "package.publish"],
-        "auth_methods": ["api_key", "bearer_token"],
-    },
-    {
-        "name": "cloud_deployment",
-        "description": "Cloud deployment platform (Railway, Fly.io — discovered)",
-        "supported_scopes": ["deployment.read", "deployment.create", "deployment.delete"],
-        "auth_methods": ["api_key", "bearer_token", "oauth2"],
-    },
-    {
-        "name": "file_storage",
-        "description": "File storage service (Google Drive, Dropbox — discovered)",
-        "supported_scopes": ["file.read", "file.write", "file.share"],
-        "auth_methods": ["oauth2", "api_key"],
-    },
-    {
-        "name": "messaging",
-        "description": "Messaging platform (WhatsApp, future adapters — discovered)",
-        "supported_scopes": ["message.send", "message.read"],
-        "auth_methods": ["api_key", "bearer_token", "oauth2"],
-    },
-]
+# P0-Taxonomy: The core runtime does NOT hardcode any connector types.
+# The intelligence discovers what's needed through generic mechanisms
+# (search, web.open, browser). Provider-specific code lives in optional
+# adapters, not in the core. The connector_definitions table is empty
+# by default; operators may seed it via configuration if they want to
+# declare specific connector types for their deployment.
+UNIVERSAL_CONNECTORS: list[dict[str, Any]] = []
 
 
 # Development-mode XOR cipher key. LOUDLY LOGGED as a warning when used.

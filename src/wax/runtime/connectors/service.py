@@ -31,18 +31,11 @@ from wax.state.credential_models import (
 log = get_logger(__name__)
 
 
-# Resource type → default service kind (the discovered brand).
-# In a real deployment, this would be resolved from the secret's
-# structure (e.g. a github token starts with "ghp_", a gitlab token
-# with "glpat-") or from a per-principal config map. For now, the
-# default is the most common service for each resource type.
-_DEFAULT_SERVICE_KINDS: dict[str, str] = {
-    "git_host": "github",
-    "package_registry": "pypi",
-    "cloud_deployment": "railway",
-    "file_storage": "google_drive",
-    "messaging": "whatsapp",
-}
+# P0-Taxonomy: The core runtime does NOT know which brand is behind a
+# connector. Brand discovery is the adapter's job, not the core's.
+# The service_kind returned by resolve() is "unknown" unless an
+# optional adapter provides the brand information.
+_DEFAULT_SERVICE_KINDS: dict[str, str] = {}
 
 
 class ConnectorRuntime:
@@ -139,36 +132,9 @@ class ConnectorRuntime:
     def _available_operations(self, connector_name: str, scopes: list[str]) -> list[str]:
         """Return the operations available for this connector + scopes.
 
-        This is a declarative map: the runtime declares what operations
-        each resource type supports at each scope level. The intelligence
-        uses this to know what it can do.
+        P0-Taxonomy: The core runtime does NOT hardcode operations per
+        connector type. Operations are discovered through the environment
+        or declared by optional adapters. The intelligence learns what
+        it can do by trying, not by reading a hardcoded map.
         """
-        ops_map: dict[str, dict[str, list[str]]] = {
-            "git_host": {
-                "repository.read": ["clone", "list_commits", "read_file"],
-                "repository.write": ["commit", "push", "create_branch"],
-                "repository.admin": ["delete_branch", "manage_settings"],
-            },
-            "package_registry": {
-                "package.read": ["search", "info", "download"],
-                "package.publish": ["publish", "yank"],
-            },
-            "cloud_deployment": {
-                "deployment.read": ["list", "status", "logs"],
-                "deployment.create": ["deploy", "scale"],
-                "deployment.delete": ["remove"],
-            },
-            "file_storage": {
-                "file.read": ["list", "download", "info"],
-                "file.write": ["upload", "mkdir", "move"],
-                "file.share": ["share", "revoke_access"],
-            },
-            "messaging": {
-                "message.send": ["send_text", "send_media"],
-                "message.read": ["list_messages"],
-            },
-        }
-        ops: list[str] = []
-        for scope in scopes:
-            ops.extend(ops_map.get(connector_name, {}).get(scope, []))
-        return ops
+        return []

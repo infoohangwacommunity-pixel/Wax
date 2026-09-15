@@ -44,6 +44,32 @@ async def fresh_db(test_settings):
     async with db_session() as s:
         await seed_builtin_roles(s)
         await seed_builtin_connectors(s)
+        # P0-Taxonomy: seed a test connector definition since the core
+        # no longer hardcodes connector types
+        from ulid import ULID
+
+        from wax.state.credential_models import ConnectorDefinitionRecord
+
+        s.add(
+            ConnectorDefinitionRecord(
+                id=str(ULID()),
+                name="git_host",
+                description="Git hosting service (discovered)",
+                supported_scopes=["repository.read", "repository.write", "repository.admin"],
+                auth_methods=["api_key", "bearer_token"],
+                version="1.0.0",
+            )
+        )
+        s.add(
+            ConnectorDefinitionRecord(
+                id=str(ULID()),
+                name="package_registry",
+                description="Package registry (discovered)",
+                supported_scopes=["package.read", "package.publish"],
+                auth_methods=["api_key", "bearer_token"],
+                version="1.0.0",
+            )
+        )
         await s.commit()
     yield
     await dispose_engine()

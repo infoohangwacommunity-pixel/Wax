@@ -6,17 +6,21 @@ understands resource types, not brands.
 
 from __future__ import annotations
 
+from wax.runtime.vault.crypto import (
+    EncryptedSecret,
+    decrypt_secret,
+    encrypt_secret,
+)
 from wax.runtime.vault.service import (
     UNIVERSAL_CONNECTORS,
     CredentialVault,
-    decrypt_secret,
-    encrypt_secret,
     seed_builtin_connectors,
 )
 
 __all__ = [
     "UNIVERSAL_CONNECTORS",
     "CredentialVault",
+    "EncryptedSecret",
     "decrypt_secret",
     "encrypt_secret",
     "seed_builtin_connectors",
