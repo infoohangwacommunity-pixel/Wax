@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Authority grants — WAX Control Plane{% endblock %}
+{% block nav_grants %} aria-current="page"{% endblock %}
+{% block content %}
+  {% if dev_open %}
+  <div class="banner">
+    <strong>Development mode:</strong> no access token is configured, so this dashboard is open to
+    anyone who can reach it. Set <span class="mono">WAX_CONTROL_PLANE_TOKEN</span> before any
+    non-development use.
+  </div>
+  {% endif %}
+
+  {% if revoked_flash %}
+  <div class="ok-note" role="status">Authority grant revoked — the intelligence can no longer use
+  it. A new delegation requires a new handoff and a fresh operator approval.</div>
+  {% endif %}
+  {% if revoke_flash == "stale_token" %}
+  <div class="error" role="alert">That revoke confirmation has expired (CSRF tokens are
+  short-lived). Reload the page and try again.</div>
+  {% endif %}
+  {% if revoke_flash == "unknown" %}
+  <div class="error" role="alert">No grant with that handle exists — it may already have been
+  revoked or removed.</div>
+  {% endif %}
+
+  <div class="section-head">
+    <h2>Authority grants</h2>
+    <span class="note">opaque, scoped permissions issued when a handoff completes · the
+    intelligence holds only the handle — the underlying secret never leaves the vault</span>
+  </div>
+
+  <div class="section-head" style="margin-bottom:16px">
+    <div class="tabs" role="tablist" aria-label="Filter grants by status">
+      {% for f in grant_status_filters %}
+      <a href="/control/grants?status={{ f }}" class="{{ "active" if grant_status_filter == f }}" role="tab" aria-selected="{{ "true" if grant_status_filter == f else "false" }}">
+        {{ f }}
+        <span class="count">{{ grant_counts[f] }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if grant_status_filter != "all" %} ({{ grant_status_filter }}){% endif %}</span>
+  </div>
+
+  {% if grants %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Handle</th><th>Principal</th><th>Effect</th><th>Requested actions</th><th>Status</th><th>Created</th><th>Expires</th><th>Last used</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for g in grants %}
+      <tr class="{% if g.status == "active" %}row-open{% elif g.status == "revoked" %}row-expired{% endif %}">
+        <td class="mono nowrap" title="grant handle (abbreviated)">{{ g.handle_short }}</td>
+        <td class="mono nowrap" title="{{ g.principal_id }}">{{ g.principal_short }}</td>
+        <td><span class="badge {{ g.effect_badge }}">{{ g.effect_class }}</span></td>
+        <td class="truncate" title="{{ g.actions_title }}">
+          {% if g.actions %}
+          {{ g.actions | length }} · {{ g.actions[0] }}{% if g.actions | length > 1 %} +{{ g.actions | length - 1 }} more{% endif %}
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td><span class="badge {{ g.status }}">{{ g.status }}</span>{% if g.status == "active" and g.expires_soon %} <span class="hint" title="Expires in less than 6 hours">expires soon</span>{% endif %}</td>
+        <td class="time" title="{{ g.created or "" }}">{{ g.created_rel or "—" }}</td>
+        <td class="time{% if g.status == "expired" %}" style="color:var(--bad){% endif %}" title="{{ g.expires or "" }}">{{ g.expires_rel or "—" }}</td>
+        <td class="time">{% if g.last_used_rel %}{{ g.last_used_rel }}{% else %}<span class="muted">never</span>{% endif %}</td>
+        <td class="nowrap">
+          {% if g.status == "active" %}
+          <form method="post" action="/control/grants/{{ g.id }}/revoke" class="inline-form"
+                onclick="return confirm('Revoke this authority grant? The intelligence immediately loses this delegated power. This cannot be undone.');">
+            <input type="hidden" name="csrf_token" value="{{ revoke_csrf }}">
+            <button type="submit" class="btn-danger" title="Immediately revoke this grant and its underlying material">Revoke</button>
+          </form>
+          {% elif g.status == "revoked" %}
+          <span class="muted" title="Revoked {{ g.revoked_at or "" }}">revoked</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <span class="big" aria-hidden="true">◇</span>
+    {% if grant_status_filter == "all" %}
+    No authority grants yet. Completing a handoff issues one scoped grant per delegation.
+    {% elif grant_status_filter == "active" %}
+    No live grants right now — nothing is delegated at this moment.
+    {% else %}
+    No {{ grant_status_filter }} grants.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if pages > 1 %}
+  <nav class="pager" aria-label="Grant table pages">
+    <span class="pager-info">page {{ page }} / {{ pages }}</span>
+    {% set page_base = "/control/grants?status=" ~ grant_status_filter %}
+    {% if page > 1 %}
+    <a href="{{ page_base }}&amp;page={{ page - 1 }}" rel="prev">‹ Prev</a>
+    {% else %}
+    <span class="disabled" aria-disabled="true">‹ Prev</span>
+    {% endif %}
+    {% for p in page_window %}
+    {% if p is none %}
+    <span class="ellipsis" aria-hidden="true">…</span>
+    {% elif p == page %}
+    <span class="current" aria-current="page">{{ p }}</span>
+    {% else %}
+    <a href="{{ page_base }}&amp;page={{ p }}">{{ p }}</a>
+    {% endif %}
+    {% endfor %}
+    {% if page < pages %}
+    <a href="{{ page_base }}&amp;page={{ page + 1 }}" rel="next">Next ›</a>
+    {% else %}
+    <span class="disabled" aria-disabled="true">Next ›</span>
+    {% endif %}
+  </nav>
+  {% endif %}
+{% endblock %}

@@ -4,8 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow, noarchive">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>{% block title %}WAX Control Plane{% endblock %}</title>
+  <script>
+    // Theme bootstrap — runs BEFORE first paint so there is no flash of
+    // the wrong palette: stored operator preference wins, else the OS
+    // preference, else dark (the designed default).
+    (function () {
+      try {
+        var t = null;
+        try { t = localStorage.getItem("wax-theme"); } catch (e) {}
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 28 9v14L16 30 4 23V9z' fill='none' stroke='%23d97706' stroke-width='2.4'/%3E%3Cpath d='M10 11l3.2 10L16 14l2.8 7L22 11' fill='none' stroke='%23e6e9ef' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   {% block head %}{% endblock %}
   <style>
@@ -37,6 +52,42 @@
       --radius: 12px;
       --radius-sm: 8px;
       --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+      --error-text: #fecaca;
+      --ok-text: #a7f3d0;
+      --scrollbar-thumb: #2b3240;
+      --row-hover: rgba(255,255,255,.025);
+      color-scheme: dark;
+    }
+    /* Light theme — same design language, daylight surfaces. The amber
+       accent darkens for contrast on white; every component reads its
+       colors from these variables, so this block is the whole switch. */
+    :root[data-theme="light"] {
+      --bg: #f4f5f7;
+      --bg-glow: radial-gradient(1200px 400px at 50% -120px, rgba(217,119,6,.10), transparent 70%);
+      --panel: #ffffff;
+      --panel-2: #f8f9fb;
+      --panel-3: #eef0f4;
+      --border: #dfe3ea;
+      --border-strong: #c9cfda;
+      --text: #1c2430;
+      --muted: #5b6575;
+      --faint: #8a93a3;
+      --accent: #b45309;
+      --accent-soft: rgba(180,83,9,.10);
+      --ok: #059669;
+      --ok-soft: rgba(5,150,105,.08);
+      --warn: #d97706;
+      --warn-soft: rgba(217,119,6,.10);
+      --info: #0d9488;
+      --info-soft: rgba(13,148,136,.08);
+      --bad: #dc2626;
+      --bad-soft: rgba(220,38,38,.07);
+      --shadow: 0 1px 2px rgba(16,24,40,.05), 0 10px 26px -14px rgba(16,24,40,.25);
+      --error-text: #9f1d1d;
+      --ok-text: #065f46;
+      --scrollbar-thumb: #c9cfda;
+      --row-hover: rgba(16,24,40,.035);
+      color-scheme: light;
     }
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
@@ -48,7 +99,7 @@
     }
     ::selection { background: rgba(217,119,6,.35); }
     *::-webkit-scrollbar { width: 10px; height: 10px; }
-    *::-webkit-scrollbar-thumb { background: #2b3240; border-radius: 8px; border: 2px solid var(--bg); }
+    *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 8px; border: 2px solid var(--bg); }
     *::-webkit-scrollbar-track { background: transparent; }
 
     /* ---------- header ---------- */
@@ -152,7 +203,7 @@
     }
     tr:last-child td { border-bottom: none; }
     tbody tr { transition: background .12s; }
-    tbody tr:hover td { background: rgba(255,255,255,.025); }
+    tbody tr:hover td { background: var(--row-hover); }
     td.mono, .mono { font-family: var(--mono); font-size: 13px; }
     .muted { color: var(--muted); }
     .truncate { max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -160,6 +211,10 @@
     a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
     td.nowrap { white-space: nowrap; }
     .time { font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+    /* wide tables (grants: 9 columns) scroll horizontally instead of
+       bursting the page — the radius stays on the inner table */
+    .table-scroll { overflow-x: auto; border-radius: var(--radius); }
+    .table-scroll table { min-width: 860px; }
 
     /* ---------- badges & chips ---------- */
     .badge {
@@ -170,8 +225,9 @@
     .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     .badge.pending, .badge.awaiting_human, .badge.submitted, .badge.verifying { color: var(--warn); background: var(--warn-soft); border-color: rgba(245,158,11,.35); }
     .badge.opened { color: var(--info); background: var(--info-soft); border-color: rgba(45,212,191,.35); }
+    .badge.active { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
     .badge.completed { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
-    .badge.rejected, .badge.failed, .badge.expired { color: var(--bad); background: var(--bad-soft); border-color: rgba(248,113,113,.35); }
+    .badge.rejected, .badge.failed, .badge.expired, .badge.revoked { color: var(--bad); background: var(--bad-soft); border-color: rgba(248,113,113,.35); }
     .badge.cancelled { color: var(--muted); background: rgba(151,160,176,.08); border-color: rgba(151,160,176,.3); }
     .kind {
       display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px;
@@ -212,14 +268,46 @@
     button.danger { background: var(--bad-soft); color: var(--bad); border: 1px solid rgba(248,113,113,.4); }
     button.danger:hover { filter: none; background: rgba(248,113,113,.18); }
 
+    /* ---------- grants / search / theme ---------- */
+    .btn-danger {
+      margin: 0; padding: 6px 13px; font-size: 12px; font-weight: 650;
+      background: var(--bad-soft); color: var(--bad); border: 1px solid rgba(248,113,113,.4);
+      border-radius: var(--radius-sm); cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .btn-danger:hover { background: rgba(248,113,113,.18); border-color: var(--bad); filter: none; }
+    .inline-form { display: inline; margin: 0; }
+    .card-link { color: var(--ok); text-decoration: none; font-weight: 600; }
+    .card-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .search-form { display: inline-flex; gap: 7px; align-items: center; margin: 0; }
+    .search-form input[type="search"] {
+      width: 220px; margin: 0; padding: 7px 12px; font-size: 12.5px; font-family: var(--sans);
+      border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
+      background: var(--bg); color: var(--text); outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .search-form input[type="search"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217,119,6,.18); }
+    .search-form input[type="search"]::placeholder { color: var(--faint); }
+    .search-form button { margin: 0; padding: 7px 14px; font-size: 12.5px; }
+    .theme-toggle {
+      margin: 0; padding: 7px 9px; background: var(--panel-3); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); color: var(--muted); cursor: pointer;
+      display: inline-grid; place-items: center; transition: color .15s, border-color .15s;
+    }
+    .theme-toggle:hover { color: var(--accent); border-color: var(--accent); filter: none; }
+    .theme-toggle svg { width: 15px; height: 15px; display: block; }
+    .theme-toggle .ico-moon { display: none; }
+    :root[data-theme="light"] .theme-toggle .ico-sun { display: none; }
+    :root[data-theme="light"] .theme-toggle .ico-moon { display: block; }
+
     /* ---------- notices ---------- */
     .error {
       border: 1px solid rgba(248,113,113,.4); background: var(--bad-soft);
-      color: #fecaca; border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
+      color: var(--error-text); border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
     }
     .ok-note {
       border: 1px solid rgba(16,185,129,.4); background: var(--ok-soft);
-      color: #a7f3d0; border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
+      color: var(--ok-text); border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
     }
 
     /* ---------- definition lists ---------- */
@@ -248,6 +336,12 @@
       border-radius: 6px; cursor: pointer;
     }
     .copy-btn:hover { color: var(--accent); border-color: var(--accent); filter: none; }
+    .mini-btn {
+      margin: 0; padding: 3px 10px; font-size: 11.5px; font-weight: 600;
+      background: var(--panel-3); color: var(--muted); border: 1px solid var(--border-strong);
+      border-radius: 6px; cursor: pointer;
+    }
+    .mini-btn:hover { color: var(--accent); border-color: var(--accent); filter: none; }
     .evidence-chip {
       display: inline-block; font-family: var(--mono); font-size: 12.5px;
       background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
@@ -370,7 +464,7 @@
     .date-form input[type="date"] {
       width: auto; padding: 6px 10px; font-size: 12.5px; font-family: var(--mono);
       border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
-      background: var(--bg); color: var(--text); color-scheme: dark; margin: 0;
+      background: var(--bg); color: var(--text); margin: 0;
     }
     .date-form input[type="date"]:focus {
       border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217,119,6,.18); outline: none;
@@ -426,6 +520,8 @@
       .tabs { width: 100%; justify-content: space-between; }
       .date-form { width: 100%; }
       .date-form input[type="date"] { flex: 1 1 130px; }
+      .search-form { width: 100%; }
+      .search-form input[type="search"] { flex: 1 1 120px; width: auto; }
     }
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; }
@@ -445,6 +541,11 @@
     </a>
     <nav>
       <a href="/control"{% block nav_dashboard %}{% endblock %}>Dashboard</a>
+      <a href="/control/grants"{% block nav_grants %}{% endblock %}>Grants</a>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark theme">
+        <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"/></svg>
+        <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 14.2A8.8 8.8 0 0 1 9.8 3.4a8.8 8.8 0 1 0 10.8 10.8Z"/></svg>
+      </button>
       {% if not dev_open %}
       <form method="post" action="/control/logout" style="display:inline">
         <button class="secondary" style="margin-top:0;padding:6px 13px;font-size:13px" type="submit">Sign out</button>
@@ -458,5 +559,20 @@
   <footer>
     WAX Runtime v{{ wax_version | default("?") }} — infrastructure, not intelligence<span class="sep">·</span>server-rendered same-origin dashboard (ADR-0048)<span class="sep">·</span>secrets are encrypted on submission and never displayed again<span class="sep">·</span><a class="f-link" href="/control/api/status">status API</a>
   </footer>
+  <script>
+    // Theme toggle: flips the data-theme attribute and remembers the
+    // operator's choice. The head bootstrap script already applied the
+    // right theme before first paint; this only handles the click.
+    (function () {
+      var btn = document.getElementById("theme-toggle");
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        var root = document.documentElement;
+        var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+        root.setAttribute("data-theme", next);
+        try { localStorage.setItem("wax-theme", next); } catch (e) {}
+      });
+    })();
+  </script>
 </body>
 </html>

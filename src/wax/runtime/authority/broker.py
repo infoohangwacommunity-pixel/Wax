@@ -459,3 +459,45 @@ class AuthorityBroker:
             principal_id=principal_id,
         )
         return True
+
+    async def operator_revoke_authority(
+        self,
+        session: AsyncSession,
+        *,
+        grant_id: str,
+    ) -> bool:
+        """Revoke an authority grant as a control-plane operator.
+
+        The control plane authenticates the caller (operator token/session
+        plus a scoped CSRF token), so — unlike ``revoke_authority`` —
+        this transition deliberately does NOT require principal ownership:
+        it is the operator-oversight path. The state transition and the
+        underlying-material revocation are identical to revoke_authority.
+
+        Keyed by the grant's RECORD id (ULID), not its handle: the handle
+        is the live authority token the intelligence holds, and it should
+        never need to appear in operator-facing URLs or HTML.
+        """
+        grant = (
+            await session.execute(
+                select(AuthorityGrantRecord).where(AuthorityGrantRecord.id == grant_id)
+            )
+        ).scalar_one_or_none()
+
+        if grant is None:
+            return False
+
+        grant.status = "revoked"
+        grant.revoked_at = datetime.now(UTC)
+
+        # Also revoke the underlying material
+        material = await session.get(AuthorityMaterialRecord, grant.authority_material_id)
+        if material and material.status == AuthorityStatus.ACTIVE.value:
+            material.status = AuthorityStatus.REVOKED.value
+            material.revoked_at = datetime.now(UTC)
+
+        log.info(
+            "authority.revoked_by_operator",
+            grant_id=grant.id,
+        )
+        return True

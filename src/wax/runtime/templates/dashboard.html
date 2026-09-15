@@ -32,7 +32,7 @@
     <div class="card ok" data-card="grants">
       <div class="k">Active authority grants</div>
       <div class="v" data-stat="grants">{{ active_grants }}</div>
-      <div class="sub">live delegations</div>
+      <div class="sub">live delegations · <a class="card-link" href="/control/grants">view &amp; revoke →</a></div>
     </div>
     <div class="card info" data-card="storage">
       <div class="k">Snapshot storage</div>
@@ -68,14 +68,14 @@
   <div class="section-head">
     <h2>Human handoffs</h2>
     <span class="note">
-      {% if open_count > 0 %}<span id="live-note"><span class="live-dot" id="live-dot" aria-hidden="true"></span>auto-refreshes every 15s while handoffs are open · </span>{% else %}<span id="live-note"></span>{% endif %}showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if status_filter != "all" %} ({{ status_filter }}){% endif %}{% if since_filter or until_filter %} <span class="chip" title="Handoffs created within this UTC day range">created {{ since_filter or "…" }} → {{ until_filter or "…" }}</span>{% endif %}
+      {% if open_count > 0 %}<span id="live-note"><span class="live-dot" id="live-dot" aria-hidden="true"></span>auto-refreshes every 15s while handoffs are open · </span>{% else %}<span id="live-note"></span>{% endif %}showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if status_filter != "all" %} ({{ status_filter }}){% endif %}{% if since_filter or until_filter %} <span class="chip" title="Handoffs created within this UTC day range">created {{ since_filter or "…" }} → {{ until_filter or "…" }}</span>{% endif %}{% if q_filter %} <span class="chip" title="Literal substring search over purpose, origin and ID">search: “{{ q_filter }}”</span>{% endif %}
     </span>
   </div>
 
   <div class="section-head" style="margin-bottom:16px">
     <div class="tabs" role="tablist" aria-label="Filter handoffs by status">
       {% for f in status_filters %}
-      <a href="/control?status={{ f }}{% if date_qs %}&amp;{{ date_qs }}{% endif %}" class="{{ "active" if status_filter == f }}" role="tab" aria-selected="{{ "true" if status_filter == f else "false" }}">
+      <a href="/control?status={{ f }}{% if filter_qs %}&amp;{{ filter_qs }}{% endif %}" class="{{ "active" if status_filter == f }}" role="tab" aria-selected="{{ "true" if status_filter == f else "false" }}">
         {{ f }}
         <span class="count">
           {%- if f == "all" %}{{ total_count }}
@@ -88,7 +88,19 @@
       {% endfor %}
     </div>
     <span style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <a class="a-btn" href="/control/handoffs/export.csv?status={{ status_filter }}{% if date_qs %}&amp;{{ date_qs }}{% endif %}"
+      <form method="get" action="/control" class="search-form" role="search" aria-label="Search handoffs">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        {% if since_filter %}<input type="hidden" name="since" value="{{ since_filter }}">{% endif %}
+        {% if until_filter %}<input type="hidden" name="until" value="{{ until_filter }}">{% endif %}
+        <input type="search" id="q" name="q" value="{{ q_filter }}" maxlength="100"
+               placeholder="Search purpose, origin, ID…" aria-label="Search handoffs"
+               title="Literal substring match over purpose and origin, or ID prefix">
+        <button type="submit">Search</button>
+        {% if q_filter %}
+        <a class="chip-clear" href="/control?status={{ status_filter }}{% if date_only_qs %}&amp;{{ date_only_qs }}{% endif %}" title="Remove the search">clear ×</a>
+        {% endif %}
+      </form>
+      <a class="a-btn" href="/control/handoffs/export.csv?status={{ status_filter }}{% if filter_qs %}&amp;{{ filter_qs }}{% endif %}"
          title="Download the filtered handoff list as metadata-only CSV (no secret material)">
         Export CSV
       </a>
@@ -106,13 +118,14 @@
 
   <form method="get" action="/control" class="date-form" aria-label="Filter handoffs by creation date (UTC)">
     <input type="hidden" name="status" value="{{ status_filter }}">
+    {% if q_filter %}<input type="hidden" name="q" value="{{ q_filter }}">{% endif %}
     <label for="since">Created from</label>
     <input type="date" id="since" name="since" value="{{ since_filter }}" data-utc-day="true">
     <label for="until" class="date-to">to</label>
     <input type="date" id="until" name="until" value="{{ until_filter }}" data-utc-day="true">
     <button type="submit">Apply</button>
     {% if since_filter or until_filter %}
-    <a class="chip-clear" href="/control?status={{ status_filter }}" title="Remove the date filter">clear dates ×</a>
+    <a class="chip-clear" href="/control?status={{ status_filter }}{% if q_qs %}&amp;{{ q_qs }}{% endif %}" title="Remove the date filter">clear dates ×</a>
     {% endif %}
   </form>
 
@@ -140,8 +153,10 @@
   {% else %}
   <div class="empty">
     <span class="big" aria-hidden="true">◻</span>
-    {% if status_filter == "all" and not (since_filter or until_filter) %}
+    {% if status_filter == "all" and not (since_filter or until_filter) and not q_filter %}
     No human handoffs yet. When the intelligence needs external authority, the request appears here.
+    {% elif q_filter %}
+    No handoffs match the search “<strong>{{ q_filter }}</strong>”{% if status_filter != "all" %} with the <strong>{{ status_filter }}</strong> status{% endif %}{% if since_filter or until_filter %} in the selected date range{% endif %}. Search matches purpose and origin as literal text, or the handoff ID as a prefix.
     {% elif since_filter or until_filter %}
     No handoffs were created in the selected date range{% if status_filter != "all" %} with the <strong>{{ status_filter }}</strong> status{% endif %}.
     {% else %}
@@ -154,7 +169,7 @@
   <nav class="pager" aria-label="Handoff table pages">
     <span class="pager-info">page {{ page }} / {{ pages }}</span>
     {# raw "&" — Jinja autoescape renders it as &amp; inside the href #}
-    {% set page_base = "/control?status=" ~ status_filter ~ ("&" ~ date_qs if date_qs else "") %}
+    {% set page_base = "/control?status=" ~ status_filter ~ ("&" ~ filter_qs if filter_qs else "") %}
     {% if page > 1 %}
     <a href="{{ page_base }}&amp;page={{ page - 1 }}" rel="prev">‹ Prev</a>
     {% else %}

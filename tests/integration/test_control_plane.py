@@ -1219,3 +1219,283 @@ async def _last_handoff_id() -> str:
         )
         assert row is not None
         return row.id
+
+
+# ---------------------------------------------------------------------------
+# Round 6: operator search (?q=), authority-grants audit page, theme toggle
+# ---------------------------------------------------------------------------
+
+
+async def _seed_grant(
+    principal_id: str,
+    *,
+    handle: str,
+    status: str = "active",
+    effect_class: str = "read_only",
+    expires_in_hours: float = 24.0,
+    last_used_hours_ago: float | None = None,
+) -> str:
+    """A material+grant pair with a FIXED handle (tests assert on it).
+
+    status stays "active" with a past expires_at to model the live-expired
+    case: no process has touched the row, yet the grant is dead.
+    """
+    from ulid import ULID
+
+    now = datetime.now(UTC)
+    material_id = str(ULID())
+    async with db_session() as s:
+        s.add(
+            AuthorityMaterialRecord(
+                id=material_id,
+                principal_id=principal_id,
+                material_type="opaque_secret",
+                ciphertext="seeded-ciphertext",
+                ciphertext_nonce="n" * 16,
+                wrapped_data_key="k" * 32,
+                wrapped_key_nonce="n" * 16,
+                key_version=1,
+                status="revoked" if status == "revoked" else "active",
+                revoked_at=now if status == "revoked" else None,
+                expires_at=now + timedelta(hours=expires_in_hours),
+            )
+        )
+        s.add(
+            AuthorityGrantRecord(
+                id=str(ULID()),
+                principal_id=principal_id,
+                authority_material_id=material_id,
+                handle=handle,
+                allowed_actions_json={
+                    "handoff_kind": "secret",
+                    "actions": [
+                        {
+                            "description": "use the delegated credential",
+                            "effect_class": effect_class,
+                        }
+                    ],
+                },
+                effect_class=effect_class,
+                status=status,
+                expires_at=now + timedelta(hours=expires_in_hours),
+                revoked_at=now if status == "revoked" else None,
+                last_used_at=(
+                    now - timedelta(hours=last_used_hours_ago)
+                    if last_used_hours_ago is not None
+                    else None
+                ),
+            )
+        )
+        await s.commit()
+    return handle
+
+
+async def _grant_id_for(handle: str) -> str:
+    async with db_session() as s:
+        row = (
+            await s.execute(
+                select(AuthorityGrantRecord).where(AuthorityGrantRecord.handle == handle)
+            )
+        ).scalar_one()
+        return row.id
+
+
+class TestOperatorSearch:
+    async def test_search_matches_purpose_substring(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="Rotate the payment gateway key")
+        await _seed_handoff_on(p, days_ago=0, purpose="Water the office plants")
+        resp = await client.get("/control", params={"q": "gateway"})
+        assert resp.status_code == 200
+        assert "payment gateway key" in resp.text
+        assert "office plants" not in resp.text
+        assert 'value="gateway"' in resp.text  # input preserves the needle
+        assert "search:" in resp.text  # active-filter chip
+
+    async def test_search_matches_handoff_id_prefix(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="Unique searchable purpose")
+        handoff_id = await _last_handoff_id()
+        resp = await client.get("/control", params={"q": handoff_id[:10]})
+        assert resp.status_code == 200
+        assert "Unique searchable purpose" in resp.text
+
+    async def test_search_no_results_shows_search_empty_state(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="Something ordinary")
+        resp = await client.get("/control", params={"q": "zzz-no-such-thing"})
+        assert resp.status_code == 200
+        assert "No handoffs match the search" in resp.text
+
+    async def test_search_escapes_like_metacharacters(self, client, app):
+        """% and _ are literal: q="%" matches ONLY rows containing '%'."""
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="progress 100%_done today")
+        await _seed_handoff_on(p, days_ago=0, purpose="plain purpose without specials")
+        resp = await client.get("/control", params={"q": "%"})
+        assert resp.status_code == 200
+        assert "100%_done" in resp.text
+        assert "plain purpose without specials" not in resp.text
+
+    async def test_search_combines_with_status_filter(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="alpha report job")
+        await _seed_handoff_on(p, days_ago=0, purpose="beta report job")
+        both = await client.get("/control", params={"q": "report", "status": "completed"})
+        assert "alpha report job" in both.text and "beta report job" in both.text
+        none = await client.get("/control", params={"q": "report", "status": "open"})
+        assert "No handoffs match the search" in none.text
+
+    async def test_pager_preserves_search(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_rows(p, 55, purpose_prefix="Searchable bulk")
+        resp = await client.get("/control", params={"q": "Searchable", "page": 2})
+        assert resp.status_code == 200
+        assert "page 2" in resp.text
+        assert "q=Searchable" in resp.text  # pager links carry the needle
+
+    async def test_csv_export_honors_search(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="needle in the haystack row")
+        await _seed_handoff_on(p, days_ago=0, purpose="unrelated row")
+        resp = await client.get("/control/handoffs/export.csv", params={"q": "needle"})
+        assert resp.status_code == 200
+        assert "needle in the haystack row" in resp.text
+        assert "unrelated row" not in resp.text
+
+    async def test_search_needle_is_length_capped(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="ordinary row")
+        resp = await client.get("/control", params={"q": "x" * 500})
+        assert resp.status_code == 200  # capped, not an error
+
+
+class TestAuthorityGrantsPage:
+    async def test_grants_page_renders_rows_and_counts(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="A" * 40, effect_class="read_only")
+        await _seed_grant(p, handle="B" * 40, effect_class="destructive")
+        await _seed_grant(p, handle="C" * 40, status="revoked")
+        resp = await client.get("/control/grants")
+        assert resp.status_code == 200
+        assert "Authority grants" in resp.text
+        # status tabs render with the filter list
+        assert 'role="tab"' in resp.text
+        # revoke buttons appear only for active grants (2 of them), keyed
+        # by RECORD id — the authority handle itself never appears in URLs
+        assert resp.text.count("/revoke") == 2
+        # handles are NEVER fully rendered (the handle is the authority
+        # token the intelligence holds) — abbreviated form only
+        assert "A" * 40 not in resp.text
+        assert "A" * 10 + "…" in resp.text
+        assert "destructive" in resp.text
+        # last_used shows "never" when untouched
+        assert "never" in resp.text
+
+    async def test_grants_page_filter_tabs(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="A" * 40)
+        await _seed_grant(p, handle="C" * 40, status="revoked")
+        revoked = await client.get("/control/grants", params={"status": "revoked"})
+        assert revoked.status_code == 200
+        assert "A" * 10 + "…" not in revoked.text
+        assert "C" * 10 + "…" in revoked.text
+
+    async def test_expired_is_computed_live(self, client, app):
+        """A grant whose row still says active but whose expires_at has
+        passed renders as expired — and gets no revoke button."""
+        p = await _create_principal()
+        await _seed_grant(p, handle="D" * 40, expires_in_hours=-5.0)
+        resp = await client.get("/control/grants")
+        assert "D" * 10 + "…" in resp.text
+        assert ">expired</span>" in resp.text
+        # the expired grant has no revoke form
+        assert "/revoke" not in resp.text
+
+    async def test_expiring_soon_hint(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="E" * 40, expires_in_hours=2.0)
+        resp = await client.get("/control/grants")
+        assert "expires soon" in resp.text
+        # future expiry reads as "in Nh" — never clamped to "just now",
+        # which would mislead an operator about when the grant dies
+        assert "in 2h" in resp.text
+
+    async def test_revoke_revokes_grant_and_material(self, client, app):
+        p = await _create_principal()
+        handle = await _seed_grant(p, handle="F" * 40)
+        grant_id = await _grant_id_for(handle)
+        page = await client.get("/control/grants")
+        csrf = _csrf_from_form(page.text, "/revoke")
+        resp = await client.post(f"/control/grants/{grant_id}/revoke", data={"csrf_token": csrf})
+        assert resp.status_code == 200  # followed redirect to ?revoked=1
+        assert "Authority grant revoked" in resp.text
+        # the handle never leaks into the operator HTML
+        assert handle not in page.text
+        async with db_session() as s:
+            grant = (
+                await s.execute(
+                    select(AuthorityGrantRecord).where(AuthorityGrantRecord.handle == handle)
+                )
+            ).scalar_one()
+            assert grant.status == "revoked"
+            assert grant.revoked_at is not None
+            material = await s.get(AuthorityMaterialRecord, grant.authority_material_id)
+            assert material is not None
+            assert material.status == "revoked"
+            assert material.revoked_at is not None
+
+    async def test_revoke_rejects_foreign_scope_csrf(self, client, app):
+        """A token minted for the submit form is worthless here (scoped
+        CSRF): no revocation happens, the operator gets a loud error."""
+        p = await _create_principal()
+        handle = await _seed_grant(p, handle="G" * 40)
+        grant_id = await _grant_id_for(handle)
+        handoff_id = await _create_handoff(p)
+        detail = await client.get(f"/control/handoffs/{handoff_id}")
+        handoff_csrf = _csrf_from_form(detail.text, "/submit")
+        resp = await client.post(
+            f"/control/grants/{grant_id}/revoke", data={"csrf_token": handoff_csrf}
+        )
+        assert "revoke confirmation has expired" in resp.text
+        async with db_session() as s:
+            grant = (
+                await s.execute(
+                    select(AuthorityGrantRecord).where(AuthorityGrantRecord.handle == handle)
+                )
+            ).scalar_one()
+            assert grant.status == "active"
+
+    async def test_revoke_unknown_handle_shows_error(self, client, app):
+        p = await _create_principal()
+        # one live grant exists so the page carries a revoke form (the
+        # token source); the POST itself targets a nonexistent id
+        await _seed_grant(p, handle="J" * 40)
+        page = await client.get("/control/grants")
+        csrf = _csrf_from_form(page.text, "/revoke")
+        resp = await client.post(
+            "/control/grants/NOPE" + "Z" * 23 + "/revoke", data={"csrf_token": csrf}
+        )
+        assert "No grant with that handle exists" in resp.text
+
+    async def test_grants_reachable_from_dashboard(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="H" * 40)
+        dash = await client.get("/control")
+        assert 'href="/control/grants"' in dash.text
+        grants = await client.get("/control/grants")
+        assert 'href="/control/grants"' in grants.text
+        assert 'aria-current="page"' in grants.text  # nav active state
+
+
+class TestThemeToggle:
+    async def test_toggle_and_bootstrap_render_on_dashboard_and_login(self, client, app):
+        p = await _create_principal()
+        await _seed_handoff_on(p, days_ago=0, purpose="theme probe row")
+        dash = await client.get("/control")
+        assert 'id="theme-toggle"' in dash.text
+        assert "wax-theme" in dash.text  # bootstrap + persistence script
+        assert "data-theme" in dash.text
+        login = await client.get("/control/login")
+        assert 'id="theme-toggle"' in login.text
+        assert "wax-theme" in login.text

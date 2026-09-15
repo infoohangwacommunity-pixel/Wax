@@ -9,7 +9,10 @@ Surface (all server-rendered HTML, same-origin, no external assets):
 
 - GET  /control                          dashboard home (handoff overview,
                                          paginated, ?status= + ?since=/?until=
-                                         UTC-day filters)
+                                         UTC-day filters + ?q= search)
+- GET  /control/grants                   authority-grant audit view
+                                         (?status= filter)
+- POST /control/grants/{handle}/revoke   operator revokes a live grant
 - GET  /control/login                    operator login
 - POST /control/login                    verify token → session cookie
 - POST /control/logout                   clear session
@@ -134,8 +137,18 @@ FAILED_STATUSES = (
 
 _STATUS_FILTERS = ("all", "open", "completed", "failed")
 
+# Authority-grant status tabs (?status= on /control/grants). "expired" is
+# computed live: a grant whose status is still active but whose expires_at
+# has passed shows as expired everywhere (the stored status only changes
+# when something touches the record).
+_GRANT_STATUS_FILTERS = ("all", "active", "revoked", "expired")
+
 # Date-range filters (?since=YYYY-MM-DD&until=YYYY-MM-DD, UTC days).
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# ?q= operator search: literal substring over purpose / origin, or ID
+# prefix. Capped — a needle this long is pasted noise, not a search.
+_SEARCH_MAX_LEN = 100
 
 _MATERIAL_LABELS = {
     MaterialType.OPAQUE_SECRET.value: "Opaque secret (API key, password, token)",
@@ -364,23 +377,24 @@ def register_control_plane(app) -> None:
             page = 1
         page = max(1, page)
 
+        q_raw = _parse_search_param(request)
+
         try:
             since_dt, since_raw = _parse_date_param(request, "since")
             until_dt, until_raw = _parse_date_param(request, "until")
         except ValueError as e:
             return _html_response(request, "error.html", {"error": str(e)}, status_code=400)
-        date_qs = _date_query_string(since_raw, until_raw)
+        filter_qs = _filter_query_string(("since", since_raw), ("until", until_raw), ("q", q_raw))
+        date_only_qs = _filter_query_string(("since", since_raw), ("until", until_raw))
+        q_qs = _filter_query_string(("q", q_raw))
 
         async with db_session() as session:
             counts = await _handoff_counts(session)
-            where = _status_where(status_filter)
-            date_where = _date_where(since_dt, until_dt)
-            if date_where is not None:
-                from sqlalchemy import and_ as _and
-
-                where = (
-                    date_where if where is None else _and(where, date_where)
-                )  # combined filter for the table
+            where = _combine_where(
+                _status_where(status_filter),
+                _date_where(since_dt, until_dt),
+                _search_where(q_raw),
+            )
 
             filtered_count = counts["total"]
             if where is not None:
@@ -423,7 +437,10 @@ def register_control_plane(app) -> None:
                 "status_filters": _STATUS_FILTERS,
                 "since_filter": since_raw,
                 "until_filter": until_raw,
-                "date_qs": date_qs,
+                "q_filter": q_raw,
+                "filter_qs": filter_qs,
+                "date_only_qs": date_only_qs,
+                "q_qs": q_qs,
                 "page": page,
                 "pages": pages,
                 "page_size": _PAGE_SIZE,
@@ -467,6 +484,7 @@ def register_control_plane(app) -> None:
         status_filter = (request.query_params.get("status") or "all").strip()
         if status_filter not in _STATUS_FILTERS:
             status_filter = "all"
+        q_raw = _parse_search_param(request)
         try:
             since_dt, _since_raw = _parse_date_param(request, "since")
             until_dt, _until_raw = _parse_date_param(request, "until")
@@ -483,12 +501,11 @@ def register_control_plane(app) -> None:
                 )
                 .limit(_CSV_MAX_ROWS)
             )
-            where = _status_where(status_filter)
-            date_where = _date_where(since_dt, until_dt)
-            if date_where is not None:
-                from sqlalchemy import and_ as _and
-
-                where = date_where if where is None else _and(where, date_where)
+            where = _combine_where(
+                _status_where(status_filter),
+                _date_where(since_dt, until_dt),
+                _search_where(q_raw),
+            )
             if where is not None:
                 query = query.where(where)
             rows = (await session.execute(query)).scalars().all()
@@ -502,6 +519,136 @@ def register_control_plane(app) -> None:
         )
         _harden(response)
         return response
+
+    @app.get("/control/grants", tags=["control"], include_in_schema=False)
+    async def control_grants(request: Request):
+        """Authority-grant audit view (same auth as the dashboard).
+
+        Operators otherwise have NO way to see live delegations — the
+        dashboard only shows a count. This page lists every grant with its
+        scope, effect class and lifecycle state; "expired" is computed
+        live from expires_at so stale grants are visible even though no
+        process has touched the row.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        grant_status = (request.query_params.get("status") or "all").strip()
+        if grant_status not in _GRANT_STATUS_FILTERS:
+            grant_status = "all"
+        revoked_flash = (request.query_params.get("revoked") or "").strip()
+        revoke_flash = (request.query_params.get("revoke") or "").strip()
+        try:
+            page = int(request.query_params.get("page") or "1")
+        except ValueError:
+            page = 1
+        page = max(1, page)
+
+        async with db_session() as session:
+            now = datetime.now(UTC)
+            base_count = select(func.count()).select_from(AuthorityGrantRecord)
+            grant_counts = {
+                "all": (await session.execute(base_count)).scalar_one(),
+                "active": (
+                    await session.execute(base_count.where(_grant_status_where("active", now)))
+                ).scalar_one(),
+                "revoked": (
+                    await session.execute(base_count.where(_grant_status_where("revoked", now)))
+                ).scalar_one(),
+                "expired": (
+                    await session.execute(base_count.where(_grant_status_where("expired", now)))
+                ).scalar_one(),
+            }
+
+            where = _grant_status_where(grant_status, now)
+            filtered_count = grant_counts["all"]
+            if where is not None:
+                filtered_count = (
+                    await session.execute(
+                        select(func.count()).select_from(AuthorityGrantRecord).where(where)
+                    )
+                ).scalar_one()
+            pages = max(1, math.ceil(filtered_count / _PAGE_SIZE))
+            if page > pages:
+                page = pages
+
+            query = select(AuthorityGrantRecord).order_by(AuthorityGrantRecord.created_at.desc())
+            if where is not None:
+                query = query.where(where)
+            rows = (
+                (await session.execute(query.offset((page - 1) * _PAGE_SIZE).limit(_PAGE_SIZE)))
+                .scalars()
+                .all()
+            )
+            await session.commit()
+
+        return _html_response(
+            request,
+            "grants.html",
+            {
+                "grants": [_grant_view(g, now) for g in rows],
+                "grant_status_filter": grant_status,
+                "grant_status_filters": _GRANT_STATUS_FILTERS,
+                "grant_counts": grant_counts,
+                "filtered_count": filtered_count,
+                "showing_from": (page - 1) * _PAGE_SIZE + 1 if rows else 0,
+                "showing_to": (page - 1) * _PAGE_SIZE + len(rows),
+                "page": page,
+                "pages": pages,
+                "page_size": _PAGE_SIZE,
+                "page_window": _page_window(page, pages),
+                "revoke_csrf": auth.make_csrf("revoke"),
+                "revoked_flash": revoked_flash == "1",
+                "revoke_flash": revoke_flash,
+                "wax_version": _wax_version,
+            },
+        )
+
+    @app.post("/control/grants/{grant_id}/revoke", tags=["control"], include_in_schema=False)
+    async def control_grant_revoke(request: Request, grant_id: str):
+        """Operator revokes a live authority grant.
+
+        Broker-side transition (grant + underlying material both marked
+        revoked) behind a NEW scoped CSRF ("revoke") — tokens minted for
+        handoff submit/cancel/GC forms are rejected. The revoke button is
+        confirm()-guarded in the UI; the server treats revocation as
+        immediate and irreversible (a new delegation requires a new
+        handoff). Keyed by the grant's RECORD id — the handle (the live
+        authority token) never appears in operator HTML or URLs.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        form = await request.form()
+        if not auth.verify_csrf(str(form.get("csrf_token", "") or ""), scope="revoke"):
+            log.warning("control.grant_revoke_csrf_rejected")
+            return _redirect("/control/grants?revoke=stale_token")
+
+        async with db_session() as session:
+            from wax.runtime.authority.broker import AuthorityBroker
+
+            services = getattr(app.state, "services", None)
+            broker = (
+                services.authority_broker
+                if services is not None and services.authority_broker is not None
+                else AuthorityBroker()
+            )
+            revoked = await broker.operator_revoke_authority(session, grant_id=grant_id)
+            await session.commit()
+
+        if not revoked:
+            log.warning("control.grant_revoke_unknown_handle")
+            return _redirect("/control/grants?revoke=unknown")
+        log.info("control.grant_revoked")
+        return _redirect("/control/grants?revoked=1")
 
     @app.get("/control/login", tags=["control"], include_in_schema=False)
     async def control_login_form(request: Request):
@@ -994,15 +1141,131 @@ def _date_where(since: datetime | None, until: datetime | None):
     return and_(*clauses)
 
 
-def _date_query_string(since_raw: str, until_raw: str) -> str:
-    """urlencode'd 'since=…&until=…' fragment ('' when both absent), shared
-    by tab links, the pager and the CSV export so filters survive links."""
-    pairs = []
-    if since_raw:
-        pairs.append(("since", since_raw))
-    if until_raw:
-        pairs.append(("until", until_raw))
-    return urlencode(pairs)
+def _filter_query_string(*pairs: tuple[str, str]) -> str:
+    """urlencode'd query fragment skipping empty values — carries
+    since/until/q across tabs, pager and CSV links so every filter
+    survives navigation."""
+    return urlencode([(k, v) for k, v in pairs if v])
+
+
+def _parse_search_param(request: Request) -> str:
+    """The ?q= operator search needle, trimmed and length-capped.
+
+    Matching is literal substring (see _search_where) — % and _ are
+    escaped, never treated as wildcards, so an operator searching for
+    "100%_done" gets exactly that string.
+    """
+    raw = (request.query_params.get("q") or "").strip()
+    if len(raw) > _SEARCH_MAX_LEN:
+        raw = raw[:_SEARCH_MAX_LEN]
+    return raw
+
+
+def _search_where(q: str):
+    """WHERE clause for the ?q= search, or None.
+
+    Matches purpose / origin_reference as literal substrings and the
+    handoff ID as a prefix (operators paste IDs). LIKE metacharacters are
+    escaped so the operator's text is always taken literally.
+    """
+    if not q:
+        return None
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    from sqlalchemy import or_
+
+    return or_(
+        HumanHandoffRecord.purpose.ilike(f"%{escaped}%", escape="\\"),
+        HumanHandoffRecord.origin_reference.ilike(f"%{escaped}%", escape="\\"),
+        HumanHandoffRecord.id.ilike(f"{escaped}%", escape="\\"),
+    )
+
+
+def _combine_where(*clauses):
+    """AND-combine filter clauses, ignoring the Nones (each filter is
+    optional), or None when no filter applies at all."""
+    present = [c for c in clauses if c is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    from sqlalchemy import and_
+
+    return and_(*present)
+
+
+def _grant_status_where(status_filter: str, now: datetime):
+    """WHERE clause for the grants-page status tabs, or None.
+
+    "active" means status is active AND not yet expired; "expired" is the
+    live computation (status still active, expires_at in the past) — a
+    grant row is only marked revoked by an explicit revocation.
+    """
+    from sqlalchemy import and_
+
+    active = AuthorityGrantRecord.status == "active"
+    if status_filter == "active":
+        return and_(active, AuthorityGrantRecord.expires_at >= now)
+    if status_filter == "revoked":
+        return AuthorityGrantRecord.status == "revoked"
+    if status_filter == "expired":
+        return and_(active, AuthorityGrantRecord.expires_at < now)
+    return None
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """SQLite/aiosqlite return naive datetimes even for timezone=True
+    columns — normalize to UTC before any comparison or arithmetic."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _grant_view(g: AuthorityGrantRecord, now: datetime) -> dict[str, Any]:
+    """Display projection of a grant — identifiers are shortened (full
+    values in title attributes); no secret material exists on the record."""
+    created = _aware(g.created_at)
+    expires = _aware(g.expires_at)
+    revoked = _aware(g.revoked_at)
+    last_used = _aware(g.last_used_at)
+    status = g.status
+    if status == "active" and expires is not None and expires < now:
+        status = "expired"
+    actions: list[str] = []
+    if isinstance(g.allowed_actions_json, dict):
+        raw_actions = g.allowed_actions_json.get("actions") or []
+        actions = [str(a)[:80] for a in raw_actions][:6]
+    expires_soon = (
+        status == "active" and expires is not None and (expires - now).total_seconds() < 6 * 3600
+    )
+    effect = (g.effect_class or "read_only").strip().lower()
+    effect_badge = {
+        "read_only": "opened",
+        "write": "pending",
+        "external_side_effect": "pending",
+        "destructive": "failed",
+        "privileged": "failed",
+    }.get(effect, "cancelled")
+    return {
+        "id": g.id,
+        "handle": g.handle,
+        "handle_short": g.handle[:10] + "…",
+        "principal_id": g.principal_id,
+        "principal_short": g.principal_id[:10] + "…",
+        "effect_class": effect,
+        "effect_badge": effect_badge,
+        "actions": actions,
+        "actions_title": " · ".join(actions),
+        "status": status,
+        "raw_status": g.status,
+        "created": _fmt_dt(created),
+        "created_rel": _rel_dt(created),
+        "expires": _fmt_dt(expires),
+        "expires_rel": _rel_dt(expires),
+        "expires_soon": expires_soon,
+        "revoked_at": _fmt_dt(revoked),
+        "last_used": _fmt_dt(last_used),
+        "last_used_rel": _rel_dt(last_used),
+    }
 
 
 def _page_window(current: int, total: int, span: int = 1) -> list[int | None]:
@@ -1198,14 +1461,24 @@ def _fmt_dt(dt: datetime | None) -> str | None:
 
 
 def _rel_dt(dt: datetime | None) -> str | None:
-    """Coarse relative time for table rows ("4m ago")."""
+    """Coarse relative time for table rows ("4m ago", future: "in 23h")."""
     if dt is None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     delta = (datetime.now(UTC) - dt).total_seconds()
     if delta < 0:
-        delta = 0
+        # future timestamp (grant expiry) — never clamp to "just now",
+        # an operator must not misread an expiry that hasn't happened.
+        # Rounds UP so "in 2h" is honest even at 1h59m remaining.
+        ahead = -delta
+        if ahead < 60:
+            return "in a moment"
+        if ahead < 3600:
+            return f"in {int(ahead // 60) + 1}m"
+        if ahead < 86400:
+            return f"in {int(ahead // 3600) + 1}h"
+        return f"in {int(ahead // 86400) + 1}d"
     if delta < 60:
         return "just now"
     if delta < 3600:

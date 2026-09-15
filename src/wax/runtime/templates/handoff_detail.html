@@ -189,11 +189,38 @@
   {% endif %}
 
   <details class="meta-json">
-    <summary>Metadata JSON (debug view — no secret material)</summary>
+    <summary>Metadata JSON (debug view — no secret material)
+      <button type="button" class="mini-btn" id="dl-json"
+              title="Download this metadata JSON as a file">download ↓</button>
+    </summary>
     <pre class="json-pre">{{ metadata_json }}</pre>
   </details>
 
   <script>
+    // Download the metadata JSON (the same content shown in the panel —
+    // no secret material). Client-side Blob download, no server round
+    // trip; preventDefault stops the <summary> toggle when clicking.
+    var dlBtn = document.getElementById("dl-json");
+    if (dlBtn) {
+      dlBtn.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var pre = document.querySelector(".json-pre");
+        if (!pre) return;
+        var blob = new Blob([pre.textContent], { type: "application/json" });
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "wax-handoff-{{ h.id }}-metadata.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+        var old = dlBtn.textContent;
+        dlBtn.textContent = "saved ✓";
+        setTimeout(function () { dlBtn.textContent = old; }, 1400);
+      });
+    }
+
     // Progressive enhancement only: copy the full handoff ID. Works
     // clipboard-first with a fallback for non-secure contexts; the page
     // remains fully functional without JavaScript.
