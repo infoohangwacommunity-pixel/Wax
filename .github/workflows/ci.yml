@@ -44,7 +44,7 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev,exact-tokens,media-docs]"
         env:
           UV_PYTHON: "3.12"
 

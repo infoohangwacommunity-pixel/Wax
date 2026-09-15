@@ -60,6 +60,7 @@ class _NoEstimator:
 
 class TestAdapterOwnedCounters:
     def test_openai_counter_provenance(self):
+        pytest.importorskip("tiktoken")
         provider = _openai("gpt-4o")
         assert provider.token_counter == "tiktoken:o200k_base"
 
