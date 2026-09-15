@@ -26,7 +26,8 @@
   <div class="section-head">
     <h2>Authority grants</h2>
     <span class="note">opaque, scoped permissions issued when a handoff completes · the
-    intelligence holds only the handle — the underlying secret never leaves the vault</span>
+    intelligence holds only the handle — the underlying secret never leaves the vault ·
+    <a class="audit-link-inline" href="/control/audit?kind=grants">grant audit events →</a></span>
   </div>
 
   <div class="section-head" style="margin-bottom:16px">
@@ -38,7 +39,11 @@
       </a>
       {% endfor %}
     </div>
-    <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if grant_status_filter != "all" %} ({{ grant_status_filter }}){% endif %}</span>
+    <span class="nav-gap">
+      <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if grant_status_filter != "all" %} ({{ grant_status_filter }}){% endif %}</span>
+      <a class="a-btn" href="/control/grants/export.csv?status={{ grant_status_filter }}"
+         title="Download the filtered grants as CSV — metadata only, never the handle">Export CSV</a>
+    </span>
   </div>
 
   {% if grants %}

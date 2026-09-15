@@ -155,6 +155,36 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
                 )
                 if gc["removed"]:
                     log.info("runtime.blob_gc_pass", **gc)
+                    # Deletion is the security-relevant fact — when the
+                    # scheduled sweep actually removes blobs, append a
+                    # system-actor audit row so the operator ledger shows
+                    # WHO deleted (here: nobody human). No-op passes
+                    # (removed == 0) are deliberately NOT audited: they
+                    # would flood the append-only ledger (~288 rows/day)
+                    # with non-facts; the metric + this log line already
+                    # record that the pass ran.
+                    try:
+                        from wax.observability.audit import record_audit_event
+
+                        async with db_session() as audit_session:
+                            await record_audit_event(
+                                audit_session,
+                                actor_principal_id=None,
+                                actor_kind="system",
+                                event_kind="system.blob_gc",
+                                outcome="success",
+                                payload={
+                                    "removed": gc["removed"],
+                                    "reclaimed_bytes": gc["reclaimed_bytes"],
+                                },
+                            )
+                            await audit_session.commit()
+                    except Exception as e:  # audit write must never break the pass
+                        log.warning(
+                            "runtime.blob_gc_audit_failed",
+                            error=str(e)[:200],
+                            error_type=type(e).__name__,
+                        )
             else:
                 results["blob_gc"] = {"skipped": "no_blob_store"}
 

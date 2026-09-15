@@ -56,7 +56,8 @@
     <pre class="instructions">{{ h.instructions }}</pre>
     {% endif %}
 
-    <label>Activity</label>
+    <label>Activity <a class="audit-link" href="/control/audit?kind=handoffs&amp;q={{ h.id }}"
+       title="Open the audit log filtered to this handoff's events — every operator action on it is recorded there">audit log →</a></label>
     <ul class="timeline">
       <li class="mute">
         <div class="t-what">Requested</div>

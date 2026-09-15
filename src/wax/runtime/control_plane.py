@@ -12,15 +12,23 @@ Surface (all server-rendered HTML, same-origin, no external assets):
                                          UTC-day filters + ?q= search)
 - GET  /control/grants                   authority-grant audit view
                                          (?status= filter)
+- GET  /control/grants/export.csv        metadata-only grants CSV (NEVER the
+                                         handle — it is the live token)
 - POST /control/grants/{handle}/revoke   operator revokes a live grant
+- GET  /control/audit                    operator audit trail (kind tabs +
+                                         metadata-only ?q= search)
+- GET  /control/audit/export.csv         metadata-only audit CSV (same
+                                         filters; spreadsheet-formula safe)
 - GET  /control/login                    operator login
 - POST /control/login                    verify token → session cookie
 - POST /control/logout                   clear session
-- GET  /control/handoffs/{id}            handoff detail (metadata only)
+- GET  /control/handoffs/{id}            handoff detail (metadata only, links
+                                         its own audit entries)
 - POST /control/handoffs/{id}/submit     submit the secret (encrypted
                                          immediately, never echoed)
 - POST /control/handoffs/{id}/cancel     operator cancels an open handoff
                                          (CSRF-protected, wakes waiting work)
+- POST /control/handoffs/cancel-bulk     bulk-cancel open handoffs (capped)
 - GET  /control/handoffs/export.csv      metadata-only CSV export (same auth;
                                          spreadsheet-formula sanitized)
 - POST /control/maintenance/gc           run blob-store garbage collection
@@ -70,7 +78,7 @@ from urllib.parse import urlencode
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 
 from wax import __version__ as _wax_version
 from wax.runtime.authority.contracts import (
@@ -122,6 +130,9 @@ _PAGE_SIZE = 50
 # CSV export cap: metadata-only rows are small, but the export is still
 # bounded so a runaway table cannot balloon a single response.
 _CSV_MAX_ROWS = 5000
+# Audit-ledger export cap (same reasoning; the ledger is append-only and
+# grows without bound — the paginated page reaches older rows).
+_AUDIT_CSV_MAX_ROWS = 5000
 
 # Statuses shown as "actionable" on the dashboard and submittable.
 OPEN_STATUSES = (
@@ -153,7 +164,9 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SEARCH_MAX_LEN = 100
 
 # Audit-page tabs (?kind= on /control/audit). Each tab is a prefix over
-# the event_kind namespace written by this module.
+# the event_kind namespace written by this module. "maintenance" matches
+# BOTH the operator-triggered GC (control.blob_gc) and the system's
+# scheduled GC (system.blob_gc, written by the maintenance pass).
 _AUDIT_KIND_FILTERS = ("all", "login", "handoffs", "grants", "maintenance")
 _AUDIT_KIND_PREFIX = {
     "login": "control.login",
@@ -660,6 +673,55 @@ def register_control_plane(app) -> None:
             },
         )
 
+    @app.get("/control/grants/export.csv", tags=["control"], include_in_schema=False)
+    async def control_grants_export_csv(request: Request):
+        """Metadata-only CSV export of authority grants (same auth).
+
+        Honors the grants status tabs. NEVER contains the handle — the
+        handle IS the live authority token and must not leave the system
+        through an operator export (pinned by test). Status is the
+        live-computed display state; the action COUNT is exported, never
+        the action text. Formula prefixes neutralized like every export.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        grant_status = (request.query_params.get("status") or "all").strip()
+        if grant_status not in _GRANT_STATUS_FILTERS:
+            grant_status = "all"
+
+        async with db_session() as session:
+            now = datetime.now(UTC)
+            where = _grant_status_where(grant_status, now)
+            query = (
+                select(AuthorityGrantRecord)
+                .order_by(AuthorityGrantRecord.created_at.desc())
+                .limit(_CSV_MAX_ROWS)
+            )
+            if where is not None:
+                query = query.where(where)
+            rows = (await session.execute(query)).scalars().all()
+            await session.commit()
+
+        counts = [
+            len(g.allowed_actions_json.get("actions") or [])
+            if isinstance(g.allowed_actions_json, dict)
+            else 0
+            for g in rows
+        ]
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        response = Response(
+            content=_grants_csv([_grant_view(g, now) for g in rows], counts),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="wax-grants-{stamp}.csv"'},
+        )
+        _harden(response)
+        return response
+
     @app.post("/control/grants/{grant_id}/revoke", tags=["control"], include_in_schema=False)
     async def control_grant_revoke(request: Request, grant_id: str):
         """Operator revokes a live authority grant.
@@ -724,7 +786,11 @@ def register_control_plane(app) -> None:
 
         Renders the append-only audit_events rows this module writes on
         every security-sensitive action (INV-06): sign-ins/out, handoff
-        submits/cancels, grant revocations, blob GC runs. Metadata-only —
+        submits/cancels, grant revocations, blob GC runs — plus the
+        system-written scheduled-GC events (system.blob_gc, deletions
+        only). Filterable by kind tab AND a metadata-only ?q= search
+        (event names + payload IDs — paste a handoff/grant ID from a
+        detail page to see exactly that entity's events). Metadata-only —
         payloads never contain secrets or ciphertext.
         """
         settings = app.state.settings
@@ -737,6 +803,7 @@ def register_control_plane(app) -> None:
         kind_filter = (request.query_params.get("kind") or "all").strip()
         if kind_filter not in _AUDIT_KIND_FILTERS:
             kind_filter = "all"
+        q_filter = _parse_search_param(request)
         try:
             page = int(request.query_params.get("page") or "1")
         except ValueError:
@@ -744,14 +811,16 @@ def register_control_plane(app) -> None:
         page = max(1, page)
 
         async with db_session() as session:
-            base = (
-                select(func.count())
-                .select_from(AuditEvent)
-                .where(AuditEvent.event_kind.like("control.%"))
+            base_where = _audit_base_where()
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(AuditEvent).where(base_where)
+                )
+            ).scalar_one()
+            where = _combine_where(
+                _audit_kind_where(kind_filter),
+                _audit_search_where(q_filter),
             )
-            total = (await session.execute(base)).scalar_one()
-            prefix = _AUDIT_KIND_PREFIX.get(kind_filter)
-            where = AuditEvent.event_kind.like(f"{prefix}%") if prefix else None
             filtered_count = total
             if where is not None:
                 filtered_count = (
@@ -761,11 +830,7 @@ def register_control_plane(app) -> None:
             if page > pages:
                 page = pages
 
-            query = (
-                select(AuditEvent)
-                .where(AuditEvent.event_kind.like("control.%"))
-                .order_by(AuditEvent.created_at.desc())
-            )
+            query = select(AuditEvent).where(base_where).order_by(AuditEvent.created_at.desc())
             if where is not None:
                 query = query.where(where)
             rows = (
@@ -782,6 +847,8 @@ def register_control_plane(app) -> None:
                 "events": [_audit_view(e) for e in rows],
                 "kind_filter": kind_filter,
                 "kind_filters": _AUDIT_KIND_FILTERS,
+                "q_filter": q_filter,
+                "filter_qs": _filter_query_string(("kind", kind_filter), ("q", q_filter)),
                 "total_count": total,
                 "filtered_count": filtered_count,
                 "showing_from": (page - 1) * _PAGE_SIZE + 1 if rows else 0,
@@ -793,6 +860,53 @@ def register_control_plane(app) -> None:
                 "wax_version": _wax_version,
             },
         )
+
+    @app.get("/control/audit/export.csv", tags=["control"], include_in_schema=False)
+    async def control_audit_export_csv(request: Request):
+        """Metadata-only CSV export of the audit ledger (same auth).
+
+        Honors the same ?kind= / ?q= filters as the page. Payloads are
+        exported as structured safe columns plus the raw payload JSON
+        (metadata-only by construction — payloads never contain secrets
+        or ciphertext, pinned by tests). Spreadsheet formula prefixes are
+        neutralized exactly like the handoffs export. Capped: the ledger
+        is append-only and could otherwise balloon a single response —
+        older history stays reachable through the paginated page.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        kind_filter = (request.query_params.get("kind") or "all").strip()
+        if kind_filter not in _AUDIT_KIND_FILTERS:
+            kind_filter = "all"
+        q_filter = _parse_search_param(request)
+
+        async with db_session() as session:
+            where = _combine_where(
+                _audit_base_where(),
+                _audit_kind_where(kind_filter),
+                _audit_search_where(q_filter),
+            )
+            query = (
+                select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(_AUDIT_CSV_MAX_ROWS)
+            )
+            if where is not None:
+                query = query.where(where)
+            rows = (await session.execute(query)).scalars().all()
+            await session.commit()
+
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        response = Response(
+            content=_audit_csv(rows),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="wax-audit-{stamp}.csv"'},
+        )
+        _harden(response)
+        return response
 
     @app.post("/control/handoffs/cancel-bulk", tags=["control"], include_in_schema=False)
     async def control_handoff_cancel_bulk(request: Request):
@@ -1462,6 +1576,11 @@ def _parse_search_param(request: Request) -> str:
     return raw
 
 
+def _escape_like(q: str) -> str:
+    """Escape LIKE metacharacters so operator text is taken literally."""
+    return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _search_where(q: str):
     """WHERE clause for the ?q= search, or None.
 
@@ -1471,13 +1590,60 @@ def _search_where(q: str):
     """
     if not q:
         return None
-    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    escaped = _escape_like(q)
     from sqlalchemy import or_
 
     return or_(
         HumanHandoffRecord.purpose.ilike(f"%{escaped}%", escape="\\"),
         HumanHandoffRecord.origin_reference.ilike(f"%{escaped}%", escape="\\"),
         HumanHandoffRecord.id.ilike(f"{escaped}%", escape="\\"),
+    )
+
+
+def _audit_base_where():
+    """The audit page shows everything THIS control plane wrote (control.*)
+    plus system-written maintenance events (system.*)."""
+    from sqlalchemy import or_
+
+    return or_(
+        AuditEvent.event_kind.like("control.%"),
+        AuditEvent.event_kind.like("system.%"),
+    )
+
+
+def _audit_kind_where(kind_filter: str):
+    """WHERE clause for an audit kind tab, or None ("all"). The
+    maintenance tab covers both the operator-triggered GC and the
+    system's scheduled GC."""
+    prefix = _AUDIT_KIND_PREFIX.get(kind_filter)
+    if not prefix:
+        return None
+    if kind_filter == "maintenance":
+        from sqlalchemy import or_
+
+        return or_(
+            AuditEvent.event_kind.like(f"{prefix}%"),
+            AuditEvent.event_kind.like("system.%"),
+        )
+    return AuditEvent.event_kind.like(f"{prefix}%")
+
+
+def _audit_search_where(q: str):
+    """WHERE clause for the audit ?q= search, or None.
+
+    Literal substring over event_kind and the serialized payload. Payloads
+    are metadata-only by construction, and they carry the IDs an operator
+    copies off a detail page (handoff_id, grant_id) — so pasting an ID
+    finds exactly that entity's events. LIKE metacharacters escaped.
+    """
+    if not q:
+        return None
+    escaped = _escape_like(q)
+    from sqlalchemy import or_
+
+    return or_(
+        AuditEvent.event_kind.ilike(f"%{escaped}%", escape="\\"),
+        AuditEvent.payload.cast(String).ilike(f"%{escaped}%", escape="\\"),
     )
 
 
@@ -1637,6 +1803,97 @@ def _handoffs_csv(views: list[dict[str, Any]]) -> str:
     return buffer.getvalue()
 
 
+_AUDIT_CSV_HEADER = (
+    "id",
+    "created_at_utc",
+    "event_kind",
+    "outcome",
+    "actor_kind",
+    "client_ip",
+    "handoff_id",
+    "grant_id",
+    "reason",
+    "removed",
+    "reclaimed_bytes",
+    "payload_json",
+)
+
+
+def _audit_csv(rows: list[AuditEvent]) -> str:
+    """Render audit rows as metadata-only CSV.
+
+    Common payload fields get their own columns (sortable in a
+    spreadsheet); the full payload rides along as JSON. Payloads are
+    metadata-only by construction — the no-secret guarantee is pinned by
+    tests, not by this function's optimism.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_AUDIT_CSV_HEADER)
+    for e in rows:
+        payload = e.payload if isinstance(e.payload, dict) else {}
+        removed = payload.get("removed")
+        reclaimed = payload.get("reclaimed_bytes")
+        writer.writerow(
+            [
+                _csv_cell(e.id),
+                _csv_cell(_fmt_dt(_aware(e.created_at))),
+                _csv_cell(e.event_kind),
+                _csv_cell(e.outcome),
+                _csv_cell(e.actor_kind),
+                _csv_cell(payload.get("client_ip", "")),
+                _csv_cell(payload.get("handoff_id", "")),
+                _csv_cell(payload.get("grant_id", "")),
+                _csv_cell(payload.get("reason", "")),
+                _csv_cell("" if removed is None else removed),
+                _csv_cell("" if reclaimed is None else reclaimed),
+                _csv_cell(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload else ""
+                ),
+            ]
+        )
+    return buffer.getvalue()
+
+
+_GRANTS_CSV_HEADER = (
+    "id",
+    "principal_id",
+    "effect_class",
+    "status",
+    "created_at_utc",
+    "expires_at_utc",
+    "revoked_at_utc",
+    "last_used_at_utc",
+    "allowed_actions_count",
+)
+
+
+def _grants_csv(views: list[dict[str, Any]], action_counts: list[int]) -> str:
+    """Render grant VIEWS as metadata-only CSV.
+
+    DELIBERATELY WITHOUT the handle column: the handle is the live
+    authority token, and an operator convenience export must never become
+    the leak path for it (pinned by test)."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_GRANTS_CSV_HEADER)
+    for v, count in zip(views, action_counts, strict=True):
+        writer.writerow(
+            [
+                _csv_cell(v.get("id")),
+                _csv_cell(v.get("principal_id")),
+                _csv_cell(v.get("effect_class")),
+                _csv_cell(v.get("status")),
+                _csv_cell(v.get("created")),
+                _csv_cell(v.get("expires")),
+                _csv_cell(v.get("revoked_at")),
+                _csv_cell(v.get("last_used")),
+                _csv_cell(count),
+            ]
+        )
+    return buffer.getvalue()
+
+
 def _parse_gc_flash(value: str) -> dict[str, Any] | None:
     """Parse the ?gc= redirect flash into a displayable result."""
     if not value:
@@ -1728,6 +1985,10 @@ def _audit_view(e: AuditEvent) -> dict[str, Any]:
         removed = payload.get("removed")
         kb = (payload.get("reclaimed_bytes") or 0) / 1024
         detail = f"Blob GC removed {removed} object(s), reclaimed {kb:.1f} KB"
+    elif kind == "system.blob_gc":
+        removed = payload.get("removed")
+        kb = (payload.get("reclaimed_bytes") or 0) / 1024
+        detail = f"Scheduled GC removed {removed} object(s), reclaimed {kb:.1f} KB"
     else:
         detail = kind
 
@@ -1744,6 +2005,10 @@ def _audit_view(e: AuditEvent) -> dict[str, Any]:
     created = e.created_at
     if created is not None and created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload else ""
+    copy_text = f"{kind} · {outcome} · {_fmt_dt(created) or ''} · {detail}"
+    if payload_json:
+        copy_text += f" · {payload_json}"
     return {
         "kind": kind,
         "family": family,
@@ -1751,8 +2016,11 @@ def _audit_view(e: AuditEvent) -> dict[str, Any]:
         "detail": detail,
         "client_ip": str(payload.get("client_ip") or "—"),
         "actor_kind": e.actor_kind,
+        "system": e.actor_kind == "system",
         "created": _fmt_dt(created),
         "created_rel": _rel_dt(created),
+        "payload_json": payload_json,
+        "copy_text": copy_text,
     }
 
 

@@ -1737,3 +1737,284 @@ class TestBulkCancel:
         await _create_handoff(principal_id, purpose="Poller guard probe")
         dash = await client.get("/control")
         assert 'input[name="handoff_ids"]:checked' in dash.text
+
+
+async def _seed_audit_event(
+    event_kind: str,
+    payload: dict,
+    *,
+    actor_kind: str = "human",
+    outcome: str = "success",
+) -> None:
+    from wax.observability.audit import record_audit_event
+
+    async with db_session() as s:
+        await record_audit_event(
+            s,
+            actor_principal_id=None,
+            actor_kind=actor_kind,
+            event_kind=event_kind,
+            outcome=outcome,
+            payload=payload,
+        )
+        await s.commit()
+
+
+class TestAuditSearch:
+    """The audit page's metadata-only ?q= search — pasting an entity ID
+    from a detail page must find exactly that entity's events."""
+
+    async def test_search_finds_events_by_payload_id(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        # an unrelated event that must NOT match the search
+        await _seed_audit_event("control.logout", {})
+
+        resp = await client.get("/control/audit", params={"q": handoff_id})
+        assert resp.status_code == 200
+        assert "control.handoff_submitted" in resp.text
+        assert "control.logout" not in resp.text
+
+    async def test_search_matches_event_kind_substring(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/cancel")
+        await client.post(f"/control/handoffs/{handoff_id}/cancel", data={"csrf_token": csrf})
+
+        resp = await client.get("/control/audit", params={"q": "cancelled"})
+        assert "control.handoff_cancelled" in resp.text
+        # submit events (none exist here) are excluded by the same needle
+        assert "control.handoff_submitted" not in resp.text
+
+    async def test_search_no_match_shows_search_empty_state(self, client, app):
+        resp = await client.get("/control/audit", params={"q": "zzz-no-such-event-q"})
+        assert resp.status_code == 200
+        assert "No audit events match" in resp.text
+        assert "zzz-no-such-event-q" in resp.text
+
+    async def test_search_needle_is_taken_literally(self, client, app):
+        # % _ \ are LIKE metacharacters — searching for one must only find
+        # events actually containing that character, never everything.
+        await _seed_audit_event("control.logout", {"reason": "100%_done\\weird"})
+        resp = await client.get("/control/audit", params={"q": "100%_done"})
+        assert "control.logout" in resp.text
+
+    async def test_search_survives_tab_switch_and_export(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        needle = handoff_id[:12]
+        resp = await client.get("/control/audit", params={"q": needle})
+        # tab links carry the search
+        assert f"kind=handoffs&amp;q={needle}" in resp.text
+        # export link carries the search
+        assert f"/control/audit/export.csv?kind=all&amp;q={needle}" in resp.text
+        csv_resp = await client.get("/control/audit/export.csv", params={"q": needle})
+        assert csv_resp.status_code == 200
+        assert "control.handoff_submitted" in csv_resp.text
+
+    async def test_detail_page_links_to_its_audit_entries(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        detail = await client.get(f"/control/handoffs/{handoff_id}")
+        assert f'/control/audit?kind=handoffs&amp;q={handoff_id}"' in detail.text
+        assert "audit log" in detail.text
+        # and the round trip actually finds the handoff's events once one exists
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        audit = await client.get("/control/audit", params={"kind": "handoffs", "q": handoff_id})
+        assert "control.handoff_submitted" in audit.text
+
+
+class TestAuditPageEnhancements:
+    async def test_copy_details_button_carries_full_event(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        resp = await client.get("/control/audit")
+        assert "audit-copy" in resp.text
+        assert "data-copy=" in resp.text
+        # the copy payload includes kind + outcome + the event's own detail
+        assert "control.handoff_submitted · success" in resp.text
+        # never the secret
+        assert SECRET_TYPED_BY_HUMAN not in resp.text
+
+    async def test_system_events_render_with_system_tag(self, client, app):
+        await _seed_audit_event(
+            "system.blob_gc",
+            {"removed": 3, "reclaimed_bytes": 3072},
+            actor_kind="system",
+        )
+        await _seed_audit_event("control.logout", {})
+        resp = await client.get("/control/audit")
+        assert "system.blob_gc" in resp.text
+        assert "Scheduled GC removed 3 object(s), reclaimed 3.0 KB" in resp.text
+        assert 'class="sys-tag"' in resp.text
+        # human rows never get the tag
+        logout_rows = [r for r in resp.text.split("<tr") if "control.logout" in r]
+        assert logout_rows and "sys-tag" not in logout_rows[0]
+
+    async def test_denied_rows_carry_anomaly_tint(self, client, app):
+        await _seed_audit_event("control.logout", {})
+        await _seed_audit_event("control.login", {"reason": "invalid_token"}, outcome="denied")
+        resp = await client.get("/control/audit")
+        denied_rows = [r for r in resp.text.split("<tr") if "audit-denied" in r]
+        assert denied_rows and "row-denied" in denied_rows[0]
+
+    async def test_system_events_included_in_page_and_maintenance_tab(self, client, app):
+        await _seed_audit_event(
+            "system.blob_gc", {"removed": 1, "reclaimed_bytes": 1024}, actor_kind="system"
+        )
+        maint = await client.get("/control/audit", params={"kind": "maintenance"})
+        assert "system.blob_gc" in maint.text
+        all_events = await _audit_rows("system.%")
+        assert len(all_events) == 1
+        assert all_events[0].actor_kind == "system"
+
+
+class TestAuditCsvExport:
+    async def test_export_requires_authentication(self, client, app):
+        app.state.settings.control_plane_token = "audit-csv-token"
+        try:
+            resp = await client.get("/control/audit/export.csv", follow_redirects=False)
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/control/login"
+        finally:
+            app.state.settings.control_plane_token = ""
+
+    async def test_export_returns_metadata_only_csv(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        resp = await client.get("/control/audit/export.csv")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert "attachment" in resp.headers["content-disposition"]
+        assert "wax-audit-" in resp.headers["content-disposition"]
+        lines = resp.text.strip().splitlines()
+        assert lines[0].split(",")[0] == "id"
+        assert "control.handoff_submitted" in resp.text
+        assert "success" in resp.text
+        # metadata-only: the typed secret and the word ciphertext never appear
+        assert SECRET_TYPED_BY_HUMAN not in resp.text
+        assert "ciphertext" not in resp.text
+
+    async def test_export_honors_kind_filter(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        await _seed_audit_event("control.logout", {})
+        resp = await client.get("/control/audit/export.csv", params={"kind": "handoffs"})
+        assert "control.handoff_submitted" in resp.text
+        assert "control.logout" not in resp.text
+
+    async def test_export_honors_search(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        await _seed_audit_event("control.logout", {})
+        resp = await client.get("/control/audit/export.csv", params={"q": handoff_id})
+        assert "control.handoff_submitted" in resp.text
+        assert "control.logout" not in resp.text
+
+    async def test_export_includes_system_events(self, client, app):
+        await _seed_audit_event(
+            "system.blob_gc",
+            {"removed": 2, "reclaimed_bytes": 2048},
+            actor_kind="system",
+        )
+        resp = await client.get("/control/audit/export.csv")
+        assert "system.blob_gc" in resp.text
+        assert "system" in resp.text  # actor_kind column
+
+    async def test_export_neutralizes_spreadsheet_formula_prefixes(self, client, app):
+        await _seed_audit_event(
+            "control.logout", {"reason": "=HYPERLINK('https://evil.example','click')"}
+        )
+        resp = await client.get("/control/audit/export.csv")
+        assert resp.status_code == 200
+        assert "'=HYPERLINK" in resp.text
+        assert "\n=HYPERLINK" not in resp.text and "\r\n=HYPERLINK" not in resp.text
+
+
+class TestGrantsCsvExport:
+    async def test_export_requires_authentication(self, client, app):
+        app.state.settings.control_plane_token = "grants-csv-token"
+        try:
+            resp = await client.get("/control/grants/export.csv", follow_redirects=False)
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/control/login"
+        finally:
+            app.state.settings.control_plane_token = ""
+
+    async def test_export_never_contains_the_handle(self, client, app):
+        p = await _create_principal()
+        handle = await _seed_grant(p, handle="Q" * 40, effect_class="write")
+        resp = await client.get("/control/grants/export.csv")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert "wax-grants-" in resp.headers["content-disposition"]
+        lines = resp.text.strip().splitlines()
+        assert lines[0].split(",")[0] == "id"
+        assert "effect_class" in lines[0]
+        assert "allowed_actions_count" in lines[0]
+        # THE handle is the live authority token — it must not leave the
+        # system through an operator convenience export.
+        assert handle not in resp.text
+        assert "Q" * 40 not in resp.text
+
+    async def test_export_honors_status_filter(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="A" * 40, status="active")
+        await _seed_grant(p, handle="B" * 40, status="revoked")
+        resp = await client.get("/control/grants/export.csv", params={"status": "revoked"})
+        rows = resp.text.strip().splitlines()
+        # header + exactly one data row — handles are deliberately absent
+        # from the export, so the row is identified by its status column
+        assert len(rows) == 2
+        assert "revoked" in rows[1].split(",")
+
+    async def test_grants_page_links_the_export(self, client, app):
+        p = await _create_principal()
+        await _seed_grant(p, handle="C" * 40)
+        resp = await client.get("/control/grants")
+        assert "/control/grants/export.csv" in resp.text
+        assert "Export CSV" in resp.text
+        # symmetric with the detail page: a jump into the grant audit events
+        assert "/control/audit?kind=grants" in resp.text

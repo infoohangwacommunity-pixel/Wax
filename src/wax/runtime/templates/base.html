@@ -243,6 +243,28 @@
     .ev-chip.ev-handoff { color: var(--accent); border-color: rgba(217,119,6,.35); background: var(--accent-soft); }
     .ev-chip.ev-grant { color: var(--ok); border-color: rgba(16,185,129,.35); background: var(--ok-soft); }
     .ev-chip.ev-maintenance { color: var(--muted); }
+    /* system-actor tag: marks rows the runtime itself wrote (scheduled GC) */
+    .sys-tag {
+      display: inline-flex; align-items: center; margin-left: 6px; padding: 1.5px 7px;
+      border-radius: 999px; font-size: 10.5px; font-weight: 650; letter-spacing: .5px;
+      text-transform: uppercase; color: var(--info); border: 1px solid rgba(45,212,191,.35);
+      background: var(--info-soft); white-space: nowrap; vertical-align: middle;
+    }
+    /* copy-details button success state + detail→audit link */
+    .audit-copy.ok { color: var(--ok); border-color: rgba(16,185,129,.5); }
+    .audit-link {
+      float: right; font-weight: 500; font-size: 12.5px; color: var(--muted);
+      text-decoration: none; border-bottom: 1px dotted var(--border-strong); transition: color .15s;
+    }
+    .audit-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    /* inline variant for links embedded inside note text */
+    .audit-link-inline {
+      color: var(--muted); text-decoration: none;
+      border-bottom: 1px dotted var(--border-strong); transition: color .15s;
+    }
+    .audit-link-inline:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    /* grants header: showing-note + export button grouped on the right */
+    .nav-gap { display: inline-flex; align-items: center; gap: 14px; }
     .kind {
       display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px;
       font-size: 12px; font-family: var(--mono); border: 1px solid var(--border-strong);
@@ -418,6 +440,9 @@
     tbody tr.row-open td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
     tbody tr.row-completed td { background: rgba(16,185,129,.028); }
     tbody tr.row-expired td { background: rgba(248,113,113,.035); }
+    /* audit rows: refused/failed actions get a quiet red tint so an
+       operator scanning the ledger spots anomalies without reading */
+    tbody tr.row-denied td { background: rgba(248,113,113,.035); }
 
     /* ---------- pager ---------- */
     .pager {

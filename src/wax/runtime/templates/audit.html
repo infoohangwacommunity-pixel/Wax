@@ -11,10 +11,26 @@
   <div class="section-head" style="margin-bottom:16px">
     <div class="tabs" role="tablist" aria-label="Filter audit events by kind">
       {% for f in kind_filters %}
-      <a href="/control/audit?kind={{ f }}" class="{{ "active" if kind_filter == f }}" role="tab" aria-selected="{{ "true" if kind_filter == f else "false" }}">{{ f }}</a>
+      <a href="/control/audit?kind={{ f }}{% if q_filter %}&amp;q={{ q_filter|urlencode }}{% endif %}" class="{{ "active" if kind_filter == f }}" role="tab" aria-selected="{{ "true" if kind_filter == f else "false" }}">{{ f }}</a>
       {% endfor %}
     </div>
-    <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if kind_filter != "all" %} ({{ kind_filter }}){% endif %}</span>
+    <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if kind_filter != "all" %} ({{ kind_filter }}){% endif %}{% if q_filter %} matching “{{ q_filter }}”{% endif %}</span>
+  </div>
+
+  <div class="section-head" style="margin-bottom:16px">
+    <form method="get" action="/control/audit" class="search-form" role="search" aria-label="Search audit events">
+      <input type="hidden" name="kind" value="{{ kind_filter }}">
+      <input type="search" id="q" name="q" value="{{ q_filter }}" maxlength="100"
+             placeholder="Search events, IDs, IPs…" aria-label="Search audit events"
+             title="Literal substring match over event names and event payloads (metadata only). Paste a handoff or grant ID to find exactly its events.">
+      <button type="submit">Search</button>
+      <kbd class="kbd" title="Press / to focus search" aria-hidden="true">/</kbd>
+      {% if q_filter %}
+      <a class="chip-clear" href="/control/audit?kind={{ kind_filter }}" title="Remove the search">clear ×</a>
+      {% endif %}
+    </form>
+    <a class="a-btn" href="/control/audit/export.csv?{{ filter_qs }}"
+       title="Download the filtered audit ledger as CSV (metadata only, formula-safe)">Export CSV</a>
   </div>
 
   {% if events %}
@@ -22,17 +38,18 @@
   <table>
     <thead>
       <tr>
-        <th>When</th><th>Event</th><th>Outcome</th><th>Detail</th><th>Source</th>
+        <th>When</th><th>Event</th><th>Outcome</th><th>Detail</th><th>Source</th><th class="nowrap">Details</th>
       </tr>
     </thead>
     <tbody>
       {% for e in events %}
-      <tr>
+      <tr class="{{ "row-denied" if e.outcome != "success" }}">
         <td class="time nowrap" title="{{ e.created or "" }}">{{ e.created_rel or "—" }}</td>
-        <td><span class="ev-chip ev-{{ e.family }}">{{ e.kind }}</span></td>
+        <td class="nowrap"><span class="ev-chip ev-{{ e.family }}">{{ e.kind }}</span>{% if e.system %}<span class="sys-tag" title="Written by the runtime's own maintenance loop, not by an operator">system</span>{% endif %}</td>
         <td><span class="badge audit-{{ e.outcome }}">{{ e.outcome }}</span></td>
         <td class="truncate" title="{{ e.detail }}">{{ e.detail }}</td>
         <td class="mono nowrap">{{ e.client_ip }}</td>
+        <td class="nowrap"><button type="button" class="mini-btn audit-copy" data-copy="{{ e.copy_text }}" title="Copy this event's full details (kind, outcome, time, payload JSON)">copy</button></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -41,7 +58,11 @@
   {% else %}
   <div class="empty">
     <span class="big" aria-hidden="true">🗒</span>
-    {% if kind_filter == "all" %}
+    {% if q_filter %}
+    No audit events match <strong>“{{ q_filter }}”</strong>{% if kind_filter != "all" %} in the
+    <strong>{{ kind_filter }}</strong> tab{% endif %}. Searches are literal — clear the search or
+    switch tabs to see everything again.
+    {% elif kind_filter == "all" %}
     No operator actions recorded yet. Sign-ins, submissions, cancellations, revocations
     and GC runs are appended here as they happen.
     {% else %}
@@ -53,7 +74,7 @@
   {% if pages > 1 %}
   <nav class="pager" aria-label="Audit log pages">
     <span class="pager-info">page {{ page }} / {{ pages }}</span>
-    {% set page_base = "/control/audit?kind=" ~ kind_filter %}
+    {% set page_base = "/control/audit?" ~ filter_qs %}
     {% if page > 1 %}
     <a href="{{ page_base }}&amp;page={{ page - 1 }}" rel="prev">‹ Prev</a>
     {% else %}
@@ -75,4 +96,47 @@
     {% endif %}
   </nav>
   {% endif %}
+
+  <script>
+    (function () {
+      // copy-details: clipboard with a textarea fallback (non-secure
+      // contexts), same pattern as the detail page's copy-ID button —
+      // distinct class so the two handlers never double-bind.
+      function flash(btn) {
+        var old = btn.textContent;
+        btn.textContent = "saved ✓";
+        btn.classList.add("ok");
+        setTimeout(function () { btn.textContent = old; btn.classList.remove("ok"); }, 1500);
+      }
+      function fallbackCopy(text, btn) {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); flash(btn); } catch (e) { /* best effort */ }
+        document.body.removeChild(ta);
+      }
+      document.querySelectorAll(".audit-copy").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var text = btn.getAttribute("data-copy") || "";
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { flash(btn); }, function () { fallbackCopy(text, btn); });
+          } else {
+            fallbackCopy(text, btn);
+          }
+        });
+      });
+      // "/" focuses the search box from anywhere outside a field
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key !== "/" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        var t = ev.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+        var q = document.getElementById("q");
+        if (q) { ev.preventDefault(); q.focus(); q.select(); }
+      });
+    })();
+  </script>
 {% endblock %}
