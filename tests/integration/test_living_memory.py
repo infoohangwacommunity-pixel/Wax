@@ -48,9 +48,7 @@ def services(test_settings):
     return RuntimeServices.build(test_settings)
 
 
-async def _create_principal(
-    *, display_name: str = "Test", phone: str = "1234567890"
-) -> str:
+async def _create_principal(*, display_name: str = "Test", phone: str = "1234567890") -> str:
     from wax.authority.seed import (
         DEFAULT_ROLE_FOR_NEW_PRINCIPALS,
         ensure_principal_role,
@@ -120,12 +118,14 @@ class TestNewLinkKinds:
         # Verify the depends_on link was created
         async with db_session() as s:
             links = (
-                await s.execute(
-                    select(MemoryLinkRecord).where(
-                        MemoryLinkRecord.kind == "depends_on"
+                (
+                    await s.execute(
+                        select(MemoryLinkRecord).where(MemoryLinkRecord.kind == "depends_on")
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(links) == 1
             assert links[0].to_memory_id == m2_id
 
@@ -162,12 +162,14 @@ class TestNewLinkKinds:
 
         async with db_session() as s:
             links = (
-                await s.execute(
-                    select(MemoryLinkRecord).where(
-                        MemoryLinkRecord.kind == "conflicts_with"
+                (
+                    await s.execute(
+                        select(MemoryLinkRecord).where(MemoryLinkRecord.kind == "conflicts_with")
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(links) == 1
 
 
@@ -253,9 +255,7 @@ class TestObjectiveLinkage:
         assert result.outcome == "failure"
         assert "different principal" in (result.error or "")
 
-    async def test_memory_store_rejects_nonexistent_objective(
-        self, fresh_db, services
-    ):
+    async def test_memory_store_rejects_nonexistent_objective(self, fresh_db, services):
         principal_id = await _create_principal()
         async with db_session() as s:
             invoker = services.invoker(s)
@@ -393,13 +393,17 @@ class TestConsolidationProvenance:
         # Verify derived_from edges exist
         async with db_session() as s:
             edges = (
-                await s.execute(
-                    select(MemoryLinkRecord).where(
-                        MemoryLinkRecord.from_memory_id == consolidated_id,
-                        MemoryLinkRecord.kind == "derived_from",
+                (
+                    await s.execute(
+                        select(MemoryLinkRecord).where(
+                            MemoryLinkRecord.from_memory_id == consolidated_id,
+                            MemoryLinkRecord.kind == "derived_from",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(edges) == 2
             edge_targets = {e.to_memory_id for e in edges}
             assert edge_targets == set(source_ids)
@@ -452,21 +456,29 @@ class TestObjectiveScopedRetrieval:
         # Query memories for obj1
         async with db_session() as s:
             memories_for_obj1 = (
-                await s.execute(
-                    select(MemoryRecord).where(
-                        MemoryRecord.objective_id == obj1_id,
-                        MemoryRecord.status == "active",
+                (
+                    await s.execute(
+                        select(MemoryRecord).where(
+                            MemoryRecord.objective_id == obj1_id,
+                            MemoryRecord.status == "active",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(memories_for_obj1) == 2
 
             memories_for_obj2 = (
-                await s.execute(
-                    select(MemoryRecord).where(
-                        MemoryRecord.objective_id == obj2_id,
-                        MemoryRecord.status == "active",
+                (
+                    await s.execute(
+                        select(MemoryRecord).where(
+                            MemoryRecord.objective_id == obj2_id,
+                            MemoryRecord.status == "active",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(memories_for_obj2) == 1

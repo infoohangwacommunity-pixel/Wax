@@ -6,7 +6,7 @@ budget depends on the model in play: 24k characters is comfortable for a
 negotiation layer between the runtime and whatever provider is selected:
 
 - If the provider ADVERTISES a context limit (`context_limit_tokens`),
-  the evidence budget is derived from it: (limit − reserved output tokens)
+  the evidence budget is derived from it: (limit - reserved output tokens)
   converted to characters at the ADAPTER'S OWN chars/token ratio —
   calibrated from the adapter's token counter, which may be an exact
   tokenizer (tiktoken inside the OpenAI adapter, ADR-0018).
@@ -89,9 +89,7 @@ def provider_estimate_messages_tokens(provider: Any, messages: list[Any]) -> int
         content = getattr(message, "content", "") or ""
         total += provider_estimate_tokens(provider, content)
         for call in getattr(message, "tool_calls", None) or []:
-            total += provider_estimate_tokens(
-                provider, str(getattr(call, "arguments", ""))
-            )
+            total += provider_estimate_tokens(provider, str(getattr(call, "arguments", "")))
     return total
 
 
@@ -213,8 +211,8 @@ def derive_context_budget(
     """Derive the evidence char budget for the provider in play.
 
     Provider limit known:
-        input_tokens_for_evidence = limit − output_reserve
-        budget_chars = input_tokens_for_evidence × (the ADAPTER'S OWN
+        input_tokens_for_evidence = limit - output_reserve
+        budget_chars = input_tokens_for_evidence x (the ADAPTER'S OWN
         chars/token ratio, calibrated from its counter — exact when the
         adapter has a real tokenizer, ADR-0018)
     Provider limit unknown:

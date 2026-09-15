@@ -26,18 +26,14 @@ INTERFACE_CREDENTIAL_KINDS: dict[str, str] = {
 }
 
 # Reverse view: credential kind → interface kind.
-CREDENTIAL_KIND_INTERFACES: dict[str, str] = {
-    v: k for k, v in INTERFACE_CREDENTIAL_KINDS.items()
-}
+CREDENTIAL_KIND_INTERFACES: dict[str, str] = {v: k for k, v in INTERFACE_CREDENTIAL_KINDS.items()}
 
 # Credential kinds that belong to a DECLARED interface derive from the
 # boundary table above — the single source of truth. Attaching a new
 # interface means adding one mapping above; its credential kind is then
 # allowed automatically (CV-16: interface attachment must not require
 # editing identity allowlist semantics).
-_INTERFACE_CREDENTIAL_KINDS: frozenset[str] = frozenset(
-    INTERFACE_CREDENTIAL_KINDS.values()
-)
+_INTERFACE_CREDENTIAL_KINDS: frozenset[str] = frozenset(INTERFACE_CREDENTIAL_KINDS.values())
 
 # Non-interface credential kinds: credentials that identify a principal
 # without belonging to a messaging interface (no delivery channel).
@@ -49,7 +45,7 @@ NON_INTERFACE_CREDENTIAL_KINDS: frozenset[str] = frozenset(
     }
 )
 
-# Allowed credential kinds = interface-derived ∪ non-interface.
+# Allowed credential kinds = interface-derived U non-interface.
 # Adding a new interface mapping above is the deliberate architectural
 # act — it means a new interface is being integrated.
 ALLOWED_CREDENTIAL_KINDS: frozenset[str] = (
@@ -77,7 +73,6 @@ class PrincipalRead(BaseModel):
             updated_at=principal.updated_at,  # type: ignore[attr-defined]
             is_active=principal.is_active,  # type: ignore[attr-defined]
         )
-
 
 
 class PrincipalCredentialRead(BaseModel):

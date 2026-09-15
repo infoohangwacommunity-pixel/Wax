@@ -65,7 +65,9 @@ def _acquirer(services: RuntimeServices, body: bytes = CONTENT) -> ArtifactAcqui
     return ArtifactAcquirer(services)
 
 
-async def _workspace(services: RuntimeServices, *, owner: str = TEST_PRINCIPAL, ttl: int = 900) -> str:
+async def _workspace(
+    services: RuntimeServices, *, owner: str = TEST_PRINCIPAL, ttl: int = 900
+) -> str:
     async with db_session() as session:
         record = await ProvisioningService(services.settings).provision_scratch_dir(
             session, principal_id=owner, ttl_seconds=max(ttl, 10)
@@ -269,9 +271,7 @@ class TestCaching:
 
 
 class TestWorkspaceIsolation:
-    async def test_capability_requires_owned_active_workspace(
-        self, fresh_db, services
-    ) -> None:
+    async def test_capability_requires_owned_active_workspace(self, fresh_db, services) -> None:
         """Through the full gate chain: another principal's workspace, an
         expired one, or a missing one all refuse."""
         other_workspace = await _workspace(services, owner="01OTHERPRINCIPAL0000000")

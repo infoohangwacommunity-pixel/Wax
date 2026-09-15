@@ -33,9 +33,7 @@ async def fresh_db(test_settings):
 
 
 class TestPrincipalCRUD:
-    async def test_create_principal_returns_object_with_id(
-        self, fresh_db
-    ) -> None:
+    async def test_create_principal_returns_object_with_id(self, fresh_db) -> None:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             principal = await repo.create_principal(display_name="Alice")
@@ -118,13 +116,9 @@ class TestCredentials:
 
             # Adding same (kind, value) to a different principal must fail.
             with pytest.raises(ValueError, match="already attached"):
-                await repo.add_credential(
-                    p2.id, kind="email", value="shared@example.com"
-                )
+                await repo.add_credential(p2.id, kind="email", value="shared@example.com")
 
-    async def test_add_credential_to_unknown_principal_raises(
-        self, fresh_db
-    ) -> None:
+    async def test_add_credential_to_unknown_principal_raises(self, fresh_db) -> None:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             with pytest.raises(LookupError):
@@ -139,9 +133,7 @@ class TestCredentials:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             principal = await repo.create_principal(display_name="Dave")
-            await repo.add_credential(
-                principal.id, kind="whatsapp_phone", value="+2348000000001"
-            )
+            await repo.add_credential(principal.id, kind="whatsapp_phone", value="+2348000000001")
             await session.commit()
 
         # New session: simulate a WhatsApp webhook arriving
@@ -154,9 +146,7 @@ class TestCredentials:
             assert resolved.id == principal.id
             assert resolved.display_name == "Dave"
 
-    async def test_resolve_principal_returns_none_for_unknown_credential(
-        self, fresh_db
-    ) -> None:
+    async def test_resolve_principal_returns_none_for_unknown_credential(self, fresh_db) -> None:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             resolved = await repo.resolve_principal_by_credential(
@@ -164,9 +154,7 @@ class TestCredentials:
             )
             assert resolved is None
 
-    async def test_same_principal_multiple_credentials_different_kinds(
-        self, fresh_db
-    ) -> None:
+    async def test_same_principal_multiple_credentials_different_kinds(self, fresh_db) -> None:
         """A principal can have many credentials across different interfaces.
 
         This is what makes interface handoff possible (Foundation §51, §52):
@@ -176,15 +164,9 @@ class TestCredentials:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             principal = await repo.create_principal(display_name="Multi")
-            await repo.add_credential(
-                principal.id, kind="whatsapp_phone", value="+2348000000002"
-            )
-            await repo.add_credential(
-                principal.id, kind="email", value="multi@example.com"
-            )
-            await repo.add_credential(
-                principal.id, kind="web_session", value="session-token-abc"
-            )
+            await repo.add_credential(principal.id, kind="whatsapp_phone", value="+2348000000002")
+            await repo.add_credential(principal.id, kind="email", value="multi@example.com")
+            await repo.add_credential(principal.id, kind="web_session", value="session-token-abc")
             await session.commit()
 
         async with db_session() as session:
@@ -203,18 +185,14 @@ class TestIdentitySurvivesInterfaceRemoval:
     other credentials.
     """
 
-    async def test_principal_survives_after_credential_removed(
-        self, fresh_db
-    ) -> None:
+    async def test_principal_survives_after_credential_removed(self, fresh_db) -> None:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             principal = await repo.create_principal(display_name="Survivor")
             wa_cred = await repo.add_credential(
                 principal.id, kind="whatsapp_phone", value="+2348000000003"
             )
-            await repo.add_credential(
-                principal.id, kind="email", value="survivor@example.com"
-            )
+            await repo.add_credential(principal.id, kind="email", value="survivor@example.com")
             await session.commit()
             wa_cred_id = wa_cred.id
 
@@ -225,9 +203,7 @@ class TestIdentitySurvivesInterfaceRemoval:
             from wax.state.identity_models import PrincipalCredential
 
             await session.execute(
-                delete(PrincipalCredential).where(
-                    PrincipalCredential.id == wa_cred_id
-                )
+                delete(PrincipalCredential).where(PrincipalCredential.id == wa_cred_id)
             )
             await session.commit()
 

@@ -90,18 +90,15 @@ class SubprocessBoundary(IsolationBoundary):
             except ProcessLookupError:
                 pass
             stdout_b = b""
-            stderr_b = (
-                f"timeout: process exceeded {request.timeout_seconds}s\n"
-            ).encode()
+            stderr_b = (f"timeout: process exceeded {request.timeout_seconds}s\n").encode()
             exit_code = 124  # standard timeout exit code
             timed_out = True
 
         # Enforce output cap
-        stdout = stdout_b.decode("utf-8", errors="replace")[:request.max_output_bytes]
-        stderr = stderr_b.decode("utf-8", errors="replace")[:request.max_output_bytes]
+        stdout = stdout_b.decode("utf-8", errors="replace")[: request.max_output_bytes]
+        stderr = stderr_b.decode("utf-8", errors="replace")[: request.max_output_bytes]
         truncated = (
-            len(stdout_b) > request.max_output_bytes
-            or len(stderr_b) > request.max_output_bytes
+            len(stdout_b) > request.max_output_bytes or len(stderr_b) > request.max_output_bytes
         )
 
         duration_ms = (time.perf_counter() - start_perf) * 1000
@@ -128,9 +125,7 @@ class SubprocessBoundary(IsolationBoundary):
             isolation_kind=self.kind.value,
         )
 
-    def _prepare_command(
-        self, request: IsolationRequest
-    ) -> tuple[list[str], dict[str, str]]:
+    def _prepare_command(self, request: IsolationRequest) -> tuple[list[str], dict[str, str]]:
         """Build the command + sanitized environment for the subprocess."""
         if request.language == "python":
             cmd = ["python3", "-c", request.code]

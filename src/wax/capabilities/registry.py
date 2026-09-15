@@ -52,9 +52,7 @@ class CapabilityRegistry:
     ) -> None:
         """Register a capability. Raises if a capability with the same name exists."""
         if descriptor.name in self._capabilities:
-            raise WaxStateConflictError(
-                f"Capability already registered: {descriptor.name}"
-            )
+            raise WaxStateConflictError(f"Capability already registered: {descriptor.name}")
         self._capabilities[descriptor.name] = (descriptor, impl)
         self._statuses[descriptor.name] = CapabilityStatus.AVAILABLE
         log.info(

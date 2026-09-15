@@ -118,7 +118,7 @@ class TestRetryAndBreaker:
             breaker=CircuitBreaker(name="t", failure_threshold=2, recovery_timeout=60.0),
         )
         for _ in range(2):  # two logical calls, each exhausting retries
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017
                 await provider.complete(_req())
         assert inner.calls == 4  # 2 attempts x 2 calls — no storm
         assert provider.breaker_state == "open"
@@ -138,7 +138,7 @@ class TestRetryAndBreaker:
             ),
             breaker=CircuitBreaker(name="t", failure_threshold=1, recovery_timeout=1.0),
         )
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             await provider.complete(_req())
         assert provider.breaker_state == "open"
 
@@ -197,9 +197,7 @@ class TestAnthropicWire:
                 LLMMessage(
                     role=MessageRole.ASSISTANT,
                     content="",
-                    tool_calls=[
-                        ToolCall(id="toolu_1", name="memory.store", arguments={})
-                    ],
+                    tool_calls=[ToolCall(id="toolu_1", name="memory.store", arguments={})],
                 ),
                 LLMMessage(
                     role=MessageRole.TOOL,

@@ -171,9 +171,7 @@ class ExecutionRepository:
         log.info("execution.cancelled", execution_id=execution_id)
         return True
 
-    async def update_checkpoint(
-        self, execution_id: str, checkpoint: dict[str, Any]
-    ) -> bool:
+    async def update_checkpoint(self, execution_id: str, checkpoint: dict[str, Any]) -> bool:
         """Update the checkpoint state without changing status."""
         execution = await self.get(execution_id)
         if execution is None:
@@ -240,9 +238,7 @@ class ExecutionRepository:
         )
         return list(result.scalars().all())
 
-    async def get_latest_succeeded_step(
-        self, execution_id: str
-    ) -> ExecutionStepRecord | None:
+    async def get_latest_succeeded_step(self, execution_id: str) -> ExecutionStepRecord | None:
         """Return the latest succeeded step — the resume point."""
         result = await self._session.execute(
             select(ExecutionStepRecord)

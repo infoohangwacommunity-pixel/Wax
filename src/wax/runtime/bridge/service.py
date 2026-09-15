@@ -322,9 +322,7 @@ class RuntimeBridge:
                     principal_id=(winner.principal_id if winner else principal.id),
                     text=(winner.response_text if winner else None),
                     processed_at=datetime.now(UTC),
-                    duplicate_of_execution_id=(
-                        winner.execution_id if winner else None
-                    ),
+                    duplicate_of_execution_id=(winner.execution_id if winner else None),
                 )
         else:
             # Claim the failed record for THIS attempt with a single
@@ -388,9 +386,7 @@ class RuntimeBridge:
         await exec_repo.start(execution.id)
         # History row (ADR-0020): this execution's participation in the
         # objective's life is recorded evidence, not just a mutable pointer.
-        await objective_repo.record_execution_start(
-            objective.id, execution.id, kind="bridge"
-        )
+        await objective_repo.record_execution_start(objective.id, execution.id, kind="bridge")
         await objective_repo.transition(objective.id, ObjectiveStatus.IN_PROGRESS)
         record.execution_id = execution.id
 
@@ -520,9 +516,7 @@ class RuntimeBridge:
                     reason="durable_work_outstanding",
                 )
             else:
-                await objective_repo.transition(
-                    objective.id, ObjectiveStatus.SUCCEEDED
-                )
+                await objective_repo.transition(objective.id, ObjectiveStatus.SUCCEEDED)
             await conversations.touch(conversation_id, execution_id=execution.id)
 
             record.outcome = "success"
@@ -599,9 +593,7 @@ class RuntimeBridge:
         budget = derive_context_budget(
             self._intelligence.inner_provider,
             fallback_char_budget=int(self._services.settings.context_char_budget),
-            output_reserve_tokens=int(
-                self._services.settings.llm_output_reserve_tokens
-            ),
+            output_reserve_tokens=int(self._services.settings.llm_output_reserve_tokens),
         )
         log.info(
             "context.budget",
@@ -1029,9 +1021,7 @@ class RuntimeBridge:
 
         async with db_session() as session:
             # 1. Resolve the originating objective
-            objective = await objective_for_execution(
-                session, request.originating_execution_id
-            )
+            objective = await objective_for_execution(session, request.originating_execution_id)
             if objective is None:
                 log.warning(
                     "reentry.no_objective",
@@ -1106,9 +1096,7 @@ class RuntimeBridge:
             await sync_active_for_execution(session, execution.id)
 
             # 7. Allocate execution budget (same shape as live path)
-            self._services.resource_accountant.allocate(
-                execution.id, **_DEFAULT_EXECUTION_BUDGET
-            )
+            self._services.resource_accountant.allocate(execution.id, **_DEFAULT_EXECUTION_BUDGET)
 
             # 8. Assemble context (ContinuityService is the single composer)
             continuity = ContinuityService(session)
@@ -1126,15 +1114,11 @@ class RuntimeBridge:
             budget = derive_context_budget(
                 self._intelligence.inner_provider,
                 fallback_char_budget=int(self._services.settings.context_char_budget),
-                output_reserve_tokens=int(
-                    self._services.settings.llm_output_reserve_tokens
-                ),
+                output_reserve_tokens=int(self._services.settings.llm_output_reserve_tokens),
             )
 
-            principal = await session.get(
-                Principal, request.principal_id
-            )
-            principal_display = (principal.display_name if principal else None)
+            principal = await session.get(Principal, request.principal_id)
+            principal_display = principal.display_name if principal else None
 
             system_prompt = self._build_system_prompt(
                 principal_display=principal_display,
@@ -1154,9 +1138,7 @@ class RuntimeBridge:
             # the model is being ASKED to reason about something. The runtime
             # observation is a TOOL message so the model cannot impersonate
             # the runtime by typing into a chat box.
-            messages.append(
-                LLMMessage(role=MessageRole.USER, content=request.prompt)
-            )
+            messages.append(LLMMessage(role=MessageRole.USER, content=request.prompt))
 
             # The observation is a structured tool response from "the runtime"
             # — the model sees it as evidence, not as user instruction.
@@ -1281,8 +1263,7 @@ class RuntimeBridge:
                         await session.execute(
                             sa_select(PendingApprovalRecord.id)
                             .where(
-                                PendingApprovalRecord.principal_id
-                                == request.principal_id,
+                                PendingApprovalRecord.principal_id == request.principal_id,
                                 PendingApprovalRecord.status == "pending",
                             )
                             .limit(1)
@@ -1293,9 +1274,7 @@ class RuntimeBridge:
                             sync_awaiting_human_for_execution,
                         )
 
-                        await sync_awaiting_human_for_execution(
-                            session, execution.id
-                        )
+                        await sync_awaiting_human_for_execution(session, execution.id)
                         outcome = "awaiting_human"
                     else:
                         # Active reasoning with nothing pending — leave in_progress
@@ -1739,9 +1718,7 @@ class RuntimeBridge:
         interface.message:<principal_id> wake condition.
         """
         name_str = f" The user's name is {principal_display}." if principal_display else ""
-        principal_str = (
-            f" The principal you act for has id {principal_id}." if principal_id else ""
-        )
+        principal_str = f" The principal you act for has id {principal_id}." if principal_id else ""
         return (
             "You are an AI operating inside the WAX runtime. You are intelligent; "
             "WAX is the environment that holds memory, identity, capabilities, and "

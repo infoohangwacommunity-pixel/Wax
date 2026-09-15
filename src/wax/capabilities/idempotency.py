@@ -60,12 +60,10 @@ def _aware(dt: datetime) -> datetime:
 class Verdict(StrEnum):
     """What the caller must do with the claim."""
 
-    CLAIMED = "claimed"      # proceed; you own the claim
-    REPLAY = "replay"        # do NOT execute; return the recorded outcome
+    CLAIMED = "claimed"  # proceed; you own the claim
+    REPLAY = "replay"  # do NOT execute; return the recorded outcome
     EXECUTING = "executing"  # do NOT execute; an identical request is live
-    TAKEOVER_LOST = (
-        "takeover_lost"  # do NOT execute; another retry won the takeover
-    )
+    TAKEOVER_LOST = "takeover_lost"  # do NOT execute; another retry won the takeover
 
 
 class ClaimResult:
@@ -170,9 +168,7 @@ async def claim_invocation(
         stmt = (
             update(CapabilityInvocationRecord)
             .where(CapabilityInvocationRecord.id == record.id)
-            .where(
-                CapabilityInvocationRecord.status.in_(["failed", "executing"])
-            )
+            .where(CapabilityInvocationRecord.status.in_(["failed", "executing"]))
             .where(
                 (CapabilityInvocationRecord.status == "failed")
                 | (CapabilityInvocationRecord.claim_expires_at <= now)
@@ -211,9 +207,7 @@ async def complete_success(outputs: dict, claim_id: str | None) -> None:
 
         record = (
             await session.execute(
-                select(CapabilityInvocationRecord).where(
-                    CapabilityInvocationRecord.id == claim_id
-                )
+                select(CapabilityInvocationRecord).where(CapabilityInvocationRecord.id == claim_id)
             )
         ).scalar_one_or_none()
         if record is None:
@@ -237,9 +231,7 @@ async def complete_failure(error: str, claim_id: str | None) -> None:
 
         record = (
             await session.execute(
-                select(CapabilityInvocationRecord).where(
-                    CapabilityInvocationRecord.id == claim_id
-                )
+                select(CapabilityInvocationRecord).where(CapabilityInvocationRecord.id == claim_id)
             )
         ).scalar_one_or_none()
         if record is None:

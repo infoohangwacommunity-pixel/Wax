@@ -121,9 +121,7 @@ def validate_url(url: str) -> tuple[str, list[str]]:
         except ValueError:
             continue
         if _is_blocked_address(ip):
-            raise NetworkBoundaryError(
-                f"host resolves to a non-public address ({ip}) — blocked"
-            )
+            raise NetworkBoundaryError(f"host resolves to a non-public address ({ip}) — blocked")
         resolved.append(addr)
 
     if not resolved:
@@ -169,9 +167,7 @@ class _PinningNetworkBackend(httpcore.AsyncNetworkBackend):
         pinned: str | None = None
         for _family, _type, _proto, _canon, sockaddr in infos:
             addr = sockaddr[0]
-            if addr not in self._allowed or _is_blocked_address(
-                ipaddress.ip_address(addr)
-            ):
+            if addr not in self._allowed or _is_blocked_address(ipaddress.ip_address(addr)):
                 raise NetworkBoundaryError(
                     "DNS changed during fetch (possible rebinding) — blocked"
                 )
@@ -250,8 +246,6 @@ async def guarded_get(
         content.extend(chunk)
         if len(content) > policy.max_bytes:
             await response.aclose()
-            raise NetworkBoundaryError(
-                f"response exceeds {policy.max_bytes} bytes"
-            )
+            raise NetworkBoundaryError(f"response exceeds {policy.max_bytes} bytes")
     response._content = bytes(content)
     return response

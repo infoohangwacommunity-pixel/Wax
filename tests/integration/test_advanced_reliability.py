@@ -63,15 +63,14 @@ async def _create_principal(*, phone: str = "1234567890") -> str:
 class TestIdempotencyStress:
     """Idempotent capability invocations never double-execute."""
 
-    async def test_repeated_idempotent_invocation_replays_same_result(
-        self, fresh_db, services
-    ):
+    async def test_repeated_idempotent_invocation_replays_same_result(self, fresh_db, services):
         """The same idempotency key used twice must produce ONE execution
         + one REPLAY (same result)."""
         principal_id = await _create_principal()
         idempotency_key = "stress-test-key-12345"
 
         call_count = [0]
+
         async def _counting_handler(services, item):
             call_count[0] += 1
             return {"echo": {"message": "counted"}}
@@ -189,6 +188,7 @@ class TestConcurrentClaimExclusivity:
             await s.commit()
 
         processed_ids: list[str] = []
+
         async def _handler(services, item):
             processed_ids.append(item.id)
             return {"echo": {"id": item.id}}

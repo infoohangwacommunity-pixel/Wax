@@ -48,25 +48,33 @@ def _sign(body: bytes, secret: str) -> str:
     return f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
 
 
-def _build_webhook(messages: list[dict[str, Any]], from_phone: str = "+2348000000000") -> dict[str, Any]:
+def _build_webhook(
+    messages: list[dict[str, Any]], from_phone: str = "+2348000000000"
+) -> dict[str, Any]:
     return {
         "object": "whatsapp_business_account",
-        "entry": [{
-            "id": "12345",
-            "changes": [{
-                "value": {
-                    "messaging_product": "whatsapp",
-                    "metadata": {"display_phone_number": "+2348000000001"},
-                    "contacts": [{"profile": {"name": "Test User"}, "wa_id": from_phone}],
-                    "messages": messages,
-                },
-                "field": "messages",
-            }],
-        }],
+        "entry": [
+            {
+                "id": "12345",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {"display_phone_number": "+2348000000001"},
+                            "contacts": [{"profile": {"name": "Test User"}, "wa_id": from_phone}],
+                            "messages": messages,
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+        ],
     }
 
 
-async def _process_one(adapter: WhatsAppAdapter, payload: dict[str, Any]) -> WhatsAppIncomingMessage | None:
+async def _process_one(
+    adapter: WhatsAppAdapter, payload: dict[str, Any]
+) -> WhatsAppIncomingMessage | None:
     body = json.dumps(payload).encode()
     sig = _sign(body, TEST_APP_SECRET)
     captured: list[WhatsAppIncomingMessage] = []
@@ -314,21 +322,27 @@ class TestStatusEvents:
     async def test_status_delivered(self, adapter: WhatsAppAdapter) -> None:
         payload = {
             "object": "whatsapp_business_account",
-            "entry": [{
-                "id": "1",
-                "changes": [{
-                    "value": {
-                        "messaging_product": "whatsapp",
-                        "statuses": [{
-                            "id": "wamid.out1",
-                            "status": "delivered",
-                            "recipient_id": "+2348000000000",
-                            "timestamp": str(int(datetime.now(UTC).timestamp())),
-                        }],
-                    },
-                    "field": "messages",
-                }],
-            }],
+            "entry": [
+                {
+                    "id": "1",
+                    "changes": [
+                        {
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "statuses": [
+                                    {
+                                        "id": "wamid.out1",
+                                        "status": "delivered",
+                                        "recipient_id": "+2348000000000",
+                                        "timestamp": str(int(datetime.now(UTC).timestamp())),
+                                    }
+                                ],
+                            },
+                            "field": "messages",
+                        }
+                    ],
+                }
+            ],
         }
         body = json.dumps(payload).encode()
         sig = _sign(body, TEST_APP_SECRET)
@@ -339,21 +353,27 @@ class TestStatusEvents:
     async def test_status_read(self, adapter: WhatsAppAdapter) -> None:
         payload = {
             "object": "whatsapp_business_account",
-            "entry": [{
-                "id": "1",
-                "changes": [{
-                    "value": {
-                        "messaging_product": "whatsapp",
-                        "statuses": [{
-                            "id": "wamid.out1",
-                            "status": "read",
-                            "recipient_id": "+2348000000000",
-                            "timestamp": str(int(datetime.now(UTC).timestamp())),
-                        }],
-                    },
-                    "field": "messages",
-                }],
-            }],
+            "entry": [
+                {
+                    "id": "1",
+                    "changes": [
+                        {
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "statuses": [
+                                    {
+                                        "id": "wamid.out1",
+                                        "status": "read",
+                                        "recipient_id": "+2348000000000",
+                                        "timestamp": str(int(datetime.now(UTC).timestamp())),
+                                    }
+                                ],
+                            },
+                            "field": "messages",
+                        }
+                    ],
+                }
+            ],
         }
         body = json.dumps(payload).encode()
         sig = _sign(body, TEST_APP_SECRET)
@@ -386,25 +406,21 @@ class TestOutboundMethods:
                 status_code=200,
                 json=lambda: {"messages": [{"id": "loc_out1"}]},
                 raise_for_status=lambda: None,
-                content=b'{}',
+                content=b"{}",
             )
         )
-        result = await whatsapp_client.send_location(
-            "+2348000000000", 6.5244, 3.3792, name="Lagos"
-        )
+        result = await whatsapp_client.send_location("+2348000000000", 6.5244, 3.3792, name="Lagos")
         assert "messages" in result
 
-    async def test_send_media_rejects_invalid_type(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    async def test_send_media_rejects_invalid_type(self, whatsapp_client: WhatsAppClient) -> None:
         from wax.core.exceptions import WaxValidationError
+
         with pytest.raises(WaxValidationError):
             await whatsapp_client.send_media("+2348000000000", "invalid_type")
 
-    async def test_send_media_requires_id_or_link(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    async def test_send_media_requires_id_or_link(self, whatsapp_client: WhatsAppClient) -> None:
         from wax.core.exceptions import WaxValidationError
+
         with pytest.raises(WaxValidationError):
             await whatsapp_client.send_media("+2348000000000", "image")
 

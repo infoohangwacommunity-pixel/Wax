@@ -58,13 +58,9 @@ class ConversationService:
         *,
         execution_id: str | None = None,
     ) -> bool:
-        return await self._repo.touch(
-            conversation_id, execution_id=execution_id
-        )
+        return await self._repo.touch(conversation_id, execution_id=execution_id)
 
-    async def attach_objective(
-        self, conversation_id: str, objective_id: str
-    ) -> bool:
+    async def attach_objective(self, conversation_id: str, objective_id: str) -> bool:
         """Link the conversation to the objective its current interaction
         is pursuing. This link is what the priority-0 OBJECTIVE evidence
         section reads (ADR-0012/ADR-0023); leaving it unwritten made the
@@ -135,12 +131,8 @@ class ContinuityService:
                     # artifacts: "keep working on this while I am away"
                     # must survive a conversation boundary (mission §17).
                     active_work=await self._fetch_active_work(principal_id),
-                    recent_artifacts=await self._fetch_recent_artifacts(
-                        principal_id
-                    ),
-                    environment=await self._build_environment(
-                        principal_id, interface_kind
-                    ),
+                    recent_artifacts=await self._fetch_recent_artifacts(principal_id),
+                    environment=await self._build_environment(principal_id, interface_kind),
                 ),
                 None,
             )
@@ -162,9 +154,7 @@ class ContinuityService:
         # artifacts — metadata only, never payload bytes).
         active_work = await self._fetch_active_work(principal_id)
         recent_artifacts = await self._fetch_recent_artifacts(principal_id)
-        environment = await self._build_environment(
-            principal_id, conversation.interface_kind
-        )
+        environment = await self._build_environment(principal_id, conversation.interface_kind)
         environment["active_work_count"] = len(active_work)
 
         # Fetch active objective (if any)
@@ -187,9 +177,7 @@ class ContinuityService:
                     active_objective.description if active_objective else None
                 ),
                 last_execution_id=conversation.last_execution_id,
-                last_execution_status=(
-                    last_execution.status if last_execution else None
-                ),
+                last_execution_status=(last_execution.status if last_execution else None),
                 recent_memories=recent_memories,
                 active_work=active_work,
                 recent_artifacts=recent_artifacts,
@@ -329,9 +317,7 @@ class ContinuityService:
             for a in artifacts
         ]
 
-    async def _build_environment(
-        self, principal_id: str, interface_kind: str
-    ) -> dict[str, Any]:
+    async def _build_environment(self, principal_id: str, interface_kind: str) -> dict[str, Any]:
         """ADR-0037 (Phase 4): compose the environment facts the AI wakes into.
 
         The environment is NOT chat history — it is the runtime reality
@@ -392,9 +378,7 @@ class ContinuityService:
             env["recent_signals"] = [
                 {
                     "name": s.name,
-                    "emitted_at": (
-                        s.emitted_at.isoformat() if s.emitted_at else None
-                    ),
+                    "emitted_at": (s.emitted_at.isoformat() if s.emitted_at else None),
                     "emitted_by": s.emitted_by,
                 }
                 for s in signals

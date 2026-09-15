@@ -40,9 +40,7 @@ class ArtifactRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # lifetime (the reaper destroys expired workspaces). This record's
     # expires_at is recorded evidence of that lifetime — the row itself
     # is retained and no reader enforces the timestamp yet.
-    workspace_resource_id: Mapped[str | None] = mapped_column(
-        String(26), nullable=True
-    )
+    workspace_resource_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     # Workspace-relative path (never an absolute host path — the host
@@ -63,6 +61,4 @@ class ArtifactRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Mirrors the workspace TTL when known; NULL = governed by the
     # workspace, not by this record.
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

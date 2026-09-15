@@ -50,9 +50,7 @@ class TestShortMessages:
 
 
 class TestChunking:
-    async def test_long_message_chunked_under_wire_limit(
-        self, client: WhatsAppClient
-    ) -> None:
+    async def test_long_message_chunked_under_wire_limit(self, client: WhatsAppClient) -> None:
         client._send = AsyncMock(return_value={"messages": [{"id": "wamid.1"}]})
         text = "y" * (client.WHATSAPP_TEXT_LIMIT * 3)
         results = await client.send_long_text("+2348000000000", text)
@@ -71,15 +69,13 @@ class TestChunking:
         assert first.startswith(f"(1/{len(results)})")
         assert second.startswith(f"(2/{len(results)})")
 
-    async def test_chunk_boundaries_prefer_paragraph_breaks(
-        self, client: WhatsAppClient
-    ) -> None:
+    async def test_chunk_boundaries_prefer_paragraph_breaks(self, client: WhatsAppClient) -> None:
         client._send = AsyncMock(return_value={"messages": [{"id": "wamid.1"}]})
         # Two paragraphs; each under the limit but the total over it.
         para = "word " * 400  # ~2000 chars
         text = para + "\n\n" + para + "\n\n" + para
         assert len(text) > client.WHATSAPP_TEXT_LIMIT
-        results = await client.send_long_text("+2348000000000", text)
+        await client.send_long_text("+2348000000000", text)
         bodies = [c[0][0]["text"]["body"] for c in client._send.call_args_list]
         # No chunk should end mid-word.
         for body in bodies:
@@ -98,16 +94,12 @@ class TestChunking:
             payload = body.split("\n\n", 1)[1]
             assert set(payload) == {"a"}
 
-    async def test_content_preserved_across_chunks(
-        self, client: WhatsAppClient
-    ) -> None:
+    async def test_content_preserved_across_chunks(self, client: WhatsAppClient) -> None:
         client._send = AsyncMock(return_value={"messages": [{"id": "wamid.1"}]})
         text = ("sentence. " * 900).strip()
-        results = await client.send_long_text("+2348000000000", text)
+        await client.send_long_text("+2348000000000", text)
         bodies = [c[0][0]["text"]["body"] for c in client._send.call_args_list]
-        reassembled = " ".join(
-            b.split("\n\n", 1)[1] if b.startswith("(") else b for b in bodies
-        )
+        reassembled = " ".join(b.split("\n\n", 1)[1] if b.startswith("(") else b for b in bodies)
         # Every sentence survives; reassembly is pure sentences + separators.
         assert reassembled.count("sentence.") == 900
         assert reassembled.replace("sentence.", "").strip(" ") == ""

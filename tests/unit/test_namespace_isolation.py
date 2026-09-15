@@ -223,7 +223,7 @@ print("FORKS", forked)
 """
         result = _run(code, max_processes=48, timeout_seconds=20.0)
         assert result.exit_code == 0
-        fork_line = next(l for l in result.stdout.splitlines() if l.startswith("FORKS"))
+        fork_line = next(line for line in result.stdout.splitlines() if line.startswith("FORKS"))
         assert int(fork_line.split()[1]) < 200
 
     @requires_ns
@@ -243,7 +243,7 @@ print("MB", allocated)
 """
         result = _run(code, memory_limit_mb=256, timeout_seconds=25.0)
         assert result.exit_code == 0
-        mb_line = next(l for l in result.stdout.splitlines() if l.startswith("MB"))
+        mb_line = next(line for line in result.stdout.splitlines() if line.startswith("MB"))
         assert int(mb_line.split()[1]) < 2048
 
     @requires_ns
@@ -264,7 +264,7 @@ print("WROTE-MB", size)
         result = _run(code, max_file_bytes=32_000_000, timeout_seconds=25.0)
         assert result.exit_code == 0
         wrote_line = next(
-            l for l in result.stdout.splitlines() if l.startswith("WROTE-MB")
+            line for line in result.stdout.splitlines() if line.startswith("WROTE-MB")
         )
         assert int(wrote_line.split()[1]) <= 512
 
@@ -277,7 +277,7 @@ print("WROTE-MB", size)
 
 class TestBoundarySelection:
     def test_auto_selects_namespace_when_available(self):
-        service, kind = IsolationService.select("auto")
+        _service, kind = IsolationService.select("auto")
         if ns_available:
             assert kind == "namespace"
         else:

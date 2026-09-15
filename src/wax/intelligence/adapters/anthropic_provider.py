@@ -118,14 +118,11 @@ class AnthropicProvider:
             content="".join(text_parts),
             model=data.get("model", request.model or self._default_model),
             provider=ProviderKind.ANTHROPIC,
-            finish_reason=_STOP_REASON_MAP.get(
-                data.get("stop_reason", "end_turn"), "stop"
-            ),
+            finish_reason=_STOP_REASON_MAP.get(data.get("stop_reason", "end_turn"), "stop"),
             usage={
                 "tokens_prompt": usage.get("input_tokens", 0),
                 "tokens_completion": usage.get("output_tokens", 0),
-                "tokens_total": usage.get("input_tokens", 0)
-                + usage.get("output_tokens", 0),
+                "tokens_total": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
             },
             request_id=request.request_id,
             tool_calls=tool_calls,
@@ -147,9 +144,7 @@ class AnthropicProvider:
                 if event_type == "content_block_delta":
                     delta = chunk.get("delta", {})
                     if delta.get("type") == "text_delta":
-                        yield LLMStreamChunk(
-                            content=delta.get("text", ""), finish_reason=None
-                        )
+                        yield LLMStreamChunk(content=delta.get("text", ""), finish_reason=None)
                 elif event_type == "message_delta":
                     stop = _STOP_REASON_MAP.get(
                         chunk.get("delta", {}).get("stop_reason") or "end_turn",

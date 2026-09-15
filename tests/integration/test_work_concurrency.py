@@ -377,7 +377,7 @@ class TestCrashRecovery:
 
         # A claims + marks running, then "dies" (no finalize at all).
         async with db_session() as session:
-            batch = await WorkRepository(session).claim_due(
+            await WorkRepository(session).claim_due(
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
             await WorkRepository(session).mark_running(
@@ -408,7 +408,7 @@ class TestCrashRecovery:
         # Attempt 1: claim + run, then "crash" (no finalize).
         runner_a = _runner(services, lease_seconds=0.15)
         async with db_session() as session:
-            batch = await WorkRepository(session).claim_due(
+            await WorkRepository(session).claim_due(
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
             await WorkRepository(session).mark_running(
@@ -441,7 +441,7 @@ class TestCrashRecovery:
         async with db_session() as session:
             letters = await DeadLetterRepository(session).list_recent(limit=10)
         assert any(
-            l.kind == "work.die" and l.error_type == "LeaseExhausted" for l in letters
+            entry.kind == "work.die" and entry.error_type == "LeaseExhausted" for entry in letters
         )
         assert await _signal_count(f"work.dead:{work_id}") == 1
 

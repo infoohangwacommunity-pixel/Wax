@@ -95,9 +95,7 @@ class ConnectorRuntime:
         """
         grant = (
             await session.execute(
-                select(CredentialGrantRecord).where(
-                    CredentialGrantRecord.handle == grant_handle
-                )
+                select(CredentialGrantRecord).where(CredentialGrantRecord.handle == grant_handle)
             )
         ).scalar_one_or_none()
         if grant is None:
@@ -135,14 +133,10 @@ class ConnectorRuntime:
             "service_kind": service_kind,
             "connector": conn.connector_name,
             "scopes": grant.scopes,
-            "available_operations": self._available_operations(
-                conn.connector_name, grant.scopes
-            ),
+            "available_operations": self._available_operations(conn.connector_name, grant.scopes),
         }
 
-    def _available_operations(
-        self, connector_name: str, scopes: list[str]
-    ) -> list[str]:
+    def _available_operations(self, connector_name: str, scopes: list[str]) -> list[str]:
         """Return the operations available for this connector + scopes.
 
         This is a declarative map: the runtime declares what operations

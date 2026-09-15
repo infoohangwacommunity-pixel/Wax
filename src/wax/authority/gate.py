@@ -49,8 +49,8 @@ log = get_logger(__name__)
 class ApprovalGateState(StrEnum):
     """Outcome of the gate for one attempted action."""
 
-    AUTHORIZED = "authorized"      # approval consumed (or not required); proceed
-    PENDING = "pending"            # approval requested/pending; nothing executed
+    AUTHORIZED = "authorized"  # approval consumed (or not required); proceed
+    PENDING = "pending"  # approval requested/pending; nothing executed
     ALREADY_USED = "already_used"  # approval was consumed elsewhere; refuse
 
 
@@ -60,7 +60,7 @@ class ApprovalGateOutcome:
 
     state: ApprovalGateState
     approval: Any | None = None  # PendingApprovalRecord, when one is involved
-    error: str | None = None     # caller-safe explanation for refusals
+    error: str | None = None  # caller-safe explanation for refusals
 
 
 class ApprovalGate:
@@ -107,9 +107,7 @@ class ApprovalGate:
             ),
             description=description,
             capability_name=capability_name,
-            inputs_summary={
-                k: str(v)[:120] for k, v in list((inputs or {}).items())[:5]
-            },
+            inputs_summary={k: str(v)[:120] for k, v in list((inputs or {}).items())[:5]},
         )
         verdict = await agency.evaluate(decision)
         if verdict.approved and not verdict.requires_human_approval:
@@ -127,9 +125,7 @@ class ApprovalGate:
             approval_ttl_seconds=self._services.settings.approval_expiry_seconds,
         )
         if approved is not None:
-            consumed = await approvals.consume(
-                approved.id, execution_id=execution_id
-            )
+            consumed = await approvals.consume(approved.id, execution_id=execution_id)
             if consumed:
                 log.info(
                     "approval.authorized_attempt",
@@ -143,12 +139,8 @@ class ApprovalGate:
                 # the one that requested the approval (it was awaiting the
                 # human) and the one consuming it.
                 await sync_active_for_execution(self._session, execution_id)
-                await sync_active_for_execution(
-                    self._session, approved.requested_by_execution_id
-                )
-                return ApprovalGateOutcome(
-                    state=ApprovalGateState.AUTHORIZED, approval=approved
-                )
+                await sync_active_for_execution(self._session, approved.requested_by_execution_id)
+                return ApprovalGateOutcome(state=ApprovalGateState.AUTHORIZED, approval=approved)
             return ApprovalGateOutcome(
                 state=ApprovalGateState.ALREADY_USED,
                 approval=approved,
@@ -162,9 +154,7 @@ class ApprovalGate:
             action_kind=verdict.level.value,
             inputs=inputs,
             requested_by_execution_id=execution_id,
-            expires_in_seconds=float(
-                self._services.settings.approval_expiry_seconds
-            ),
+            expires_in_seconds=float(self._services.settings.approval_expiry_seconds),
         )
         if created:
             await SignalRepository(self._session).emit(
@@ -226,9 +216,7 @@ class ApprovalGate:
             if not self._services.delivery.has(interface):
                 continue  # adapter down — candidate for the durable retry
             try:
-                await self._services.delivery.send(
-                    interface, credential.value, text
-                )
+                await self._services.delivery.send(interface, credential.value, text)
                 log.info(
                     "approval.notified",
                     approval_id=record.id,

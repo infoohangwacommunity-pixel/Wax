@@ -197,9 +197,7 @@ class WhatsAppClient:
             }
         )
 
-    async def send_reaction(
-        self, to_phone: str, message_id: str, emoji: str
-    ) -> dict[str, Any]:
+    async def send_reaction(self, to_phone: str, message_id: str, emoji: str) -> dict[str, Any]:
         """React to a user's message with an emoji."""
         return await self._send(
             {
@@ -238,9 +236,7 @@ class WhatsAppClient:
             }
         )
 
-    async def send_contacts(
-        self, to_phone: str, contacts: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    async def send_contacts(self, to_phone: str, contacts: list[dict[str, Any]]) -> dict[str, Any]:
         """Send one or more contacts (vCard format).
 
         Each contact dict must match WhatsApp's contacts schema (see
@@ -281,9 +277,7 @@ class WhatsAppClient:
             reply_to_message_id: optional reply context
         """
         if media_type not in ("image", "video", "audio", "document", "sticker"):
-            raise WaxValidationError(
-                f"Unsupported media type: {media_type!r}"
-            )
+            raise WaxValidationError(f"Unsupported media type: {media_type!r}")
         if not media_id and not media_link:
             raise WaxValidationError("Either media_id or media_link is required")
         media_obj: dict[str, Any] = {}

@@ -1,6 +1,6 @@
 """Memory retrieval upgrade tests (ADR-0019).
 
-The upgrade is two-stage: RECALL (newest pool ∪ lexical term matches —
+The upgrade is two-stage: RECALL (newest pool U lexical term matches —
 portable; Postgres deployments additionally get the GIN-indexed tsvector
 path from the migration) then RANK (BM25-style idf-weighted scoring
 blended with recency + confidence).
@@ -40,8 +40,14 @@ async def fresh_db(test_settings):
     await dispose_engine()
 
 
-async def _store(principal_id: str, content: str, *, summary: str | None = None,
-                 days_old: float = 0.0, confidence: float | None = None) -> str:
+async def _store(
+    principal_id: str,
+    content: str,
+    *,
+    summary: str | None = None,
+    days_old: float = 0.0,
+    confidence: float | None = None,
+) -> str:
     async with db_session() as session:
         record = await MemoryRepository(session).create(
             MemoryCreate(
@@ -85,9 +91,7 @@ class TestBM25Ranking:
             ("kayak mention buried at the end. " + "unrelated filler words. " * 40),
         )
         async with db_session() as session:
-            results = await MemoryRepository(session).search_relevant(
-                "P1", "kayak", limit=5
-            )
+            results = await MemoryRepository(session).search_relevant("P1", "kayak", limit=5)
         assert "kayak kayak" in str(results[0][0].content)
 
     async def test_recency_and_confidence_still_blend(self, fresh_db):
@@ -112,8 +116,7 @@ class TestRecallBeyondNewestPool:
         # the previous implementation searched only the newest N.
         for i in range(8):
             await _store("P1", f"chat message {i} about lunch plans")
-        await _store("P1", "the ferrofluid demonstration captivated everyone",
-                     days_old=0.5)
+        await _store("P1", "the ferrofluid demonstration captivated everyone", days_old=0.5)
 
         async with db_session() as session:
             results = await MemoryRepository(session).search_relevant(

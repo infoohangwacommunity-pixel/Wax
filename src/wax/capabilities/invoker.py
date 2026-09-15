@@ -104,7 +104,10 @@ class CapabilityInvoker:
             descriptor, impl = self._registry.get(request.capability_name)
         except Exception:
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="not_found",
                 error=f"No such capability: {request.capability_name}",
             )
@@ -113,7 +116,10 @@ class CapabilityInvoker:
         status = self._registry.get_status(request.capability_name)
         if status != CapabilityStatus.AVAILABLE:
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="denied",
                 error=f"Capability status is {status.value}, not available",
             )
@@ -128,7 +134,10 @@ class CapabilityInvoker:
         )
         if not authorized:
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="denied",
                 error=f"Principal lacks permission: {descriptor.required_permission}",
             )
@@ -143,7 +152,10 @@ class CapabilityInvoker:
             self._validate_inputs(request.inputs, descriptor.input_schema)
         except ValueError as e:
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="failure",
                 error=f"Invalid inputs: {e}",
             )
@@ -177,8 +189,7 @@ class CapabilityInvoker:
                     outcome="success",
                     outputs=(
                         _json.loads(claim.record.response_json)
-                        if claim.record is not None
-                        and claim.record.response_json
+                        if claim.record is not None and claim.record.response_json
                         else None
                     ),
                     error=None,
@@ -190,7 +201,10 @@ class CapabilityInvoker:
                 )
             if claim.verdict in (Verdict.EXECUTING, Verdict.TAKEOVER_LOST):
                 return self._failure_result(
-                    request, execution_id, started_at, start_perf,
+                    request,
+                    execution_id,
+                    started_at,
+                    start_perf,
                     outcome="duplicate",
                     error=(
                         "An identical request (same idempotency key) is "
@@ -228,7 +242,10 @@ class CapabilityInvoker:
                     claim_id,
                 )
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="timeout",
                 error=f"Capability exceeded {descriptor.timeout_seconds}s timeout",
             )
@@ -245,7 +262,10 @@ class CapabilityInvoker:
 
                 await complete_failure(f"{type(e).__name__}: {e}", claim_id)
             return self._failure_result(
-                request, execution_id, started_at, start_perf,
+                request,
+                execution_id,
+                started_at,
+                start_perf,
                 outcome="failure",
                 error=f"{type(e).__name__}: {e}",
             )
@@ -302,9 +322,7 @@ class CapabilityInvoker:
     # --- Declared-contract validation (constitutional audit fix) ------------
 
     @staticmethod
-    def _validate_inputs(
-        inputs: dict, schema: dict | None
-    ) -> None:
+    def _validate_inputs(inputs: dict, schema: dict | None) -> None:
         """Enforce the descriptor's DECLARED input contract.
 
         Covers the JSON-schema subset the descriptors actually use:
@@ -334,9 +352,7 @@ class CapabilityInvoker:
                     raise ValueError(f"input {name} exceeds {max_len} characters")
                 min_len = spec.get("minLength")
                 if min_len is not None and len(value) < min_len:
-                    raise ValueError(
-                        f"input {name} is shorter than {min_len} characters"
-                    )
+                    raise ValueError(f"input {name} is shorter than {min_len} characters")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 minimum = spec.get("minimum")
                 if minimum is not None and value < minimum:

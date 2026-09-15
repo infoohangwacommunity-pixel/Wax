@@ -253,12 +253,16 @@ class CredentialVault:
     ) -> list[dict[str, Any]]:
         """List the principal's connections. Metadata only — NO secrets."""
         records = (
-            await session.execute(
-                select(PrincipalConnectionRecord)
-                .where(PrincipalConnectionRecord.principal_id == principal_id)
-                .order_by(PrincipalConnectionRecord.created_at.desc())
+            (
+                await session.execute(
+                    select(PrincipalConnectionRecord)
+                    .where(PrincipalConnectionRecord.principal_id == principal_id)
+                    .order_by(PrincipalConnectionRecord.created_at.desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [
             {
                 "connection_id": r.id,
@@ -331,8 +335,7 @@ class CredentialVault:
                 detail=f"insufficient scopes: missing {missing}",
             )
             raise ValueError(
-                f"Connection does not grant scopes {missing}. "
-                f"Granted: {conn.granted_scopes}"
+                f"Connection does not grant scopes {missing}. Granted: {conn.granted_scopes}"
             )
 
         # Create the grant
@@ -452,9 +455,7 @@ class CredentialVault:
         """
         grant = (
             await session.execute(
-                select(CredentialGrantRecord).where(
-                    CredentialGrantRecord.handle == handle
-                )
+                select(CredentialGrantRecord).where(CredentialGrantRecord.handle == handle)
             )
         ).scalar_one_or_none()
         if grant is None:

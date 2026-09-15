@@ -47,7 +47,9 @@ class RateLimiter:
 
     def __init__(self, config: RateLimitConfig | None = None) -> None:
         self._config = config or RateLimitConfig()
-        self._buckets: dict[str, tuple[float, float]] = {}  # principal_id → (tokens, last_refill_time)
+        self._buckets: dict[
+            str, tuple[float, float]
+        ] = {}  # principal_id → (tokens, last_refill_time)
         self._lock = Lock()
 
     def check(self, principal_id: str) -> RateLimitDecision:

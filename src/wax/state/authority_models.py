@@ -65,9 +65,7 @@ class PrincipalRole(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     """A role assigned to a principal. Grants all the role's permissions."""
 
     __tablename__ = "principal_roles"
-    __table_args__ = (
-        UniqueConstraint("principal_id", "role_id", name="uq_principal_roles"),
-    )
+    __table_args__ = (UniqueConstraint("principal_id", "role_id", name="uq_principal_roles"),)
 
     principal_id: Mapped[str] = mapped_column(
         String(26),

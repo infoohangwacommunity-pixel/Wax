@@ -92,9 +92,12 @@ class TestClassifyMimeType:
         assert classify_mime_type("application/pdf") == MediaKind.DOCUMENT
 
     def test_document_docx(self) -> None:
-        assert classify_mime_type(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ) == MediaKind.DOCUMENT
+        assert (
+            classify_mime_type(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+            == MediaKind.DOCUMENT
+        )
 
     def test_unknown(self) -> None:
         assert classify_mime_type("application/x-unknown") == MediaKind.UNKNOWN

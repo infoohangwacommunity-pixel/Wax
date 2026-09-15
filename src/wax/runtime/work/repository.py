@@ -296,9 +296,7 @@ class WorkRepository:
         await self._session.flush()
         return True
 
-    async def mark_running(
-        self, work_id: str, *, expected_owner: str | None = None
-    ) -> str:
+    async def mark_running(self, work_id: str, *, expected_owner: str | None = None) -> str:
         """Transition leased → running. With `expected_owner` the write is
         FENCED: if the lease has moved to another worker (the caller is a
         zombie), nothing is written and "fenced" is returned.

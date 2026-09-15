@@ -95,9 +95,7 @@ class CircuitBreaker:
         Raises the original exception if the operation fails.
         """
         if not self._allow_call():
-            raise CircuitOpenError(
-                f"Circuit '{self._name}' is OPEN. Failing fast."
-            )
+            raise CircuitOpenError(f"Circuit '{self._name}' is OPEN. Failing fast.")
 
         try:
             result = await operation()

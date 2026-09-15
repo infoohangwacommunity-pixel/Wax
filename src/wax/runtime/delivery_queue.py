@@ -119,9 +119,7 @@ class DeliveryQueue:
         created = record.created_at
         if created is not None and created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
-        if created is not None and (now - created) > timedelta(
-            seconds=self._max_age_seconds
-        ):
+        if created is not None and (now - created) > timedelta(seconds=self._max_age_seconds):
             record.status = "failed"
             record.last_error = (
                 f"deliverability horizon passed "
@@ -178,9 +176,7 @@ class DeliveryQueue:
             )
             return False
 
-        backoff = self._retry_backoff_seconds * (
-            self._backoff_factor ** (record.attempts - 1)
-        )
+        backoff = self._retry_backoff_seconds * (self._backoff_factor ** (record.attempts - 1))
         record.next_attempt_at = datetime.now(UTC) + timedelta(seconds=backoff)
         await self._session.flush()
         _metric().delivery_retrying(record.interface_kind)
@@ -203,8 +199,7 @@ class DeliveryQueue:
             select(DeliveryRecord)
             .where(DeliveryRecord.status == "pending")
             .where(
-                (DeliveryRecord.next_attempt_at.is_(None))
-                | (DeliveryRecord.next_attempt_at <= now)
+                (DeliveryRecord.next_attempt_at.is_(None)) | (DeliveryRecord.next_attempt_at <= now)
             )
             .order_by(DeliveryRecord.created_at.asc())
             .limit(limit)

@@ -50,9 +50,7 @@ class IsolationService:
         if kind == IsolationKind.NOOP:
             # NoopBoundary is defined in tests; intentionally not importable
             # from production code.
-            raise WaxConfigurationError(
-                "NoopBoundary is for tests only — do not use in production"
-            )
+            raise WaxConfigurationError("NoopBoundary is for tests only — do not use in production")
         if kind in (IsolationKind.CONTAINER, IsolationKind.MICROVM, IsolationKind.BROWSER):
             raise WaxConfigurationError(
                 f"{kind.value} isolation not yet implemented (future phase)"

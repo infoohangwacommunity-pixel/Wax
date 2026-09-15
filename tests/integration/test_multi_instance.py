@@ -154,7 +154,7 @@ class TestDbBackedRateLimiter:
 
         allowed = 0
         # Simulate 10 requests from two "processes" interleaved
-        for i in range(10):
+        for _i in range(10):
             async with db_session() as s:
                 ok = await limiter.check(s, principal_id)
                 await s.commit()
@@ -193,9 +193,7 @@ class TestDbBackedCostProtector:
         # Simulate 5 requests of 300 tokens each from two "processes"
         for _ in range(5):
             async with db_session() as s:
-                ok = await protector.check_and_record(
-                    s, principal_id, tokens=300
-                )
+                ok = await protector.check_and_record(s, principal_id, tokens=300)
                 await s.commit()
                 if ok:
                     total_allowed += 300

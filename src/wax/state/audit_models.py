@@ -40,9 +40,7 @@ class AuditEvent(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Who initiated the action.
     # NULL = system-initiated (cron, internal cleanup, etc.)
-    actor_principal_id: Mapped[str | None] = mapped_column(
-        String(26), nullable=True, index=True
-    )
+    actor_principal_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
 
     # What kind of actor: human | service | ai | system
     actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -58,9 +56,7 @@ class AuditEvent(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # resource id, error message, etc.). NEVER contains secrets.
     # Use SQLAlchemy's generic JSON type — on PostgreSQL this maps to JSONB,
     # on SQLite it maps to TEXT with JSON serialization.
-    payload: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # Optional request_id / trace_id for cross-referencing logs.
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

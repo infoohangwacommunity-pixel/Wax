@@ -52,9 +52,7 @@ class ConversationRepository:
     async def get(self, conversation_id: str) -> ConversationRecord | None:
         return await self._session.get(ConversationRecord, conversation_id)
 
-    async def get_active_for_principal(
-        self, principal_id: str
-    ) -> ConversationRecord | None:
+    async def get_active_for_principal(self, principal_id: str) -> ConversationRecord | None:
         """Find an active or idle conversation for the principal.
 
         Returns the most-recently-active conversation that is not archived
@@ -64,10 +62,12 @@ class ConversationRepository:
             select(ConversationRecord)
             .where(
                 ConversationRecord.principal_id == principal_id,
-                ConversationRecord.status.in_([
-                    ConversationStatus.ACTIVE.value,
-                    ConversationStatus.IDLE.value,
-                ]),
+                ConversationRecord.status.in_(
+                    [
+                        ConversationStatus.ACTIVE.value,
+                        ConversationStatus.IDLE.value,
+                    ]
+                ),
             )
             .order_by(ConversationRecord.last_message_at.desc())
             .limit(1)
@@ -87,7 +87,11 @@ class ConversationRepository:
         if record is None:
             return False
         # Use naive datetime for SQLite compatibility, but consistently
-        record.last_message_at = now.replace(tzinfo=None) if record.last_message_at and record.last_message_at.tzinfo is None else now
+        record.last_message_at = (
+            now.replace(tzinfo=None)
+            if record.last_message_at and record.last_message_at.tzinfo is None
+            else now
+        )
         record.message_count += message_count_delta
         if record.status == ConversationStatus.IDLE.value:
             record.status = ConversationStatus.ACTIVE.value
@@ -96,9 +100,7 @@ class ConversationRepository:
         await self._session.flush()
         return True
 
-    async def attach_objective(
-        self, conversation_id: str, objective_id: str
-    ) -> bool:
+    async def attach_objective(self, conversation_id: str, objective_id: str) -> bool:
         """Point the conversation at the objective its current interaction
         pursues. The OBJECTIVE evidence section is sourced from this link;
         the bridge writes it when both ends of the link exist."""
@@ -163,9 +165,7 @@ class ConversationRepository:
         await self._session.flush()
         return True
 
-    async def set_summary(
-        self, conversation_id: str, summary: str
-    ) -> bool:
+    async def set_summary(self, conversation_id: str, summary: str) -> bool:
         record = await self.get(conversation_id)
         if record is None:
             return False

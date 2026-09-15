@@ -125,7 +125,7 @@ class TestMemoryRetrieval:
     async def test_list_active_excludes_forgotten(self, principal_id) -> None:
         async with db_session() as session:
             repo = MemoryRepository(session)
-            keep = await repo.create(
+            await repo.create(
                 MemoryCreate(
                     principal_id=principal_id,
                     kind=MemoryKind.EPISODIC,
@@ -173,12 +173,8 @@ class TestMemoryRetrieval:
 
         async with db_session() as session:
             repo = MemoryRepository(session)
-            episodic = await repo.list_active_for_principal(
-                principal_id, kind="episodic"
-            )
-            semantic = await repo.list_active_for_principal(
-                principal_id, kind="semantic"
-            )
+            episodic = await repo.list_active_for_principal(principal_id, kind="episodic")
+            semantic = await repo.list_active_for_principal(principal_id, kind="semantic")
             assert len(episodic) == 1
             assert len(semantic) == 1
 
@@ -225,9 +221,7 @@ class TestMemorySupersession:
             ok = await repo.supersede("01HXY" + "0" * 21, "01HXY" + "1" * 21)
             assert not ok
 
-    async def test_both_records_retained_after_supersession(
-        self, principal_id
-    ) -> None:
+    async def test_both_records_retained_after_supersession(self, principal_id) -> None:
         """Critical: supersession does NOT delete the old record.
 
         Both records remain in the DB — the old one is just marked. This
@@ -266,9 +260,7 @@ class TestMemorySupersession:
 class TestMemoryForgetting:
     """Forgetting is a real operation, not a deletion (Directive §34)."""
 
-    async def test_forget_marks_record_but_retains_for_audit(
-        self, principal_id
-    ) -> None:
+    async def test_forget_marks_record_but_retains_for_audit(self, principal_id) -> None:
         async with db_session() as session:
             repo = MemoryRepository(session)
             record = await repo.create(
@@ -289,12 +281,10 @@ class TestMemoryForgetting:
             assert r is not None
             assert r.status == "forgotten"
 
-    async def test_forget_excluded_from_default_retrieval(
-        self, principal_id
-    ) -> None:
+    async def test_forget_excluded_from_default_retrieval(self, principal_id) -> None:
         async with db_session() as session:
             repo = MemoryRepository(session)
-            active = await repo.create(
+            await repo.create(
                 MemoryCreate(
                     principal_id=principal_id,
                     kind=MemoryKind.EPISODIC,
@@ -362,9 +352,7 @@ class TestMemoryExpiry:
             assert "01HXY" + "0" * 21 in ids
             assert "01HXY" + "1" * 21 not in ids
 
-    async def test_expire_due_excludes_already_forgotten(
-        self, principal_id
-    ) -> None:
+    async def test_expire_due_excludes_already_forgotten(self, principal_id) -> None:
         """A forgotten memory should not appear in the expiry queue."""
         async with db_session() as session:
             repo = MemoryRepository(session)

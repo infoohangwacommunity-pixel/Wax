@@ -43,6 +43,7 @@ to SubprocessBoundary LOUDLY (log + metric), never silently.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import resource
 import shutil
@@ -141,8 +142,7 @@ class NamespaceBoundary(SubprocessBoundary):
 
         cmd, env = self._prepare_command(request)
         inner = self._inner_script(request, cmd)
-        argv = [shutil.which("unshare") or "unshare", *_UNSHARE_FLAGS,
-                "sh", "-c", inner]
+        argv = [shutil.which("unshare") or "unshare", *_UNSHARE_FLAGS, "sh", "-c", inner]
 
         preexec = self._rlimit_preset(request)
         try:
@@ -178,17 +178,14 @@ class NamespaceBoundary(SubprocessBoundary):
         except TimeoutError:
             await self._kill_group(proc)
             stdout_b = b""
-            stderr_b = (
-                f"timeout: sandbox exceeded {request.timeout_seconds}s\n"
-            ).encode()
+            stderr_b = (f"timeout: sandbox exceeded {request.timeout_seconds}s\n").encode()
             exit_code = 124
             timed_out = True
 
-        stdout = stdout_b.decode("utf-8", errors="replace")[:request.max_output_bytes]
-        stderr = stderr_b.decode("utf-8", errors="replace")[:request.max_output_bytes]
+        stdout = stdout_b.decode("utf-8", errors="replace")[: request.max_output_bytes]
+        stderr = stderr_b.decode("utf-8", errors="replace")[: request.max_output_bytes]
         truncated = (
-            len(stdout_b) > request.max_output_bytes
-            or len(stderr_b) > request.max_output_bytes
+            len(stdout_b) > request.max_output_bytes or len(stderr_b) > request.max_output_bytes
         )
 
         duration_ms = (time.perf_counter() - start_perf) * 1000
@@ -297,9 +294,7 @@ class NamespaceBoundary(SubprocessBoundary):
             if cpu_seconds > 0:
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
 
-        limits_active = any(
-            (memory_bytes, file_bytes, nproc, cpu_seconds)
-        )
+        limits_active = any((memory_bytes, file_bytes, nproc, cpu_seconds))
         return _apply if limits_active else None
 
     @staticmethod
@@ -313,14 +308,10 @@ class NamespaceBoundary(SubprocessBoundary):
         """
         import signal
 
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
+        with contextlib.suppress(TimeoutError):  # pragma: no cover - SIGKILL cannot hang
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except TimeoutError:  # pragma: no cover - SIGKILL cannot hang
-            pass
 
 
 def _shell_join(cmd: list[str]) -> str:

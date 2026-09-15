@@ -115,9 +115,7 @@ def validate_reentry_payload(payload: dict[str, Any] | None) -> tuple[str, dict[
     if not prompt.strip():
         raise ReentryValidationError("payload.prompt must not be empty")
     if len(prompt) > REENTRY_PROMPT_MAX_CHARS:
-        raise ReentryValidationError(
-            f"payload.prompt exceeds {REENTRY_PROMPT_MAX_CHARS} chars"
-        )
+        raise ReentryValidationError(f"payload.prompt exceeds {REENTRY_PROMPT_MAX_CHARS} chars")
 
     observation = payload.get("observation")
     if not isinstance(observation, dict):
@@ -131,9 +129,7 @@ def validate_reentry_payload(payload: dict[str, Any] | None) -> tuple[str, dict[
         )
     event = observation.get("event")
     if not isinstance(event, str) or not event.strip():
-        raise ReentryValidationError(
-            "payload.observation.event must be a non-empty string"
-        )
+        raise ReentryValidationError("payload.observation.event must be a non-empty string")
 
     # Size check on the whole observation (after serialization).
     import json
@@ -141,13 +137,10 @@ def validate_reentry_payload(payload: dict[str, Any] | None) -> tuple[str, dict[
     try:
         obs_bytes = len(json.dumps(observation, default=str).encode("utf-8"))
     except (TypeError, ValueError) as e:
-        raise ReentryValidationError(
-            f"payload.observation is not JSON-serializable: {e}"
-        ) from e
+        raise ReentryValidationError(f"payload.observation is not JSON-serializable: {e}") from e
     if obs_bytes > REENTRY_OBSERVATION_MAX_BYTES:
         raise ReentryValidationError(
-            f"payload.observation exceeds {REENTRY_OBSERVATION_MAX_BYTES} bytes "
-            f"(was {obs_bytes})"
+            f"payload.observation exceeds {REENTRY_OBSERVATION_MAX_BYTES} bytes (was {obs_bytes})"
         )
 
     return prompt, observation

@@ -131,9 +131,7 @@ class MediaPipeline:
                 error=f"{type(e).__name__}: {e}",
             )
 
-    async def extract_batch(
-        self, sources: list[MediaSource]
-    ) -> list[MediaExtractionResult]:
+    async def extract_batch(self, sources: list[MediaSource]) -> list[MediaExtractionResult]:
         """Extract multiple media sources concurrently."""
         if not sources:
             return []

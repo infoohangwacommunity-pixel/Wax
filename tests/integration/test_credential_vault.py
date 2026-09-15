@@ -206,12 +206,16 @@ class TestCredentialConnect:
         # Two connection records; the first is revoked
         async with db_session() as s:
             records = (
-                await s.execute(
-                    select(PrincipalConnectionRecord)
-                    .where(PrincipalConnectionRecord.principal_id == principal_id)
-                    .where(PrincipalConnectionRecord.connector_name == "git_host")
+                (
+                    await s.execute(
+                        select(PrincipalConnectionRecord)
+                        .where(PrincipalConnectionRecord.principal_id == principal_id)
+                        .where(PrincipalConnectionRecord.connector_name == "git_host")
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(records) == 2
             statuses = [r.status for r in records]
             assert "revoked" in statuses
@@ -504,13 +508,17 @@ class TestCredentialAuditEvents:
 
         async with db_session() as s:
             events = (
-                await s.execute(
-                    select(CredentialEventRecord).where(
-                        CredentialEventRecord.principal_id == principal_id,
-                        CredentialEventRecord.kind == "connected",
+                (
+                    await s.execute(
+                        select(CredentialEventRecord).where(
+                            CredentialEventRecord.principal_id == principal_id,
+                            CredentialEventRecord.kind == "connected",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(events) >= 1
             assert events[0].connector_name == "git_host"
             # The event never contains the secret

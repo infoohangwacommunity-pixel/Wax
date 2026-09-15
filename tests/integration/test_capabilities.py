@@ -218,9 +218,7 @@ class TestInvokerAuthorization:
         assert result.outcome == "denied"
         assert "unavailable" in (result.error or "").lower()
 
-    async def test_invoke_records_audit_trail(
-        self, fresh_db, registry: CapabilityRegistry
-    ) -> None:
+    async def test_invoke_records_audit_trail(self, fresh_db, registry: CapabilityRegistry) -> None:
         """Every invocation must produce an audit record."""
         async with db_session() as session:
             role = Role(
@@ -268,9 +266,7 @@ class TestInvokerAuthorization:
             capabilities = [p.get("capability") for p in payloads if p.get("capability")]
             assert "echo" in capabilities
 
-    async def test_invoke_handles_capability_failure_gracefully(
-        self, fresh_db
-    ) -> None:
+    async def test_invoke_handles_capability_failure_gracefully(self, fresh_db) -> None:
         """If a capability implementation raises, the invoker returns failure."""
         # Register a capability that always raises
         registry = CapabilityRegistry()

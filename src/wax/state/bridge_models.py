@@ -60,14 +60,10 @@ class ProcessedMessageRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     response_text: Mapped[str | None] = mapped_column(String(5000), nullable=True)
 
     # When the message was received by the interface (UTC)
-    received_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # When the bridge finished processing (UTC)
-    processed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Opaque metadata for debugging (never contains secrets)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

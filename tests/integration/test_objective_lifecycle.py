@@ -103,18 +103,14 @@ class TestTransitionMap:
     async def test_pending_to_waiting_is_legal(self, fresh_db, services) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             assert await repo.transition(obj.id, ObjectiveStatus.WAITING)
             await session.commit()
 
     async def test_in_progress_to_awaiting_human_is_legal(self, fresh_db) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             assert await repo.transition(obj.id, ObjectiveStatus.AWAITING_HUMAN)
             await session.commit()
@@ -124,9 +120,7 @@ class TestTransitionMap:
         the wait itself is not success."""
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.transition(obj.id, ObjectiveStatus.WAITING)
             assert not await repo.transition(obj.id, ObjectiveStatus.SUCCEEDED)
             await session.commit()
@@ -134,24 +128,18 @@ class TestTransitionMap:
     async def test_cancelled_is_terminal(self, fresh_db) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             assert await repo.transition(obj.id, ObjectiveStatus.CANCELLED)
             assert not await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             await session.commit()
 
-    async def test_awaiting_human_may_succeed_when_interaction_completes(
-        self, fresh_db
-    ) -> None:
+    async def test_awaiting_human_may_succeed_when_interaction_completes(self, fresh_db) -> None:
         """The interaction completes while an approval stays pending —
         the objective closes honestly; the approval lives independently."""
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             await repo.transition(obj.id, ObjectiveStatus.AWAITING_HUMAN)
             assert await repo.transition(obj.id, ObjectiveStatus.SUCCEEDED)
@@ -164,9 +152,7 @@ class TestExecutionHistory:
     async def test_multiple_executions_one_objective(self, fresh_db) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.record_execution_start(obj.id, "exec-A", kind="bridge")
             await repo.record_execution_end(obj.id, "exec-A", outcome="failed")
             # Retry: a second execution joins the SAME objective.
@@ -183,9 +169,7 @@ class TestExecutionHistory:
     async def test_open_history_rows_are_counted(self, fresh_db) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
             await repo.record_execution_start(obj.id, "exec-A", kind="bridge")
             assert await repo.count_open_executions(obj.id) == 1
             await repo.record_execution_end(obj.id, "exec-A", outcome="succeeded")
@@ -195,12 +179,8 @@ class TestExecutionHistory:
     async def test_end_never_fabricates_missing_rows(self, fresh_db) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id="p", description="x")
-            )
-            closed = await repo.record_execution_end(
-                obj.id, "never-started", outcome="succeeded"
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
+            closed = await repo.record_execution_end(obj.id, "never-started", outcome="succeeded")
             await session.commit()
         assert closed == 0
 
@@ -210,9 +190,7 @@ class TestObjectiveStateSurvivesTheInteraction:
     the interaction that scheduled it closes — waiting is the truth
     (mission §60: no fake autonomy, §24: evidence-based completion)."""
 
-    async def test_scheduled_work_holds_the_objective_open(
-        self, fresh_db, services
-    ) -> None:
+    async def test_scheduled_work_holds_the_objective_open(self, fresh_db, services) -> None:
         from wax.runtime.bridge.contracts import RuntimeResponseStatus
         from wax.state.objective_models import ObjectiveRecord
 
@@ -237,9 +215,7 @@ class TestObjectiveStateSurvivesTheInteraction:
             services=services,
         )
         async with db_session() as session:
-            response = await bridge.process(
-                session, _request(f"m-{ULID()}", "ping me later")
-            )
+            response = await bridge.process(session, _request(f"m-{ULID()}", "ping me later"))
             await session.commit()
         assert response.status == RuntimeResponseStatus.SUCCESS
 
@@ -323,9 +299,7 @@ class TestObjectiveStateSurvivesTheInteraction:
             services=services,
         )
         async with db_session() as session:
-            response = await bridge.process(
-                session, _request(f"m-{ULID()}", "wipe it later")
-            )
+            response = await bridge.process(session, _request(f"m-{ULID()}", "wipe it later"))
             await session.commit()
         assert response.status == RuntimeResponseStatus.SUCCESS
         objective_id = response.objective_id
@@ -349,8 +323,7 @@ class TestObjectiveStateSurvivesTheInteraction:
                 (
                     await session.execute(
                         select(PendingApprovalRecord).where(
-                            PendingApprovalRecord.requested_by_execution_id
-                            == response.execution_id
+                            PendingApprovalRecord.requested_by_execution_id == response.execution_id
                         )
                     )
                 )
@@ -374,8 +347,7 @@ class TestObjectiveStateSurvivesTheInteraction:
             obj = await session.get(ObjectiveRecord, objective_id)
             assert obj is not None
             assert obj.status == "in_progress", (
-                f"consuming the approval must reactivate the objective; "
-                f"got {obj.status}"
+                f"consuming the approval must reactivate the objective; got {obj.status}"
             )
             item = (
                 (
@@ -429,9 +401,7 @@ class TestObjectiveCapabilities:
             p = await PrincipalRepository(session).create_principal(
                 display_name="Capability Objective User"
             )
-            await ensure_principal_role(
-                session, p.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS
-            )
+            await ensure_principal_role(session, p.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS)
             await session.commit()
             return p.id
 
@@ -448,9 +418,7 @@ class TestObjectiveCapabilities:
             await repo.record_execution_end(obj.id, "exec-A", outcome="failed")
             await session.commit()
 
-        result = await self._invoke(
-            services, principal_id, "objective.list", {"limit": 10}
-        )
+        result = await self._invoke(services, principal_id, "objective.list", {"limit": 10})
         assert result.outcome == "success", result.error
         items = result.outputs["objectives"]
         assert items and items[0]["objective_id"] == obj.id
@@ -467,15 +435,11 @@ class TestObjectiveCapabilities:
             )
             await session.commit()
 
-        result = await self._invoke(
-            services, principal_b, "objective.list", {"limit": 10}
-        )
+        result = await self._invoke(services, principal_b, "objective.list", {"limit": 10})
         assert result.outcome == "success"
         assert result.outputs["objectives"] == []
 
-    async def test_resume_continues_the_existing_objective(
-        self, fresh_db, services
-    ) -> None:
+    async def test_resume_continues_the_existing_objective(self, fresh_db, services) -> None:
         """The mission's continuity scenario: 'continue that' attaches the
         new interaction to the prior objective instead of a sibling."""
         principal_id = await self._principal()
@@ -523,7 +487,7 @@ class TestObjectiveCapabilities:
 
         assert resumed.status == "in_progress"
         assert old.status == "cancelled"  # the sibling closed honestly
-        assert old.execution_id is None or old.execution_id != "exec-2" or True
+        assert True
         exec_ids = {h.execution_id for h in history}
         assert "exec-1" in exec_ids and "exec-2" in exec_ids, (
             "the resumed objective's history must span BOTH interactions"
@@ -562,16 +526,12 @@ class TestObjectiveCapabilities:
         )
         assert terminal.outcome != "success"
 
-    async def test_update_status_records_evidence_and_closes(
-        self, fresh_db, services
-    ) -> None:
+    async def test_update_status_records_evidence_and_closes(self, fresh_db, services) -> None:
         principal_id = await self._principal()
         async with db_session() as session:
             repo = ObjectiveRepository(session)
             obj = await repo.create(
-                ObjectiveCreate(
-                    principal_id=principal_id, description="compile the summary"
-                )
+                ObjectiveCreate(principal_id=principal_id, description="compile the summary")
             )
             await repo.record_execution_start(obj.id, "exec-9", kind="bridge")
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
@@ -630,9 +590,7 @@ class TestObjectiveCapabilities:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
             obj = await repo.create(
-                ObjectiveCreate(
-                    principal_id=principal_id, description="deliver the digest"
-                )
+                ObjectiveCreate(principal_id=principal_id, description="deliver the digest")
             )
             await repo.record_execution_start(obj.id, "exec-cv15", kind="bridge")
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
@@ -665,9 +623,7 @@ class TestObjectiveCapabilities:
                 "evidence": "the model says everything is done",
             },
         )
-        assert claim.outcome != "success", (
-            "a fabricated terminal claim must be refused"
-        )
+        assert claim.outcome != "success", "a fabricated terminal claim must be refused"
         assert "outstanding durable work" in (claim.error or "")
 
         async with db_session() as session:
@@ -708,7 +664,9 @@ class TestObjectiveCapabilities:
             await session.commit()
 
         empty = await self._invoke(
-            services, principal_id, "objective.update_status",
+            services,
+            principal_id,
+            "objective.update_status",
             {"objective_id": "x", "status": "succeeded", "evidence": ""},
         )
         assert empty.outcome != "success"

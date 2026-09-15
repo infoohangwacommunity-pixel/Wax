@@ -46,25 +46,50 @@ class SanitizerResult:
 # false positives are fine; false negatives are not.
 _INJECTION_PATTERNS: list[tuple[str, InjectionRisk, str]] = [
     # Direct instruction attempts
-    (r"(?i)\bignore\s+(all\s+)?(previous|prior|above)\s+instructions", InjectionRisk.HIGH, "ignore_instructions"),
-    (r"(?i)\b(disregard|forget)\s+(all\s+)?(previous|prior|your)\s+instructions", InjectionRisk.HIGH, "disregard_instructions"),
-    (r"(?i)\b(you\s+are\s+now|act\s+as|pretend\s+to\s+be)\s+(?!a\s+user)", InjectionRisk.MEDIUM, "role_hijack"),
+    (
+        r"(?i)\bignore\s+(all\s+)?(previous|prior|above)\s+instructions",
+        InjectionRisk.HIGH,
+        "ignore_instructions",
+    ),
+    (
+        r"(?i)\b(disregard|forget)\s+(all\s+)?(previous|prior|your)\s+instructions",
+        InjectionRisk.HIGH,
+        "disregard_instructions",
+    ),
+    (
+        r"(?i)\b(you\s+are\s+now|act\s+as|pretend\s+to\s+be)\s+(?!a\s+user)",
+        InjectionRisk.MEDIUM,
+        "role_hijack",
+    ),
     (r"(?i)\bsystem\s*:\s*", InjectionRisk.HIGH, "system_prefix"),
     (r"(?i)\b(admin|root|developer)\s+mode\b", InjectionRisk.HIGH, "privilege_escalation"),
-    (r"(?i)\b(reveal|show|print|output)\s+(your\s+)?(system\s+)?prompt", InjectionRisk.HIGH, "prompt_extraction"),
+    (
+        r"(?i)\b(reveal|show|print|output)\s+(your\s+)?(system\s+)?prompt",
+        InjectionRisk.HIGH,
+        "prompt_extraction",
+    ),
     (r"(?i)\bexecute\s+(arbitrary\s+)?code", InjectionRisk.HIGH, "code_execution"),
-    (r"(?i)\b(api[_\s-]?key|secret|password|token)\s*[:=]\s*\S", InjectionRisk.MEDIUM, "credential_request"),
+    (
+        r"(?i)\b(api[_\s-]?key|secret|password|token)\s*[:=]\s*\S",
+        InjectionRisk.MEDIUM,
+        "credential_request",
+    ),
     # Tool/command injection attempts
-    (r"(?i)\b(run|exec|execute)\s+(rm\s|sudo\s|curl\s|wget\s)", InjectionRisk.HIGH, "command_injection"),
+    (
+        r"(?i)\b(run|exec|execute)\s+(rm\s|sudo\s|curl\s|wget\s)",
+        InjectionRisk.HIGH,
+        "command_injection",
+    ),
     # Output-format manipulation
-    (r"(?i)\b(only\s+respond\s+with|respond\s+only\s+with|output\s+exactly)\s+[\"'`]", InjectionRisk.MEDIUM, "output_hijack"),
+    (
+        r"(?i)\b(only\s+respond\s+with|respond\s+only\s+with|output\s+exactly)\s+[\"'`]",
+        InjectionRisk.MEDIUM,
+        "output_hijack",
+    ),
 ]
 
 # Compile patterns once
-_COMPILED_PATTERNS = [
-    (re.compile(p), risk, name)
-    for p, risk, name in _INJECTION_PATTERNS
-]
+_COMPILED_PATTERNS = [(re.compile(p), risk, name) for p, risk, name in _INJECTION_PATTERNS]
 
 
 class InputSanitizer:

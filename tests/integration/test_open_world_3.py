@@ -63,13 +63,10 @@ def _pil_available() -> bool:
         return False
 
 
-
 async def _grant_admin(principal_id: str) -> None:
     async with db_session() as session:
         admin = await get_role_by_name(session, "admin")
-        session.add(
-            PrincipalRole(id=str(ULID()), principal_id=principal_id, role_id=admin.id)
-        )
+        session.add(PrincipalRole(id=str(ULID()), principal_id=principal_id, role_id=admin.id))
         await session.commit()
 
 
@@ -91,17 +88,13 @@ class TestSandboxedComposition:
     """One flow, five subsystems: workspace + sandboxed execution +
     filesystem effect + memory write + memory recall."""
 
-    async def test_workspace_code_memory_composition(
-        self, fresh_db, services, tmp_path
-    ) -> None:
+    async def test_workspace_code_memory_composition(self, fresh_db, services, tmp_path) -> None:
         principal_id = "01POPENWORLD3AZZZZZZZZZZZZZ"
         await _grant_admin(principal_id)
 
         # 1. Provision an owned scratch workspace — through the same
         #    capability surface a model would use.
-        ws = await _invoke(
-            services, principal_id, "scratch.workspace", {"ttl_seconds": 600}
-        )
+        ws = await _invoke(services, principal_id, "scratch.workspace", {"ttl_seconds": 600})
         assert ws.outcome == "success", ws.error
         workspace_id = ws.outputs["resource_id"]
         workspace_path = ws.outputs["path"]
@@ -135,7 +128,7 @@ class TestSandboxedComposition:
         assert run.outputs["isolation"] in ("namespace", "subprocess")
 
         # 3. The file effect really happened in the owned workspace.
-        output = (tmp_path / "wax-resources")
+        output = tmp_path / "wax-resources"
         written = list(output.rglob("output.txt"))
         assert written and written[0].read_text() == "42"
 
@@ -164,9 +157,7 @@ class TestSandboxedComposition:
         assert found.outcome == "success", found.error
         memories = found.outputs.get("memories", [])
         assert memories, "computed evidence was not retrievable"
-        evidence = str(memories[0].get("content", "")) + str(
-            memories[0].get("summary", "")
-        )
+        evidence = str(memories[0].get("content", "")) + str(memories[0].get("summary", ""))
         assert "42" in evidence
 
     @pytest.mark.skipif(
@@ -186,9 +177,7 @@ class TestSandboxedComposition:
         img = Image.new("RGB", (600, 160), "white")
         draw = ImageDraw.Draw(img)
         try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48
-            )
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
         except OSError:  # pragma: no cover
             font = ImageFont.load_default()
         draw.text((20, 50), "INVOICE 7300", fill="black", font=font)

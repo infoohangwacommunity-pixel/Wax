@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import ClassVar
 
 import httpx
 
@@ -58,7 +59,7 @@ class OpenAIProvider:
     # Conservative context windows per model family (adapter knowledge —
     # the runtime reads this through capability negotiation, never via an
     # SDK here). Keys are lowercase model prefixes.
-    _CONTEXT_LIMITS: dict[str, int] = {
+    _CONTEXT_LIMITS: ClassVar[dict[str, int]] = {
         "gpt-4o": 128_000,
         "gpt-4-turbo": 128_000,
         "gpt-4": 8_192,
@@ -74,7 +75,7 @@ class OpenAIProvider:
     # deployments that don't get the documented estimator. Load is lazy
     # and cached per encoding; ANY failure (not installed, model files
     # unavailable) degrades to the estimator, never breaks accounting.
-    _MODEL_ENCODINGS: dict[str, str] = {
+    _MODEL_ENCODINGS: ClassVar[dict[str, str]] = {
         "gpt-4o": "o200k_base",
         "o1": "o200k_base",
         "o3": "o200k_base",
@@ -83,7 +84,9 @@ class OpenAIProvider:
         "gpt-4": "cl100k_base",
         "gpt-3.5-turbo": "cl100k_base",
     }
-    _encodings: dict[str, object] = {}  # encoding name -> loaded object (class-level cache)
+    _encodings: ClassVar[
+        dict[str, object]
+    ] = {}  # encoding name -> loaded object (class-level cache)
 
     @property
     def token_counter(self) -> str:

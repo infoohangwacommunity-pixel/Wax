@@ -56,14 +56,22 @@ class TestFreshDatabase:
         _alembic(url, "upgrade", "head")
 
         # The approval primitive's table exists with its indexes.
-        init_engine(__import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url))
+        init_engine(
+            __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(
+                database_url=url
+            )
+        )
         try:
             async with db_session() as session:
                 rows = (
-                    await session.execute(
-                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    (
+                        await session.execute(
+                            text("SELECT name FROM sqlite_master WHERE type='table'")
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 tables = set(rows)
                 assert "pending_approvals" in tables
                 assert "capability_invocations" in tables
@@ -73,17 +81,18 @@ class TestFreshDatabase:
 
                 # The at-most-one-claim property is a DATABASE property.
                 indexes = (
-                    await session.execute(
-                        text(
-                            "SELECT name FROM sqlite_master WHERE type='index' "
-                            "AND tbl_name='capability_invocations'"
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT name FROM sqlite_master WHERE type='index' "
+                                "AND tbl_name='capability_invocations'"
+                            )
                         )
                     )
-                ).scalars().all()
-                assert (
-                    "uq_capability_invocations_principal_capability_key"
-                    in set(indexes)
+                    .scalars()
+                    .all()
                 )
+                assert "uq_capability_invocations_principal_capability_key" in set(indexes)
         finally:
             await dispose_engine()
 
@@ -94,7 +103,9 @@ class TestFreshDatabase:
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
 
-        settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
+        settings = __import__(
+            "wax.core.config", fromlist=["settings_for_testing"]
+        ).settings_for_testing(database_url=url)
         init_engine(settings)
         try:
             from datetime import UTC, datetime, timedelta
@@ -132,7 +143,9 @@ class TestUpgradeFromProductionSchema:
         _alembic(url, "upgrade", PREV_REVISION)
 
         # Write production-shaped rows at the old revision.
-        settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
+        settings = __import__(
+            "wax.core.config", fromlist=["settings_for_testing"]
+        ).settings_for_testing(database_url=url)
         init_engine(settings)
         try:
             from datetime import UTC, datetime
@@ -174,17 +187,13 @@ class TestUpgradeFromProductionSchema:
 
                 # The new approval table is present and empty-but-real.
                 count = (
-                    await session.execute(
-                        text("SELECT COUNT(*) FROM pending_approvals")
-                    )
+                    await session.execute(text("SELECT COUNT(*) FROM pending_approvals"))
                 ).scalar_one()
                 assert count == 0
 
                 # The idempotency ledger is present and empty-but-real.
                 ledger = (
-                    await session.execute(
-                        text("SELECT COUNT(*) FROM capability_invocations")
-                    )
+                    await session.execute(text("SELECT COUNT(*) FROM capability_invocations"))
                 ).scalar_one()
                 assert ledger == 0
         finally:
@@ -196,14 +205,14 @@ class TestUpgradeFromProductionSchema:
         _alembic(url, "upgrade", "head")
         _alembic(url, "downgrade", "-1")  # drop capability_invocations
         _alembic(url, "upgrade", "head")  # bring it back
-        settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
+        settings = __import__(
+            "wax.core.config", fromlist=["settings_for_testing"]
+        ).settings_for_testing(database_url=url)
         init_engine(settings)
         try:
             async with db_session() as session:
                 ledger = (
-                    await session.execute(
-                        text("SELECT COUNT(*) FROM capability_invocations")
-                    )
+                    await session.execute(text("SELECT COUNT(*) FROM capability_invocations"))
                 ).scalar_one()
                 assert ledger == 0
         finally:
@@ -222,15 +231,21 @@ class TestUpgradeFromProductionSchema:
         _alembic(url, "upgrade", "head")
         _alembic(url, "downgrade", "-7")
 
-        settings = __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(database_url=url)
+        settings = __import__(
+            "wax.core.config", fromlist=["settings_for_testing"]
+        ).settings_for_testing(database_url=url)
         init_engine(settings)
         try:
             async with db_session() as session:
                 tables = (
-                    await session.execute(
-                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    (
+                        await session.execute(
+                            text("SELECT name FROM sqlite_master WHERE type='table'")
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 assert "capability_invocations" not in set(tables)
                 assert "pending_approvals" in set(tables), (
                     "only the ledger table is dropped by the -4 step"

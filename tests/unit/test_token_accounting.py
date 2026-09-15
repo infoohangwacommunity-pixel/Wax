@@ -73,9 +73,7 @@ class TestAdapterOwnedCounters:
         tiktoken = pytest.importorskip("tiktoken")
         provider = _openai("gpt-4o")
         for text in ["hello world", "hello world!", "", "def f(x):\n    return x*2"]:
-            expected = len(
-                tiktoken.get_encoding("o200k_base").encode(text, disallowed_special=())
-            )
+            expected = len(tiktoken.get_encoding("o200k_base").encode(text, disallowed_special=()))
             assert provider.estimate_tokens(text) == expected
 
     def test_known_token_count_is_stable_across_versions(self):
@@ -103,16 +101,12 @@ class TestAdapterOwnedCounters:
         # failure cache explicitly instead:
         provider._encodings["o200k_base"] = False
         assert provider.token_counter == "estimate:4chars"
-        assert provider.estimate_tokens("hello world") == max(
-            1, len("hello world") // 4
-        )
+        assert provider.estimate_tokens("hello world") == max(1, len("hello world") // 4)
 
     def test_anthropic_counter_is_documented_estimator(self):
         provider = AnthropicProvider(api_key="test-key")
         assert provider.token_counter == "estimate:4chars"
-        assert provider.estimate_tokens("hello world") == max(
-            1, len("hello world") // 4
-        )
+        assert provider.estimate_tokens("hello world") == max(1, len("hello world") // 4)
 
 
 class TestNegotiation:
@@ -184,7 +178,7 @@ class TestNegotiation:
             def estimate_tokens(self, text: str) -> int:
                 return max(1, len(text) // 4)
 
-        # 500 - 300 = 200 evidence tokens × 4 chars = 800 chars < floor.
+        # 500 - 300 = 200 evidence tokens x 4 chars = 800 chars < floor.
         budget = derive_context_budget(
             _Tiny(), fallback_char_budget=1000, output_reserve_tokens=300
         )

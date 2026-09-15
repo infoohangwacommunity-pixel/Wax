@@ -46,6 +46,7 @@ def services(test_settings):
 
     return RuntimeServices.build(test_settings)
 
+
 APP_SECRET = "test-app-secret"
 VERIFY_TOKEN = "wax-test-verify-token"
 PHONE_NUMBER_ID = "1234567890"
@@ -53,9 +54,7 @@ SENDER_PHONE = "2348012345678"
 
 
 def _sign(body: bytes) -> str:
-    return "sha256=" + hmac.new(
-        APP_SECRET.encode(), body, hashlib.sha256
-    ).hexdigest()
+    return "sha256=" + hmac.new(APP_SECRET.encode(), body, hashlib.sha256).hexdigest()
 
 
 def _meta_text_payload(message_id: str, text: str) -> dict[str, Any]:
@@ -107,9 +106,7 @@ def _failing_client() -> Any:
     )
     client._client = httpx.AsyncClient(
         base_url=WhatsAppClient.BASE_URL,
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(500, json={"error": "down"})
-        ),
+        transport=httpx.MockTransport(lambda request: httpx.Response(500, json={"error": "down"})),
     )
     return client
 
@@ -119,7 +116,9 @@ class TestDeliveryLifecycle:
         self, client: httpx.AsyncClient, app: Any, test_settings: Any
     ) -> None:
         app.state.whatsapp_client = _failing_client()
-        payload = _meta_text_payload(f"wamid.DELIV{datetime.now(UTC).microsecond}", "Hello delivery")
+        payload = _meta_text_payload(
+            f"wamid.DELIV{datetime.now(UTC).microsecond}", "Hello delivery"
+        )
         body = json.dumps(payload).encode()
         response = await client.post(
             "/webhooks/whatsapp",
@@ -134,24 +133,18 @@ class TestDeliveryLifecycle:
 
             from wax.state.identity_models import PrincipalCredential
 
-            records = (
-                (await session.execute(select(DeliveryRecord))).scalars().all()
-            )
+            records = (await session.execute(select(DeliveryRecord))).scalars().all()
             credential = (
                 (
                     await session.execute(
-                        select(PrincipalCredential).where(
-                            PrincipalCredential.value == SENDER_PHONE
-                        )
+                        select(PrincipalCredential).where(PrincipalCredential.value == SENDER_PHONE)
                     )
                 )
                 .scalars()
                 .one()
             )
 
-        assert len(records) == 1, (
-            "the failed reply must be recoverable state, not silence"
-        )
+        assert len(records) == 1, "the failed reply must be recoverable state, not silence"
         record = records[0]
         assert record.status == "pending"
         assert record.attempts == 1
@@ -169,9 +162,7 @@ class TestDeliveryLifecycle:
         from wax.runtime.maintenance import run_maintenance_pass
 
         app.state.whatsapp_client = _failing_client()
-        payload = _meta_text_payload(
-            f"wamid.RETRY{datetime.now(UTC).microsecond}", "Hello retry"
-        )
+        payload = _meta_text_payload(f"wamid.RETRY{datetime.now(UTC).microsecond}", "Hello retry")
         body = json.dumps(payload).encode()
         await client.post(
             "/webhooks/whatsapp",
@@ -195,31 +186,23 @@ class TestDeliveryLifecycle:
         async with db_session() as session:
             from sqlalchemy import select
 
-            record = (
-                (await session.execute(select(DeliveryRecord))).scalars().one()
-            )
+            record = (await session.execute(select(DeliveryRecord))).scalars().one()
             record.next_attempt_at = None  # backoff elapses (test clock)
             await session.commit()
 
-        results = await run_maintenance_pass(
-            test_settings, services=app.state.services
-        )
+        results = await run_maintenance_pass(test_settings, services=app.state.services)
         assert results["delivery_retries"]["due"] == 1
         assert results["delivery_retries"]["delivered"] == 1
 
         async with db_session() as session:
             from sqlalchemy import select
 
-            record = (
-                (await session.execute(select(DeliveryRecord))).scalars().one()
-            )
+            record = (await session.execute(select(DeliveryRecord))).scalars().one()
         assert record.status == "delivered"
         assert record.delivered_at is not None
         assert delivered_log and delivered_log[0][1] == record.text
 
-    async def test_exhaustion_is_terminal_honest_failure(
-        self, fresh_db, services
-    ) -> None:
+    async def test_exhaustion_is_terminal_honest_failure(self, fresh_db, services) -> None:
         """Attempts exhausted → failed, with the last error preserved."""
         from wax.runtime.delivery_queue import DeliveryQueue
 
@@ -251,9 +234,7 @@ class TestDeliveryLifecycle:
             assert await queue.attempt(record) is False
             assert record.attempts == 3
 
-    async def test_deliverability_horizon_expires_stale_pending(
-        self, fresh_db, services
-    ) -> None:
+    async def test_deliverability_horizon_expires_stale_pending(self, fresh_db, services) -> None:
         from wax.runtime.delivery_queue import DeliveryQueue
 
         async def _works(recipient: str, text: str) -> dict:
@@ -283,9 +264,7 @@ class TestDeliveryLifecycle:
         assert record.status == "failed"
         assert "deliverability horizon" in (record.last_error or "")
 
-    async def test_missing_sender_is_retryable_never_success(
-        self, fresh_db, services
-    ) -> None:
+    async def test_missing_sender_is_retryable_never_success(self, fresh_db, services) -> None:
         from wax.runtime.delivery_queue import DeliveryQueue
 
         # A router with NO whatsapp sender attached (adapter down).

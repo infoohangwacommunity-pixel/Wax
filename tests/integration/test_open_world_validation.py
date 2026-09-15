@@ -73,9 +73,7 @@ async def _create_principal(*, phone: str = "1234567890") -> str:
         return principal.id
 
 
-def _make_bridge(
-    services: RuntimeServices, script: list[list[ToolCall]]
-) -> RuntimeBridge:
+def _make_bridge(services: RuntimeServices, script: list[list[ToolCall]]) -> RuntimeBridge:
     """Build a bridge with a mock intelligence that has a deterministic script."""
     intel = IntelligenceService(MockLLMProvider(scripted_tool_calls=script))
     bridge = RuntimeBridge(intelligence=intel, services=services)
@@ -100,9 +98,7 @@ def _request(msg_id: str, text: str) -> RuntimeRequest:
 
 
 class TestResearchTopic:
-    async def test_research_composes_objective_memory_terminal_artifact(
-        self, fresh_db, services
-    ):
+    async def test_research_composes_objective_memory_terminal_artifact(self, fresh_db, services):
         """The intelligence researches by: running `echo` in a terminal,
         storing the finding as a memory, and capturing the output as
         an artifact. All universal primitives, no domain engine."""
@@ -140,7 +136,9 @@ class TestResearchTopic:
         )
 
         async with db_session() as s:
-            response = await bridge.process(s, _request("msg-research-1", "research computing history"))
+            response = await bridge.process(
+                s, _request("msg-research-1", "research computing history")
+            )
             await s.commit()
 
         assert response.status.value == "success"
@@ -153,12 +151,16 @@ class TestResearchTopic:
             from wax.state.environment_models import EnvironmentLeaseRecord
 
             leases = (
-                await s.execute(
-                    select(EnvironmentLeaseRecord).where(
-                        EnvironmentLeaseRecord.principal_id == principal_id
+                (
+                    await s.execute(
+                        select(EnvironmentLeaseRecord).where(
+                            EnvironmentLeaseRecord.principal_id == principal_id
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(leases) >= 1
             assert leases[0].status == "provisioned"
 
@@ -197,12 +199,16 @@ class TestBuildSoftware:
             from wax.state.environment_models import EnvironmentLeaseRecord
 
             leases = (
-                await s.execute(
-                    select(EnvironmentLeaseRecord).where(
-                        EnvironmentLeaseRecord.principal_id == principal_id
+                (
+                    await s.execute(
+                        select(EnvironmentLeaseRecord).where(
+                            EnvironmentLeaseRecord.principal_id == principal_id
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(leases) >= 1
 
 

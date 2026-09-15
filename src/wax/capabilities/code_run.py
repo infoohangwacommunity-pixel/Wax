@@ -152,9 +152,7 @@ def register_code_run_capability(registry: CapabilityRegistry, services: Runtime
         # The isolation grade is a RUNTIME decision from configuration —
         # never the caller's, never the model's. `auto` prefers the
         # namespace sandbox and degrades loudly when the host can't run it.
-        service, isolation_kind = IsolationService.select(
-            services.settings.isolation_backend
-        )
+        service, isolation_kind = IsolationService.select(services.settings.isolation_backend)
         boundary = service.boundary
         result = await boundary.execute(
             IsolationRequest(

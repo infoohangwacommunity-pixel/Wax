@@ -36,14 +36,8 @@ class WorkspaceSnapshotRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # JSON list of {path, sha256, size} — the files in the snapshot.
     files_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
-    file_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
-    total_bytes: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     # When the snapshot was captured (UTC).
-    captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

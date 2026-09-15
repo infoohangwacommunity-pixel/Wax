@@ -96,18 +96,14 @@ class EnvironmentPlanner:
             # OPEN requires human approval (Phase 7 approval gate).
             # For now, degrade to ALLOWLISTED with an empty list
             # (effectively NONE) and record the degradation.
-            degraded.append(
-                "network.kind=open requires human approval; degraded to none"
-            )
+            degraded.append("network.kind=open requires human approval; degraded to none")
             network_policy = NetworkPolicy(kind=NetworkPolicyKind.NONE)
 
         # Isolation grade — record what was requested. CONTAINER is
         # not yet implemented; degrade to NAMESPACE with a note.
         isolation_grade = requirement.isolation
         if isolation_grade == IsolationGrade.CONTAINER:
-            degraded.append(
-                "isolation=container not yet implemented; degraded to namespace"
-            )
+            degraded.append("isolation=container not yet implemented; degraded to namespace")
             isolation_grade = IsolationGrade.NAMESPACE
 
         # Resource limits — record what was declared. Enforcement is
@@ -158,9 +154,7 @@ class EnvironmentPlanner:
         if ttl <= timedelta(0):
             raise EnvironmentValidationError("ttl_seconds must be positive")
         if ttl > MAX_LEASE_TTL:
-            raise EnvironmentValidationError(
-                f"ttl_seconds exceeds the {MAX_LEASE_TTL} maximum"
-            )
+            raise EnvironmentValidationError(f"ttl_seconds exceeds the {MAX_LEASE_TTL} maximum")
 
         expires_at = datetime.now(UTC) + ttl
         environment_id = str(ULID())
@@ -271,9 +265,7 @@ class EnvironmentPlanner:
         # Release the workspace resource if bound
         if record.workspace_resource_id:
             try:
-                await self._provisioning.release(
-                    session, record.workspace_resource_id
-                )
+                await self._provisioning.release(session, record.workspace_resource_id)
             except Exception as e:
                 log.warning(
                     "environment.workspace_release_failed",

@@ -236,12 +236,14 @@ class TestScenarioFApprovalGatedWork:
 
         async with db_session() as session:
             items = (
-                await session.execute(
-                    select(WorkItemRecord).where(
-                        WorkItemRecord.principal_id == principal_id
+                (
+                    await session.execute(
+                        select(WorkItemRecord).where(WorkItemRecord.principal_id == principal_id)
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         work_id = items[0].id
 
         # The runner wakes the work; the agency gate demands human
@@ -255,13 +257,17 @@ class TestScenarioFApprovalGatedWork:
             assert "human authorization" in (item.last_error or "")
         async with db_session() as session:
             approvals = (
-                await session.execute(
-                    select(PendingApprovalRecord).where(
-                        PendingApprovalRecord.principal_id == principal_id,
-                        PendingApprovalRecord.capability_name == "test.irreversible",
+                (
+                    await session.execute(
+                        select(PendingApprovalRecord).where(
+                            PendingApprovalRecord.principal_id == principal_id,
+                            PendingApprovalRecord.capability_name == "test.irreversible",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len(approvals) == 1
 
         # The human approves (credential path).
@@ -319,12 +325,14 @@ class TestScenarioERestartContinuity:
 
         async with db_session() as session:
             items = (
-                await session.execute(
-                    select(WorkItemRecord).where(
-                        WorkItemRecord.principal_id == principal_id
+                (
+                    await session.execute(
+                        select(WorkItemRecord).where(WorkItemRecord.principal_id == principal_id)
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len(items) == 1
         work_id = items[0].id
 
@@ -341,13 +349,17 @@ class TestScenarioERestartContinuity:
         # The work's effect (a memory) is visible to the next conversation.
         async with db_session() as session:
             memories = (
-                await session.execute(
-                    select(MemoryRecord).where(
-                        MemoryRecord.principal_id == principal_id,
-                        MemoryRecord.summary == "phase one result",
+                (
+                    await session.execute(
+                        select(MemoryRecord).where(
+                            MemoryRecord.principal_id == principal_id,
+                            MemoryRecord.summary == "phase one result",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len(memories) == 1
 
 
@@ -360,7 +372,6 @@ class TestScenarioGProviderSubstitution:
     ) -> None:
         from wax.intelligence.context_limits import provider_context_limit_tokens
 
-        sender = "+2348000000999"
         # Turn 1: provider A (no advertised limit).
         bridge_a = _bridge(services, [])
         async with db_session() as session:
@@ -370,9 +381,7 @@ class TestScenarioGProviderSubstitution:
         # Turn 2: provider B with a TINY advertised window — the same
         # conversation, same principal, same memory evidence, tighter budget.
         provider_b = MockLLMProvider(context_limit_tokens=2_048)
-        bridge_b = RuntimeBridge(
-            intelligence=IntelligenceService(provider_b), services=services
-        )
+        bridge_b = RuntimeBridge(intelligence=IntelligenceService(provider_b), services=services)
         async with db_session() as session:
             response = await bridge_b.process(session, _request("ow2-g2", "and provider B replies"))
             await session.commit()
@@ -384,13 +393,17 @@ class TestScenarioGProviderSubstitution:
 
         async with db_session() as session:
             records = (
-                await session.execute(
-                    select(ProcessedMessageRecord).where(
-                        ProcessedMessageRecord.principal_id.is_not(None),
-                        ProcessedMessageRecord.interface_message_id.in_(["ow2-g1", "ow2-g2"]),
+                (
+                    await session.execute(
+                        select(ProcessedMessageRecord).where(
+                            ProcessedMessageRecord.principal_id.is_not(None),
+                            ProcessedMessageRecord.interface_message_id.in_(["ow2-g1", "ow2-g2"]),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len({r.principal_id for r in records}) == 1, "same principal across providers"
         _ = test_settings
 
@@ -399,19 +412,31 @@ class TestScenarioHInterfaceChange:
     """'Continue through another interface.' — identity, memory, and
     objective state live below the interface layer."""
 
-    async def test_same_human_continues_on_second_interface(
-        self, fresh_db, services
-    ) -> None:
+    async def test_same_human_continues_on_second_interface(self, fresh_db, services) -> None:
         from wax.identity.repository import PrincipalRepository
 
         sender = "+2348000000999"
         # Turn 1 arrives on WhatsApp.
         bridge = _bridge(
             services,
-            [[_call("c1", "memory.store", {"kind": "episodic", "content": {"fact": "prefers email summaries"}, "summary": "prefers email summaries"})]],
+            [
+                [
+                    _call(
+                        "c1",
+                        "memory.store",
+                        {
+                            "kind": "episodic",
+                            "content": {"fact": "prefers email summaries"},
+                            "summary": "prefers email summaries",
+                        },
+                    )
+                ]
+            ],
         )
         async with db_session() as session:
-            await bridge.process(session, _request("ow2-h1", "remember: prefers email summaries", sender=sender))
+            await bridge.process(
+                session, _request("ow2-h1", "remember: prefers email summaries", sender=sender)
+            )
             await session.commit()
         principal_id = await _principal_id_for(services, sender)
 

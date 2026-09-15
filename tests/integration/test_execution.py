@@ -77,7 +77,9 @@ class TestExecutionLifecycle:
     async def test_running_to_succeeded(self, principal_id) -> None:
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test"
+            )
             await repo.start(execution.id)
             ok = await repo.complete(execution.id, checkpoint={"final_step": 5})
             await session.commit()
@@ -93,7 +95,9 @@ class TestExecutionLifecycle:
     async def test_running_to_failed(self, principal_id) -> None:
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test"
+            )
             await repo.start(execution.id)
             ok = await repo.fail(execution.id, error="LLM provider timeout")
             await session.commit()
@@ -108,7 +112,9 @@ class TestExecutionLifecycle:
     async def test_running_to_cancelled(self, principal_id) -> None:
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test"
+            )
             await repo.start(execution.id)
             ok = await repo.cancel(execution.id)
             await session.commit()
@@ -123,7 +129,9 @@ class TestExecutionLifecycle:
         """Cannot go from succeeded back to running."""
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test"
+            )
             await repo.start(execution.id)
             await repo.complete(execution.id)
             ok = await repo.start(execution.id)  # invalid
@@ -135,11 +143,17 @@ class TestExecutionSteps:
     async def test_steps_numbered_sequentially(self, principal_id) -> None:
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="multi-step test")
+            execution = await repo.create(
+                principal_id=principal_id,
+                kind=ExecutionKind.AGENT_LOOP,
+                objective="multi-step test",
+            )
             await session.commit()
 
             s1 = await repo.record_step(execution.id, kind="model_call", outputs={"msg": "step 1"})
-            s2 = await repo.record_step(execution.id, kind="capability_invoke", capability_name="echo", outputs={"echo": {}})
+            s2 = await repo.record_step(
+                execution.id, kind="capability_invoke", capability_name="echo", outputs={"echo": {}}
+            )
             s3 = await repo.record_step(execution.id, kind="model_call", outputs={"msg": "step 3"})
             await session.commit()
 
@@ -150,7 +164,9 @@ class TestExecutionSteps:
     async def test_list_steps_returns_in_order(self, principal_id) -> None:
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="test"
+            )
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 1})
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 2})
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 3})
@@ -167,10 +183,18 @@ class TestExecutionSteps:
         """Resume point: the latest step that succeeded."""
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="resume test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="resume test"
+            )
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 1})
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 2})
-            await repo.record_step(execution.id, kind="model_call", outputs={"step": 3}, status=StepStatus.FAILED, error="LLM error")
+            await repo.record_step(
+                execution.id,
+                kind="model_call",
+                outputs={"step": 3},
+                status=StepStatus.FAILED,
+                error="LLM error",
+            )
             await session.commit()
 
         async with db_session() as session:
@@ -193,8 +217,15 @@ class TestExecutionResumability:
                 objective="long-running objective",
             )
             await repo.start(execution.id)
-            await repo.record_step(execution.id, kind="model_call", outputs={"planned": ["a", "b", "c"]})
-            await repo.record_step(execution.id, kind="capability_invoke", capability_name="echo", outputs={"result": "done a"})
+            await repo.record_step(
+                execution.id, kind="model_call", outputs={"planned": ["a", "b", "c"]}
+            )
+            await repo.record_step(
+                execution.id,
+                kind="capability_invoke",
+                capability_name="echo",
+                outputs={"result": "done a"},
+            )
             await session.commit()
             exec_id = execution.id
 
@@ -215,7 +246,9 @@ class TestExecutionResumability:
         """A failed execution can be restarted (running is allowed from failed)."""
         async with db_session() as session:
             repo = ExecutionRepository(session)
-            execution = await repo.create(principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="retry test")
+            execution = await repo.create(
+                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="retry test"
+            )
             await repo.start(execution.id)
             await repo.fail(execution.id, error="temporary outage")
             await session.commit()

@@ -233,9 +233,7 @@ class MemoryRepository:
         )
         return edge
 
-    async def unlink(
-        self, from_memory_id: str, to_memory_id: str, kind: str
-    ) -> bool:
+    async def unlink(self, from_memory_id: str, to_memory_id: str, kind: str) -> bool:
         """Remove a typed edge. Returns True when a row was deleted.
 
         INTERNAL PRIMITIVE (honest marking): no capability surface
@@ -312,9 +310,9 @@ class MemoryRepository:
                 *([MemoryLinkRecord.kind == kind_value] if kind_value else []),
             )
         )
-        edges = [
-            (edge, "outgoing") for edge in outgoing.scalars().all()
-        ] + [(edge, "incoming") for edge in incoming.scalars().all()]
+        edges = [(edge, "outgoing") for edge in outgoing.scalars().all()] + [
+            (edge, "incoming") for edge in incoming.scalars().all()
+        ]
         return edges
 
     async def expire_due(self, now: datetime | None = None) -> list[MemoryRecord]:
@@ -378,15 +376,45 @@ class MemoryRepository:
         BM25; callers that want the vocabulary take set(...).
         """
         stopwords = {
-            "the", "and", "for", "with", "that", "this", "you", "your",
-            "was", "were", "are", "our", "out", "about", "what", "when",
-            "how", "did", "does", "had", "has", "have", "not", "but",
-            "all", "can", "will", "would", "could", "should", "from",
-            "into", "tell", "said", "say",
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "you",
+            "your",
+            "was",
+            "were",
+            "are",
+            "our",
+            "out",
+            "about",
+            "what",
+            "when",
+            "how",
+            "did",
+            "does",
+            "had",
+            "has",
+            "have",
+            "not",
+            "but",
+            "all",
+            "can",
+            "will",
+            "would",
+            "could",
+            "should",
+            "from",
+            "into",
+            "tell",
+            "said",
+            "say",
         }
         return [
-            t for t in
-            ("".join(c if c.isalnum() else " " for c in text.lower()).split())
+            t
+            for t in ("".join(c if c.isalnum() else " " for c in text.lower()).split())
             if len(t) >= 3 and t not in stopwords
         ]
 
@@ -431,13 +459,11 @@ class MemoryRepository:
             lightweight stemming, no dependencies.
             """
             return sum(
-                count
-                for token, count in counts.items()
-                if token == term or token.startswith(term)
+                count for token, count in counts.items() if token == term or token.startswith(term)
             )
 
         scores: list[float] = []
-        for counts, terms in zip(doc_counts, doc_terms):
+        for counts, terms in zip(doc_counts, doc_terms, strict=False):
             score = 0.0
             seen: set[str] = set()
             for term in query_terms:
@@ -450,9 +476,7 @@ class MemoryRepository:
                 df = sum(1 for c in doc_counts if _hits(c, term) > 0)
                 idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
                 score += (
-                    idf
-                    * (tf * (k1 + 1.0))
-                    / (tf + k1 * (1.0 - b + b * (len(terms) / avg_len)))
+                    idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (len(terms) / avg_len)))
                 )
             scores.append(score)
         return scores
@@ -466,7 +490,7 @@ class MemoryRepository:
         bm25_max: float,
         bm25_score: float,
     ) -> float:
-        """Final relevance = normalized BM25 × recency/confidence blend
+        """Final relevance = normalized BM25 x recency/confidence blend
         + importance weight (ADR-0022, mission §6.3/§75).
 
         - bm25_norm: raw BM25 divided by the pool max — the relative
@@ -490,9 +514,7 @@ class MemoryRepository:
             age_days = 0.0
         recency = pow(2.718281828, -age_days / 14.0)
         confidence = float(record.confidence) if record.confidence is not None else 0.5
-        importance = (
-            float(record.importance) if record.importance is not None else 0.5
-        )
+        importance = float(record.importance) if record.importance is not None else 0.5
         return (
             bm25_norm * (0.7 + 0.3 * recency)
             + 0.1 * confidence
@@ -507,7 +529,7 @@ class MemoryRepository:
         candidate_pool: int,
         recall_extra: int = 200,
     ) -> list[MemoryRecord]:
-        """Stage 1 — candidate RECALL (newest-N ∪ lexical matches).
+        """Stage 1 — candidate RECALL (newest-N U lexical matches).
 
         Portable across SQLite and Postgres: the lexical arm matches the
         top query terms against summary + serialized content. Terms are
@@ -564,7 +586,7 @@ class MemoryRepository:
     ) -> list[tuple[MemoryRecord, float]]:
         """Rank a principal's active memories against a query.
 
-        Two-stage retrieval (ADR-0019): portable recall (newest pool ∪
+        Two-stage retrieval (ADR-0019): portable recall (newest pool U
         lexical matches — the only path; the ADR-0019 tsvector/GIN
         columns are unread reserved schema) followed by BM25-style
         ranking blended with recency and confidence. Returns
@@ -586,7 +608,7 @@ class MemoryRepository:
                 record,
                 self._score(record, query_terms, now, bm25_max, raw),
             )
-            for record, raw in zip(candidates, bm25_scores)
+            for record, raw in zip(candidates, bm25_scores, strict=False)
         ]
         scored = [(r, s) for r, s in scored if s > 0.0]
         scored.sort(key=lambda pair: pair[1], reverse=True)
@@ -605,11 +627,7 @@ class MemoryRepository:
             for anchor in anchors:
                 edges = await self.links_for(anchor.id)
                 neighbor_ids = [
-                    (
-                        e.to_memory_id
-                        if e.from_memory_id == anchor.id
-                        else e.from_memory_id
-                    )
+                    (e.to_memory_id if e.from_memory_id == anchor.id else e.from_memory_id)
                     for e, _ in edges
                 ]
                 for nid in neighbor_ids[: self._LINKED_PER_ANCHOR]:

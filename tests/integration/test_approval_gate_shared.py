@@ -255,9 +255,7 @@ class TestSharedGateNotification:
         assert "/approve" in text and "/deny" in text
         # Exactly one pending approval exists.
         async with db_session() as session:
-            rows = (
-                (await session.execute(select(PendingApprovalRecord))).scalars().all()
-            )
+            rows = (await session.execute(select(PendingApprovalRecord))).scalars().all()
             assert len(rows) == 1
             assert rows[0].status == "pending"
 
@@ -271,9 +269,7 @@ class TestSharedGateNotification:
             await capability_handler(services, _work_item(principal_id))
 
         async with db_session() as session:
-            rows = (
-                (await session.execute(select(DeliveryRecord))).scalars().all()
-            )
+            rows = (await session.execute(select(DeliveryRecord))).scalars().all()
             notifications = [r for r in rows if r.source == "approval_notification"]
             assert len(notifications) == 1
             record = notifications[0]
@@ -299,9 +295,7 @@ class TestSharedGateNotification:
 
         assert len(sent) == 1  # one human notification, not two
         async with db_session() as session:
-            rows = (
-                (await session.execute(select(PendingApprovalRecord))).scalars().all()
-            )
+            rows = (await session.execute(select(PendingApprovalRecord))).scalars().all()
             assert len(rows) == 1
 
 
@@ -370,9 +364,7 @@ class TestMessageSendRecoverable:
             assert result.outputs["sent"] is True
 
         async with db_session() as session:
-            rows = (
-                (await session.execute(select(DeliveryRecord))).scalars().all()
-            )
+            rows = (await session.execute(select(DeliveryRecord))).scalars().all()
             assert rows == []
 
 
@@ -382,9 +374,7 @@ class TestMessageSendRecoverable:
 
 
 class TestInflightRedelivery:
-    async def test_redelivery_of_inflight_message_is_duplicate(
-        self, fresh_db, services
-    ) -> None:
+    async def test_redelivery_of_inflight_message_is_duplicate(self, fresh_db, services) -> None:
         """A redelivery that arrives while the first attempt is still
         running must observe DUPLICATE — never adopt or corrupt the
         in-flight record."""
@@ -396,9 +386,7 @@ class TestInflightRedelivery:
         from wax.runtime.bridge.service import RuntimeBridge
         from wax.state.bridge_models import ProcessedMessageRecord
 
-        bridge = RuntimeBridge(
-            intelligence=None, services=services, max_response_chars=1000
-        )
+        bridge = RuntimeBridge(intelligence=None, services=services, max_response_chars=1000)
         request = RuntimeRequest(
             interface_message_id="wamid.INFLIGHT",
             interface_kind=InterfaceKind.WHATSAPP,

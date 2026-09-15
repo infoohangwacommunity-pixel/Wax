@@ -112,8 +112,7 @@ class MemoryCreate(BaseModel):
         default=None,
         ge=0.0,
         le=1.0,
-        description="How much this memory matters (mission §6.3); "
-        "NULL = neutral (0.5) in ranking",
+        description="How much this memory matters (mission §6.3); NULL = neutral (0.5) in ranking",
     )
     observed_at: datetime | None = Field(
         default=None,

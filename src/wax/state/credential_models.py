@@ -39,9 +39,7 @@ class ConnectorDefinitionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "connector_definitions"
-    __table_args__ = (
-        Index("ix_connectors_name", "name", unique=True),
-    )
+    __table_args__ = (Index("ix_connectors_name", "name", unique=True),)
 
     # Stable resource type name: "git_host", "package_registry", etc.
     name: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -93,22 +91,14 @@ class PrincipalConnectionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     secret_blob: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Consent + expiry.
-    consented_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Last-used time (for observability).
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Revocation evidence.
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
@@ -154,12 +144,8 @@ class CredentialGrantRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         String(32), nullable=False, default="active", server_default="active"
     )
 
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CredentialEventRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):

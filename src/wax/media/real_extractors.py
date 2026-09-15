@@ -23,6 +23,7 @@ no raw bytes in logs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import tempfile
@@ -156,10 +157,8 @@ class TesseractImageExtractor(MediaExtractor):
                     metadata={"timeout_seconds": _OCR_TIMEOUT_SECONDS},
                 )
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(path)
-            except OSError:
-                pass
 
         if proc.returncode != 0:
             log.warning(

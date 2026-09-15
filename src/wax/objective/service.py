@@ -46,14 +46,10 @@ class ObjectiveService:
         principal (the AI cannot create objectives for someone else).
         """
         if payload.principal_id != principal_id:
-            raise WaxPermissionDeniedError(
-                "Cannot create objective for a different principal"
-            )
+            raise WaxPermissionDeniedError("Cannot create objective for a different principal")
         return await self._repo.create(payload)
 
-    async def get_for_principal(
-        self, principal_id: str, objective_id: str
-    ) -> ObjectiveRecord:
+    async def get_for_principal(self, principal_id: str, objective_id: str) -> ObjectiveRecord:
         """Get an objective, ensuring it belongs to the principal."""
         record = await self._repo.get(objective_id)
         if record is None:

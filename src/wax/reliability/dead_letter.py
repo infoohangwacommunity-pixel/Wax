@@ -57,19 +57,13 @@ class DeadLetterEntry(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # When the failure happened (UTC)
-    failed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Whether this entry has been reprocessed. RESERVED: no reprocessing
     # worker exists yet (the class docstring says the same). Nothing in
     # the runtime sets this to True — do not mistake it for a guarantee.
-    reprocessed: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default="false"
-    )
-    reprocessed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reprocessed: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
+    reprocessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DeadLetterRepository:
@@ -113,7 +107,7 @@ class DeadLetterRepository:
 
         stmt = (
             select(DeadLetterEntry)
-            .where(DeadLetterEntry.reprocessed == False)
+            .where(DeadLetterEntry.reprocessed == False)  # noqa: E712
             .order_by(DeadLetterEntry.created_at.desc())
             .limit(limit)
         )

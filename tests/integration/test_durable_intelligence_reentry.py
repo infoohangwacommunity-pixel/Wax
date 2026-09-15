@@ -159,9 +159,7 @@ class _Env:
 
     def script_intelligence(self, scripted_tool_calls):
         """Replace the intelligence provider with a deterministic script."""
-        self.intelligence._provider = MockLLMProvider(
-            scripted_tool_calls=scripted_tool_calls
-        )
+        self.intelligence._provider = MockLLMProvider(scripted_tool_calls=scripted_tool_calls)
 
 
 async def _send_initial_message(env: _Env, text: str = "hello") -> RuntimeResponse:
@@ -233,9 +231,7 @@ class TestReentryPayloadValidation:
 
     def test_missing_event_raises(self):
         with pytest.raises(ReentryValidationError, match="event"):
-            validate_reentry_payload(
-                {"prompt": "ok", "observation": {"source": "runtime"}}
-            )
+            validate_reentry_payload({"prompt": "ok", "observation": {"source": "runtime"}})
 
     def test_oversized_observation_raises(self):
         with pytest.raises(ReentryValidationError, match="exceeds"):
@@ -388,12 +384,8 @@ class TestTimeWakeReentry:
         # An episodic memory should exist with provenance="runtime_continuation"
         async with db_session() as s:
             mem_repo = MemoryRepository(s)
-            memories = await mem_repo.list_active_for_principal(
-                env.principal_id, limit=20
-            )
-            continuation_memories = [
-                m for m in memories if m.provenance == "runtime_continuation"
-            ]
+            memories = await mem_repo.list_active_for_principal(env.principal_id, limit=20)
+            continuation_memories = [m for m in memories if m.provenance == "runtime_continuation"]
             assert len(continuation_memories) >= 1
 
 
@@ -553,9 +545,7 @@ class TestReentryFailurePaths:
                 ensure_principal_role,
             )
 
-            await ensure_principal_role(
-                s, other_principal.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS
-            )
+            await ensure_principal_role(s, other_principal.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS)
             await s.commit()
             other_principal_id = other_principal.id
 
@@ -650,9 +640,7 @@ class TestMissingReentryCallback:
             # The handler raised WorkExecutionError → the runner's
             # _fail_item path → mark_failed. With max_attempts=1, the item
             # should now be "dead" (retries exhausted) or "failed" (retryable).
-            assert item.status in ("failed", "dead"), (
-                f"expected failed/dead, got {item.status}"
-            )
+            assert item.status in ("failed", "dead"), f"expected failed/dead, got {item.status}"
             assert "not configured" in (item.last_error or "").lower()
 
 
@@ -712,24 +700,24 @@ class TestContinuationInvokesCapability:
 
         async with db_session() as s:
             item = await s.get(WorkItemRecord, work_id)
-            assert item.status == "succeeded", (
-                f"item failed: {item.last_error}"
-            )
+            assert item.status == "succeeded", f"item failed: {item.last_error}"
 
             # The continuation execution should have a capability.invoke step
             from wax.state.execution_models import ExecutionStepRecord
 
             cont_exec_id = item.result["execution_id"]
             steps = (
-                await s.execute(
-                    select(ExecutionStepRecord)
-                    .where(ExecutionStepRecord.execution_id == cont_exec_id)
-                    .order_by(ExecutionStepRecord.step_number.asc())
+                (
+                    await s.execute(
+                        select(ExecutionStepRecord)
+                        .where(ExecutionStepRecord.execution_id == cont_exec_id)
+                        .order_by(ExecutionStepRecord.step_number.asc())
+                    )
                 )
-            ).scalars().all()
-            capability_steps = [
-                s for s in steps if s.kind == "capability.invoke"
-            ]
+                .scalars()
+                .all()
+            )
+            capability_steps = [s for s in steps if s.kind == "capability.invoke"]
             assert len(capability_steps) >= 1
             assert capability_steps[0].capability_name == "echo"
 
@@ -1018,7 +1006,7 @@ class TestNoSecretLeakage:
                     "SECRET LEAKED into LLM message"
                 )
                 # Tool-call arguments too
-                for tc in (m.tool_calls or []):
+                for tc in m.tool_calls or []:
                     args_str = str(tc.arguments)
                     assert "secret-token-do-not-leak-12345" not in args_str
 
@@ -1208,7 +1196,6 @@ class TestNoDuplicateEffects:
             assert item.status == "succeeded"
 
             # Exactly one continuation execution was created
-
 
             objective = await objective_for_execution(s, originating_execution_id)
             history = await ObjectiveRepository(s).list_executions(objective.id)

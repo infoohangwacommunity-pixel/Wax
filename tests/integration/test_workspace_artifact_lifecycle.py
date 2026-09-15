@@ -28,7 +28,9 @@ from wax.state.artifact_models import ArtifactRecord
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
 from wax.state.provisioning_models import ProvisionedResourceRecord
-from wax.state.workspace_models import WorkspaceSnapshotRecord  # noqa: F401 — registers with Base.metadata for create_all
+from wax.state.workspace_models import (
+    WorkspaceSnapshotRecord,  # noqa: F401 — registers with Base.metadata for create_all
+)
 
 pytestmark = pytest.mark.integration
 
@@ -226,9 +228,7 @@ class TestArtifactLifecycle:
         async with db_session() as s:
             artifact = (
                 await s.execute(
-                    select(ArtifactRecord).where(
-                        ArtifactRecord.principal_id == principal_id
-                    )
+                    select(ArtifactRecord).where(ArtifactRecord.principal_id == principal_id)
                 )
             ).scalar_one()
             assert artifact.sha256 == expected_sha

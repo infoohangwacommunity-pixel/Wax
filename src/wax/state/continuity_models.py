@@ -28,12 +28,8 @@ class ConversationRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    last_message_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     message_count: Mapped[int] = mapped_column(nullable=False, default=0)
 
     interface_kind: Mapped[str] = mapped_column(String(32), nullable=False)

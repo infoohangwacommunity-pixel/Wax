@@ -28,10 +28,12 @@ log = get_logger(__name__)
 
 
 # Levels at or above this threshold require explicit human approval.
-HUMAN_APPROVAL_THRESHOLD = {ApprovalLevel.EXTERNALLY_VISIBLE,
-                            ApprovalLevel.FINANCIALLY_CONSEQUENTIAL,
-                            ApprovalLevel.DESTRUCTIVE,
-                            ApprovalLevel.IRREVERSIBLE}
+HUMAN_APPROVAL_THRESHOLD = {
+    ApprovalLevel.EXTERNALLY_VISIBLE,
+    ApprovalLevel.FINANCIALLY_CONSEQUENTIAL,
+    ApprovalLevel.DESTRUCTIVE,
+    ApprovalLevel.IRREVERSIBLE,
+}
 
 
 class AgencyService:
@@ -57,9 +59,7 @@ class AgencyService:
         self._auth = auth
         self._policy = policy or AgencyPolicy.default()
 
-    async def evaluate(
-        self, decision: AgencyDecision
-    ) -> AgencyVerdict:
+    async def evaluate(self, decision: AgencyDecision) -> AgencyVerdict:
         """Evaluate an agency decision. Returns a verdict; never raises."""
         decision_id = str(ULID())
         level = self._policy.level_for(decision.kind)
@@ -103,9 +103,7 @@ class AgencyService:
 
         return verdict
 
-    def _reason_for(
-        self, level: ApprovalLevel, approved: bool, requires_human: bool
-    ) -> str:
+    def _reason_for(self, level: ApprovalLevel, approved: bool, requires_human: bool) -> str:
         if approved and not requires_human:
             return f"Auto-approved (level={level.value})"
         if requires_human:

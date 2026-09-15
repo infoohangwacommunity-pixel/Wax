@@ -188,7 +188,11 @@ class WorkRunner:
                 )
                 await SignalRepository(session).emit(
                     f"work.dead:{item.id}",
-                    payload={"work_id": item.id, "kind": item.kind, "error": (item.last_error or "")[:500]},
+                    payload={
+                        "work_id": item.id,
+                        "kind": item.kind,
+                        "error": (item.last_error or "")[:500],
+                    },
                     emitted_by="work_runner",
                 )
                 await sync_failure_for_work(session, item)

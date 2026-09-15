@@ -45,9 +45,7 @@ class EnvironmentLeaseRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
     # When the lease expires (TTL). NULL = promoted (intentional permanent).
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Optional: which workspace resource this environment is bound to
     # (FK to provisioning_resources.id). NULL = no workspace required.

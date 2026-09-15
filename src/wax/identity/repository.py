@@ -108,9 +108,7 @@ class PrincipalRepository:
             if existing.principal_id == principal_id:
                 # Already attached to this principal — return as-is
                 return existing
-            raise ValueError(
-                f"Credential ({kind}, ...) is already attached to another principal"
-            )
+            raise ValueError(f"Credential ({kind}, ...) is already attached to another principal")
 
         cred = PrincipalCredential(
             id=_new_ulid(),
@@ -130,9 +128,7 @@ class PrincipalRepository:
         )
         return cred
 
-    async def find_credential(
-        self, kind: str, value: str
-    ) -> PrincipalCredential | None:
+    async def find_credential(self, kind: str, value: str) -> PrincipalCredential | None:
         """Look up a credential by (kind, value). Used at auth time."""
         result = await self._session.execute(
             select(PrincipalCredential).where(
@@ -142,9 +138,7 @@ class PrincipalRepository:
         )
         return result.scalar_one_or_none()
 
-    async def resolve_principal_by_credential(
-        self, kind: str, value: str
-    ) -> Principal | None:
+    async def resolve_principal_by_credential(self, kind: str, value: str) -> Principal | None:
         """Find the principal associated with a (kind, value) credential.
 
         This is the core of interface-independent identity: an interface
@@ -166,8 +160,6 @@ class PrincipalRepository:
     async def list_credentials(self, principal_id: str) -> list[PrincipalCredential]:
         """List all credentials attached to a principal."""
         result = await self._session.execute(
-            select(PrincipalCredential).where(
-                PrincipalCredential.principal_id == principal_id
-            )
+            select(PrincipalCredential).where(PrincipalCredential.principal_id == principal_id)
         )
         return list(result.scalars().all())

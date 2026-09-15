@@ -35,9 +35,7 @@ def _metric():  # type: ignore[no-untyped-def]
     return get_runtime_metrics()
 
 
-async def run_maintenance_pass(
-    settings: Any, services: Any = None
-) -> dict[str, Any]:
+async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str, Any]:
     """One maintenance pass. Returns counters for logging/tests.
 
     ``services`` is the live RuntimeServices container; when omitted
@@ -85,9 +83,7 @@ async def run_maintenance_pass(
                 max_rows=int(settings.signal_max_ledger_rows),
             )
             await session.commit()
-        pruned = int(stats.get("retention_deleted", 0)) + int(
-            stats.get("bound_deleted", 0)
-        )
+        pruned = int(stats.get("retention_deleted", 0)) + int(stats.get("bound_deleted", 0))
         results["signals_pruned"] = pruned
         results["signal_prune_stats"] = stats
         if pruned:
@@ -105,9 +101,7 @@ async def run_maintenance_pass(
                 queue = DeliveryQueue(
                     session,
                     services,
-                    retry_backoff_seconds=float(
-                        settings.delivery_retry_backoff_seconds
-                    ),
+                    retry_backoff_seconds=float(settings.delivery_retry_backoff_seconds),
                     max_age_seconds=float(settings.delivery_max_age_seconds),
                 )
                 retry_stats = await queue.retry_due()
@@ -130,11 +124,7 @@ async def run_maintenance_pass(
             log.info("runtime.conversation_lifecycle_pass", count=archived)
 
         _metric().maintenance_led()
-        if (
-            results["expired_approvals"]
-            or pruned
-            or results["delivery_retries"].get("due", 0)
-        ):
+        if results["expired_approvals"] or pruned or results["delivery_retries"].get("due", 0):
             log.info("runtime.maintenance_pass", **results)
         return results
     finally:
@@ -146,7 +136,6 @@ async def maintenance_loop(
 ) -> None:
     """Periodic maintenance sweep. Runs as a lifespan task."""
     import asyncio
-
 
     log.info("runtime.maintenance_started", interval_s=interval_seconds)
     while True:

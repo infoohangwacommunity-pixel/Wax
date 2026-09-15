@@ -99,9 +99,7 @@ class WorkItemRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # semantics apply.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    attempts: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     max_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=3, server_default="3"
     )

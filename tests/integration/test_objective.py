@@ -55,9 +55,7 @@ class TestObjectiveRepository:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
             obj = await repo.create(
-                ObjectiveCreate(
-                    principal_id=principal_id, description="test objective"
-                )
+                ObjectiveCreate(principal_id=principal_id, description="test objective")
             )
             await session.commit()
 
@@ -70,9 +68,7 @@ class TestObjectiveRepository:
     async def test_valid_transition(self, principal_id) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id=principal_id, description="test")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id=principal_id, description="test"))
             ok = await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             await session.commit()
             assert ok
@@ -85,9 +81,7 @@ class TestObjectiveRepository:
     async def test_invalid_transition_rejected(self, principal_id) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id=principal_id, description="test")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id=principal_id, description="test"))
             # pending → succeeded is invalid (must go through in_progress first)
             ok = await repo.transition(obj.id, ObjectiveStatus.SUCCEEDED)
             await session.commit()
@@ -96,9 +90,7 @@ class TestObjectiveRepository:
     async def test_terminal_states_are_terminal(self, principal_id) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id=principal_id, description="test")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id=principal_id, description="test"))
             await repo.transition(obj.id, ObjectiveStatus.IN_PROGRESS)
             await repo.transition(obj.id, ObjectiveStatus.SUCCEEDED)
             # Succeeded is terminal — should not transition to anything
@@ -109,9 +101,7 @@ class TestObjectiveRepository:
     async def test_attach_execution(self, principal_id) -> None:
         async with db_session() as session:
             repo = ObjectiveRepository(session)
-            obj = await repo.create(
-                ObjectiveCreate(principal_id=principal_id, description="test")
-            )
+            obj = await repo.create(ObjectiveCreate(principal_id=principal_id, description="test"))
             ok = await repo.attach_execution(obj.id, "01HXY" + "0" * 21)
             await session.commit()
             assert ok
@@ -156,9 +146,7 @@ class TestObjectiveService:
                     ),
                 )
 
-    async def test_get_for_principal_hides_other_principals(
-        self, fresh_db
-    ) -> None:
+    async def test_get_for_principal_hides_other_principals(self, fresh_db) -> None:
         async with db_session() as session:
             repo = PrincipalRepository(session)
             p1 = await repo.create_principal()

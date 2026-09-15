@@ -51,14 +51,10 @@ class TerminalSessionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # Session TTL.
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Last command execution time (for idle-session reaping).
-    last_command_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_command_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Last command's exit code (for observability).
     last_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -54,7 +54,7 @@ class AgencyDecision:
     description: str
     capability_name: str | None = None
     inputs_summary: dict[str, Any] = field(default_factory=dict)
-    confidence: float = 1.0  # AI's stated confidence (0.0–1.0)
+    confidence: float = 1.0  # AI's stated confidence (0.0-1.0)
     rationale: str | None = None
 
 

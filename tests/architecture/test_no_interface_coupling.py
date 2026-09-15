@@ -71,8 +71,7 @@ def test_no_interface_coupling_outside_the_boundary() -> None:
             if imported.startswith(INTERFACE_BOUNDARY_PREFIXES):
                 violations.append(f"{module} imports {imported}")
     assert not violations, (
-        "INV-02 violation — runtime core imports the interface boundary:\n"
-        + "\n".join(violations)
+        "INV-02 violation — runtime core imports the interface boundary:\n" + "\n".join(violations)
     )
 
 
@@ -89,7 +88,6 @@ def test_composition_root_is_the_only_runtime_wiring_point() -> None:
         for imported in _imported_modules(tree):
             if imported.startswith("wax.runtime.bridge"):
                 violations.append(f"{module} imports {imported}")
-    assert not violations, (
-        "INV-02 violation — runtime plumbing imports the bridge:\n"
-        + "\n".join(violations)
+    assert not violations, "INV-02 violation — runtime plumbing imports the bridge:\n" + "\n".join(
+        violations
     )

@@ -97,8 +97,7 @@ INVARIANTS: tuple[Invariant, ...] = (
         id="INV-06",
         statement="Security-sensitive actions must be attributable to an identity.",
         reason=(
-            "Without auditability, security guarantees are unverifiable. "
-            "(Directive §23, §47, §56)"
+            "Without auditability, security guarantees are unverifiable. (Directive §23, §47, §56)"
         ),
         enforcement="tests/integration/test_audit_attribution.py (future)",
         status="PROPOSED",

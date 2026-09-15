@@ -388,8 +388,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         kind = inputs.get("kind") or "capability"
         if kind not in ("capability", "intelligence"):
             raise ValueError(
-                f"Unsupported work kind: {kind!r} "
-                "(only 'capability' or 'intelligence')"
+                f"Unsupported work kind: {kind!r} (only 'capability' or 'intelligence')"
             )
 
         # ADR-0034: validate intelligence payload at SCHEDULE time too,
@@ -399,9 +398,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             try:
                 validate_reentry_payload(payload)
             except Exception as e:
-                raise ValueError(
-                    f"Invalid intelligence work payload: {e}"
-                ) from e
+                raise ValueError(f"Invalid intelligence work payload: {e}") from e
         else:
             # capability kind: payload must contain a capability_name
             capability_name = payload.get("capability_name")
@@ -502,9 +499,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             )
             # Evidence sync (ADR-0020): scheduled durable work under this
             # execution means the objective IS waiting on a real condition.
-            await sync_waiting_for_execution(
-                session, ctx.request_id or ctx.execution_id
-            )
+            await sync_waiting_for_execution(session, ctx.request_id or ctx.execution_id)
             await session.commit()
 
         return {
@@ -515,9 +510,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "wake_at": item.wake_at.isoformat(),
             "expires_at": item.expires_at.isoformat() if item.expires_at else None,
             "kind": kind,
-            "capability_name": (
-                payload.get("capability_name") if kind == "capability" else None
-            ),
+            "capability_name": (payload.get("capability_name") if kind == "capability" else None),
         }
 
     # --- work.cancel ------------------------------------------------------
@@ -681,8 +674,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 now = datetime.now(UTC)
                 if last_inbound is None or (now - last_inbound) > policy.inbound_freshness_window:
                     note = policy.freshness_note or (
-                        "the attached interface does not accept a plain-text "
-                        "delivery right now"
+                        "the attached interface does not accept a plain-text delivery right now"
                     )
                     raise ValueError(
                         f"Delivery refused by the attached {interface_kind} "
@@ -705,9 +697,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 queue = DeliveryQueue(
                     retry_session,
                     services,
-                    retry_backoff_seconds=float(
-                        services.settings.delivery_retry_backoff_seconds
-                    ),
+                    retry_backoff_seconds=float(services.settings.delivery_retry_backoff_seconds),
                     max_age_seconds=float(services.settings.delivery_max_age_seconds),
                 )
                 delivery_record = await queue.enqueue(
@@ -717,16 +707,12 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     text=text,
                     source="capability:message.send",
                     execution_id=ctx.execution_id,
-                    max_attempts=max(
-                        1, int(services.settings.delivery_max_attempts)
-                    ),
+                    max_attempts=max(1, int(services.settings.delivery_max_attempts)),
                 )
                 # One attempt already happened (this failed send) — the
                 # backoff chain starts honestly from attempt 1.
                 delivery_record.attempts = 1
-                delivery_record.last_error = (
-                    f"{type(send_error).__name__}: {send_error}"
-                )[:2000]
+                delivery_record.last_error = (f"{type(send_error).__name__}: {send_error}")[:2000]
                 delivery_record.next_attempt_at = datetime.now(UTC) + timedelta(
                     seconds=float(services.settings.delivery_retry_backoff_seconds)
                 )
@@ -913,7 +899,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             ],
         }
 
-    async def approval_cancel_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def approval_cancel_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.authority.approvals import ApprovalDecisionError, ApprovalService
 
         approval_id = inputs.get("approval_id")
@@ -921,9 +909,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             raise ValueError("approval_id is required")
         async with db_session() as session:
             try:
-                await ApprovalService(session).cancel(
-                    approval_id, by_principal_id=ctx.principal_id
-                )
+                await ApprovalService(session).cancel(approval_id, by_principal_id=ctx.principal_id)
             except ApprovalDecisionError as e:
                 await session.rollback()
                 raise ValueError(str(e)) from e
@@ -948,12 +934,13 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(OBJECTIVE_UPDATE_STATUS_DESCRIPTOR, objective_update_status_impl)
     registry.register(MEMORY_LINK_DESCRIPTOR, memory_link_impl)
 
-
     # ========================================================================
     # ADR-0038 (Phase 5): Environment Negotiation
     # ========================================================================
 
-    async def environment_request_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def environment_request_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         """Plan + provision an environment lease."""
         from wax.runtime.environment.contracts import (
             EnvironmentValidationError,
@@ -1011,7 +998,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # ADR-0039 (Phase 6): Terminal Runtime
     # ========================================================================
 
-    async def terminal_session_open_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def terminal_session_open_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from datetime import UTC, datetime, timedelta
 
         from ulid import ULID
@@ -1042,7 +1031,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 raise ValueError(f"env_var {k} value exceeds 4096 chars")
             kl = k.lower()
             if "token" in kl or "secret" in kl or "password" in kl or "api_key" in kl:
-                raise ValueError(f"env_var {k} looks like a secret; secrets must not enter intelligence")
+                raise ValueError(
+                    f"env_var {k} looks like a secret; secrets must not enter intelligence"
+                )
 
         ttl_seconds = inputs.get("ttl_seconds", 3600)
         try:
@@ -1058,7 +1049,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             if lease is None:
                 raise ValueError(f"No such environment: {environment_id}")
             if lease.status not in ("planned", "provisioned", "active"):
-                raise ValueError(f"Environment {environment_id} is {lease.status}; cannot open session")
+                raise ValueError(
+                    f"Environment {environment_id} is {lease.status}; cannot open session"
+                )
             if lease.principal_id != ctx.principal_id:
                 raise ValueError("environment belongs to a different principal")
 
@@ -1084,7 +1077,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "expires_at": expires.isoformat() if expires else None,
         }
 
-    async def terminal_execute_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def terminal_execute_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         import asyncio
         import os
         from datetime import UTC, datetime
@@ -1165,9 +1160,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 # Truncate output
                 stdout_str = stdout.decode("utf-8", errors="replace")[:max_output_bytes]
                 stderr_str = stderr.decode("utf-8", errors="replace")[:max_output_bytes]
-                truncated = (
-                    len(stdout) > max_output_bytes or len(stderr) > max_output_bytes
-                )
+                truncated = len(stdout) > max_output_bytes or len(stderr) > max_output_bytes
 
                 record.last_command_at = datetime.now(UTC)
                 record.last_exit_code = proc.returncode if proc.returncode is not None else -1
@@ -1187,7 +1180,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 await session.commit()
                 raise ValueError(f"terminal execution failed: {e}") from e
 
-    async def terminal_session_close_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def terminal_session_close_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
 
         from wax.state.engine import db_session
         from wax.state.terminal_models import TerminalSessionRecord
@@ -1217,7 +1212,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # ADR-0040 (Phase 7): Credential Vault
     # ========================================================================
 
-    async def credential_connect_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def credential_connect_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         connector_name = inputs.get("connector")
@@ -1252,7 +1249,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return {"connection_id": connection_id, "connector": connector_name, "scopes": scopes}
 
-    async def credential_request_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def credential_request_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         connection_id = inputs.get("connection_id")
@@ -1297,7 +1296,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return grant
 
-    async def credential_list_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def credential_list_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         if services.credential_vault is None:
@@ -1311,7 +1312,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return {"connections": connections, "count": len(connections)}
 
-    async def credential_revoke_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def credential_revoke_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         connection_id = inputs.get("connection_id")
@@ -1349,14 +1352,18 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # ADR-0041 (Phase 8): Generic Connector Runtime
     # ========================================================================
 
-    async def connector_discover_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def connector_discover_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         if services.connector_runtime is None:
             raise ValueError("connector runtime not configured")
 
         connector_filter = inputs.get("connector")
-        if connector_filter is not None and (not isinstance(connector_filter, str) or not connector_filter):
+        if connector_filter is not None and (
+            not isinstance(connector_filter, str) or not connector_filter
+        ):
             raise ValueError("connector must be a non-empty string")
 
         async with db_session() as session:
@@ -1367,7 +1374,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return {"connectors": connectors, "count": len(connectors)}
 
-    async def connector_resolve_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def connector_resolve_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
 
         grant_handle = inputs.get("grant_handle")
@@ -1399,7 +1408,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # ADR-0042 (Phase 9): Workspace + Artifact Lifecycle
     # ========================================================================
 
-    async def workspace_snapshot_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def workspace_snapshot_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         import hashlib
         import os
         from datetime import UTC, datetime
@@ -1447,8 +1458,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             # Content-addressed hash
             content_hash = hashlib.sha256(
                 "\n".join(
-                    f["path"] + f["sha256"]
-                    for f in sorted(files, key=lambda x: x["path"])
+                    f["path"] + f["sha256"] for f in sorted(files, key=lambda x: x["path"])
                 ).encode()
             ).hexdigest()
 
@@ -1494,7 +1504,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 "idempotent": False,
             }
 
-    async def workspace_restore_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def workspace_restore_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from pathlib import Path
 
         from wax.state.engine import db_session
@@ -1542,7 +1554,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return {"restored_files": restored_files, "total_bytes": snapshot.total_bytes}
 
-    async def workspace_promote_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def workspace_promote_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from wax.state.engine import db_session
         from wax.state.provisioning_models import ProvisionedResourceRecord
 
@@ -1563,7 +1577,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         return {"promoted": True, "permanent_resource_id": workspace_id}
 
-    async def artifact_capture_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def artifact_capture_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         import hashlib
         from pathlib import Path
 
@@ -1659,7 +1675,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             "count": len(records),
         }
 
-    async def artifact_retrieve_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def artifact_retrieve_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         import hashlib
         from pathlib import Path
 
@@ -1689,7 +1707,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     if file_path.exists():
                         with open(file_path, "rb") as f:
                             actual_sha = hashlib.sha256(f.read()).hexdigest()
-                        integrity_verified = (actual_sha == artifact.sha256)
+                        integrity_verified = actual_sha == artifact.sha256
 
             await session.commit()
 
@@ -1717,7 +1735,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     # ADR-0043 (Phase 10): Media + Delivery completion
     # ========================================================================
 
-    async def delivery_status_impl(inputs: dict[str, Any], ctx: InvocationContext) -> dict[str, Any]:
+    async def delivery_status_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
         from sqlalchemy import select
 
         from wax.state.delivery_models import DeliveryRecord
@@ -1730,19 +1750,31 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         async with db_session() as session:
             if delivery_id:
-                records = (await session.execute(
-                    select(DeliveryRecord)
-                    .where(DeliveryRecord.id == delivery_id)
-                    .where(DeliveryRecord.principal_id == ctx.principal_id)
-                )).scalars().all()
+                records = (
+                    (
+                        await session.execute(
+                            select(DeliveryRecord)
+                            .where(DeliveryRecord.id == delivery_id)
+                            .where(DeliveryRecord.principal_id == ctx.principal_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
             else:
-                records = (await session.execute(
-                    select(DeliveryRecord)
-                    .where(DeliveryRecord.execution_id == execution_id)
-                    .where(DeliveryRecord.principal_id == ctx.principal_id)
-                    .order_by(DeliveryRecord.created_at.desc())
-                    .limit(20)
-                )).scalars().all()
+                records = (
+                    (
+                        await session.execute(
+                            select(DeliveryRecord)
+                            .where(DeliveryRecord.execution_id == execution_id)
+                            .where(DeliveryRecord.principal_id == ctx.principal_id)
+                            .order_by(DeliveryRecord.created_at.desc())
+                            .limit(20)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
             await session.commit()
 
         # Return metadata only — NEVER the message text
@@ -2071,13 +2103,9 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
     observed_at = None
     if inputs.get("observed_at"):
         try:
-            observed_at = datetime.fromisoformat(
-                str(inputs["observed_at"]).replace("Z", "+00:00")
-            )
+            observed_at = datetime.fromisoformat(str(inputs["observed_at"]).replace("Z", "+00:00"))
         except ValueError as e:
-            raise ValueError(
-                f"observed_at is not a valid ISO-8601 datetime: {e}"
-            ) from e
+            raise ValueError(f"observed_at is not a valid ISO-8601 datetime: {e}") from e
 
     links = inputs.get("links")
     if links is not None:
@@ -2114,14 +2142,9 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
         for entry in links or []:
             target = await repo.get(str(entry["memory_id"]))
             if target is None or target.status != "active":
-                raise ValueError(
-                    f"No active memory {entry['memory_id']} to link to"
-                )
+                raise ValueError(f"No active memory {entry['memory_id']} to link to")
             if target.principal_id != ctx.principal_id:
-                raise ValueError(
-                    "links target another principal's memory "
-                    f"({entry['memory_id']})"
-                )
+                raise ValueError(f"links target another principal's memory ({entry['memory_id']})")
 
         record = await repo.create(
             MemoryCreate(
@@ -2153,9 +2176,7 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
             if objective is None:
                 raise ValueError(f"No such objective: {objective_id_raw}")
             if objective.principal_id != ctx.principal_id:
-                raise ValueError(
-                    "objective_id belongs to a different principal"
-                )
+                raise ValueError("objective_id belongs to a different principal")
             record.objective_id = objective_id_raw
         if supersedes_id:
             superseded_rows = await repo.supersede(supersedes_id, record.id)
@@ -2174,9 +2195,7 @@ async def memory_store_impl(inputs: dict[str, Any], ctx: InvocationContext) -> d
                 execution_id=ctx.execution_id,
             )
             if edge is not None:
-                linked.append(
-                    {"memory_id": edge.to_memory_id, "kind": edge.kind}
-                )
+                linked.append({"memory_id": edge.to_memory_id, "kind": edge.kind})
         await session.commit()
 
     return {
@@ -2239,9 +2258,7 @@ async def memory_forget_impl(inputs: dict[str, Any], ctx: InvocationContext) -> 
             await session.commit()
             return {"memory_id": memory_id, "forgotten": True, "already_forgotten": True}
         if memory.status != "active":
-            raise ValueError(
-                f"memory {memory_id} is {memory.status} and cannot be forgotten"
-            )
+            raise ValueError(f"memory {memory_id} is {memory.status} and cannot be forgotten")
         forgotten = await repo.forget(memory_id)
         await session.commit()
 
@@ -2353,9 +2370,7 @@ async def memory_consolidate_impl(inputs: dict[str, Any], ctx: InvocationContext
         # Created BEFORE supersession: sources must still be ACTIVE for
         # edges to be valid.
         for sid in source_ids:
-            await repo.link(
-                record.id, sid, "derived_from", execution_id=ctx.execution_id
-            )
+            await repo.link(record.id, sid, "derived_from", execution_id=ctx.execution_id)
         superseded_ids: list[str] = []
         supersede_refused_ids: list[str] = []
         if supersede_sources:
@@ -2586,9 +2601,7 @@ async def objective_list_impl(inputs: dict[str, Any], ctx: InvocationContext) ->
             valid = {s.value for s in ObjectiveStatus}
             if status not in valid:
                 raise ValueError(f"status must be one of {sorted(valid)}")
-        records = await repo.list_for_principal(
-            ctx.principal_id, status=status, limit=limit
-        )
+        records = await repo.list_for_principal(ctx.principal_id, status=status, limit=limit)
         items = []
         for r in records:
             history = await repo.list_executions(r.id, limit=200)
@@ -2636,9 +2649,7 @@ async def objective_resume_impl(inputs: dict[str, Any], ctx: InvocationContext) 
             # Do not leak other principals' objectives.
             raise ValueError(f"No such objective for this principal: {objective_id}")
         if target.status not in ACTIVE_ELIGIBLE_STATES:
-            raise ValueError(
-                f"Objective {objective_id} is {target.status} and cannot be resumed"
-            )
+            raise ValueError(f"Objective {objective_id} is {target.status} and cannot be resumed")
 
         previous_objective_id: str | None = None
         current = await objective_for_execution(session, execution_id)
@@ -2691,9 +2702,7 @@ async def objective_update_status_impl(
         raise ValueError("objective_id is required")
     status = inputs.get("status")
     if status not in _VALID_OBJECTIVE_CLOSE_STATUSES:
-        raise ValueError(
-            f"status must be one of {list(_VALID_OBJECTIVE_CLOSE_STATUSES)}"
-        )
+        raise ValueError(f"status must be one of {list(_VALID_OBJECTIVE_CLOSE_STATUSES)}")
     evidence = inputs.get("evidence")
     if not evidence or not isinstance(evidence, str):
         raise ValueError("evidence is required: the runtime records WHY with the status")
@@ -2704,9 +2713,7 @@ async def objective_update_status_impl(
         if record is None or record.principal_id != ctx.principal_id:
             raise ValueError(f"No such objective for this principal: {objective_id}")
         if record.status in ("succeeded", "failed", "cancelled", "abandoned"):
-            raise ValueError(
-                f"Objective {objective_id} is already terminal ({record.status})"
-            )
+            raise ValueError(f"Objective {objective_id} is already terminal ({record.status})")
 
         # CV-15 guard: `succeeded` is a terminal, immutable claim. The
         # bridge path already refuses to fabricate it while durable work
@@ -2746,8 +2753,7 @@ async def objective_update_status_impl(
         ok = await repo.transition(objective_id, status)
         if not ok:
             raise ValueError(
-                f"Cannot transition objective {objective_id} from "
-                f"{record.status} to {status}"
+                f"Cannot transition objective {objective_id} from {record.status} to {status}"
             )
         await session.commit()
 
@@ -2778,39 +2784,60 @@ ENVIRONMENT_REQUEST_DESCRIPTOR = CapabilityDescriptor(
         "type": "object",
         "properties": {
             "purpose": {"type": "string", "maxLength": 200},
-            "workspace": {"type": "object", "properties": {
-                "persistent": {"type": "boolean"},
-                "disk_bytes": {"type": "integer", "minimum": 0},
-                "description": {"type": "string", "maxLength": 200},
-            }},
-            "execution": {"type": "object", "properties": {
-                "cpu_seconds": {"type": "integer", "minimum": 0},
-                "memory_bytes": {"type": "integer", "minimum": 0},
-                "processes": {"type": "integer", "minimum": 0},
-                "timeout_seconds": {"type": "integer", "minimum": 0},
-            }},
-            "tools": {"type": "array", "maxItems": 20, "items": {
+            "workspace": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string"},
-                    "acquire_if_missing": {"type": "boolean"},
+                    "persistent": {"type": "boolean"},
+                    "disk_bytes": {"type": "integer", "minimum": 0},
+                    "description": {"type": "string", "maxLength": 200},
                 },
-                "required": ["name"],
-            }},
-            "credentials": {"type": "array", "maxItems": 10, "items": {
+            },
+            "execution": {
                 "type": "object",
                 "properties": {
-                    "connector": {"type": "string"},
-                    "scopes": {"type": "array", "items": {"type": "string"}},
-                    "purpose": {"type": "string"},
+                    "cpu_seconds": {"type": "integer", "minimum": 0},
+                    "memory_bytes": {"type": "integer", "minimum": 0},
+                    "processes": {"type": "integer", "minimum": 0},
+                    "timeout_seconds": {"type": "integer", "minimum": 0},
                 },
-                "required": ["connector"],
-            }},
-            "network": {"type": "object", "properties": {
-                "kind": {"type": "string", "enum": ["none", "allowlisted", "open"]},
-                "allowlist": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
-            }},
-            "isolation": {"type": "string", "enum": ["none", "namespace", "container"], "default": "none"},
+            },
+            "tools": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "acquire_if_missing": {"type": "boolean"},
+                    },
+                    "required": ["name"],
+                },
+            },
+            "credentials": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "connector": {"type": "string"},
+                        "scopes": {"type": "array", "items": {"type": "string"}},
+                        "purpose": {"type": "string"},
+                    },
+                    "required": ["connector"],
+                },
+            },
+            "network": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["none", "allowlisted", "open"]},
+                    "allowlist": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+                },
+            },
+            "isolation": {
+                "type": "string",
+                "enum": ["none", "namespace", "container"],
+                "default": "none",
+            },
             "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
         },
         "required": ["purpose"],
@@ -2886,7 +2913,12 @@ TERMINAL_EXECUTE_DESCRIPTOR = CapabilityDescriptor(
             "session_id": {"type": "string"},
             "command": {"type": "string", "maxLength": 8192},
             "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 600, "default": 30},
-            "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536},
+            "max_output_bytes": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 1048576,
+                "default": 65536,
+            },
         },
         "required": ["session_id", "command"],
     },
@@ -3201,7 +3233,10 @@ WORKSPACE_PROMOTE_DESCRIPTOR = CapabilityDescriptor(
     },
     output_schema={
         "type": "object",
-        "properties": {"promoted": {"type": "boolean"}, "permanent_resource_id": {"type": "string"}},
+        "properties": {
+            "promoted": {"type": "boolean"},
+            "permanent_resource_id": {"type": "string"},
+        },
     },
     required_permission="capability.invoke:built_in",
     timeout_seconds=10.0,

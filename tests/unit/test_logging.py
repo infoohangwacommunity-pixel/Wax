@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
 from structlog.types import EventDict
 
 from wax.core.config import LogFormat, LogLevel, settings_for_testing
@@ -78,12 +79,8 @@ class TestSecretRedaction:
 class TestLoggingConfiguration:
     """configure_logging() must set up structlog correctly."""
 
-    def test_json_format_produces_json(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings = settings_for_testing(
-            log_format=LogFormat.JSON, log_level=LogLevel.INFO
-        )
+    def test_json_format_produces_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        settings = settings_for_testing(log_format=LogFormat.JSON, log_level=LogLevel.INFO)
         configure_logging(settings)
         log = get_logger("test")
         log.info("event_name", key="value")
@@ -95,12 +92,8 @@ class TestLoggingConfiguration:
         assert parsed["level"] == "info"
         assert "timestamp" in parsed
 
-    def test_console_format_produces_text(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings = settings_for_testing(
-            log_format=LogFormat.CONSOLE, log_level=LogLevel.INFO
-        )
+    def test_console_format_produces_text(self, capsys: pytest.CaptureFixture[str]) -> None:
+        settings = settings_for_testing(log_format=LogFormat.CONSOLE, log_level=LogLevel.INFO)
         configure_logging(settings)
         log = get_logger("test")
         log.info("event_name", key="value")
@@ -109,12 +102,8 @@ class TestLoggingConfiguration:
         # Console output is NOT JSON.
         assert not captured.out.strip().startswith("{")
 
-    def test_secret_redacted_in_output(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings = settings_for_testing(
-            log_format=LogFormat.JSON, log_level=LogLevel.INFO
-        )
+    def test_secret_redacted_in_output(self, capsys: pytest.CaptureFixture[str]) -> None:
+        settings = settings_for_testing(log_format=LogFormat.JSON, log_level=LogLevel.INFO)
         configure_logging(settings)
         log = get_logger("test")
         log.info("auth_event", api_key="sk-secret", user_id="u_123")

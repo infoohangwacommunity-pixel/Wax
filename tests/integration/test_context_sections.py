@@ -103,9 +103,7 @@ async def _acquire_capability(services: RuntimeServices) -> str:
 
 
 class TestArtifactRecords:
-    async def test_acquisition_creates_first_class_record(
-        self, fresh_db, services
-    ) -> None:
+    async def test_acquisition_creates_first_class_record(self, fresh_db, services) -> None:
 
         artifact_id = await _acquire_capability(services)
 
@@ -120,9 +118,7 @@ class TestArtifactRecords:
         assert record.size_bytes == len(CONTENT)
         assert record.source == "workspace.acquire"
         assert record.workspace_resource_id
-        assert record.expires_at is not None, (
-            "the artifact TTL must mirror its workspace's"
-        )
+        assert record.expires_at is not None, "the artifact TTL must mirror its workspace's"
         # No absolute host path leakage: the record's path is
         # workspace-relative (mission §56: not arbitrary host paths).
         assert not record.path.startswith("/")
@@ -185,9 +181,9 @@ class TestContextSections:
         assert any(w["work_id"] == work_id for w in context.active_work), (
             "outstanding work must surface as ACTIVE_WORK evidence"
         )
-        assert any(
-            a["artifact_id"] == artifact_id for a in context.recent_artifacts
-        ), "the acquired artifact must surface as ARTIFACTS evidence"
+        assert any(a["artifact_id"] == artifact_id for a in context.recent_artifacts), (
+            "the acquired artifact must surface as ARTIFACTS evidence"
+        )
         assert context.environment.get("interface") == "whatsapp"
 
     async def test_sections_render_in_mission_priority_order(self) -> None:
@@ -198,21 +194,35 @@ class TestContextSections:
             conversation_summary="earlier discussion of the report",
             active_objective_description="finish the report",
             active_work=[
-                {"work_id": "w1", "status": "pending", "wake_kind": "time",
-                 "wake_at": datetime.now(UTC).isoformat(), "attempts": 0,
-                 "capability": "message.send"}
+                {
+                    "work_id": "w1",
+                    "status": "pending",
+                    "wake_kind": "time",
+                    "wake_at": datetime.now(UTC).isoformat(),
+                    "attempts": 0,
+                    "capability": "message.send",
+                }
             ],
             recent_memories=[{"summary": "user prefers markdown", "reason": "relevant"}],
             recent_artifacts=[
-                {"artifact_id": "a1", "filename": "report.pdf",
-                 "sha256": "abc123", "bytes": 4567, "source": "workspace.acquire"}
+                {
+                    "artifact_id": "a1",
+                    "filename": "report.pdf",
+                    "sha256": "abc123",
+                    "bytes": 4567,
+                    "source": "workspace.acquire",
+                }
             ],
             environment={"interface": "whatsapp"},
         )
         sections = build_evidence_sections(context)
         by_kind = {s.kind: s for s in sections}
         assert set(by_kind) >= {
-            "objective", "active_work", "memory", "conversation", "artifacts",
+            "objective",
+            "active_work",
+            "memory",
+            "conversation",
+            "artifacts",
             "environment",
         }
         order = [s.kind for s in sorted(sections, key=lambda s: s.priority)]
@@ -238,14 +248,24 @@ class TestContextSections:
             principal_id="p",
             active_objective_description="finish the quarterly report",
             active_work=[
-                {"work_id": "w1", "status": "pending", "wake_kind": "time",
-                 "wake_at": datetime.now(UTC).isoformat(), "attempts": 0,
-                 "capability": "message.send"}
+                {
+                    "work_id": "w1",
+                    "status": "pending",
+                    "wake_kind": "time",
+                    "wake_at": datetime.now(UTC).isoformat(),
+                    "attempts": 0,
+                    "capability": "message.send",
+                }
             ],
             recent_memories=[{"summary": "misc context " * 20, "reason": "relevant"}],
             recent_artifacts=[
-                {"artifact_id": "a1", "filename": "big.bin",
-                 "sha256": "abc123", "bytes": 999, "source": "workspace.acquire"}
+                {
+                    "artifact_id": "a1",
+                    "filename": "big.bin",
+                    "sha256": "abc123",
+                    "bytes": 999,
+                    "source": "workspace.acquire",
+                }
             ],
             environment={"interface": "whatsapp"},
         )

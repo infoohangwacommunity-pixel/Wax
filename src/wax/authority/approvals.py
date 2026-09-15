@@ -216,9 +216,7 @@ class ApprovalService:
         existing = await self.find_pending(principal_id, fp)
         if existing is not None:
             return existing, False
-        raise WaxStateConflictError(
-            "approval creation conflict and no pending row visible; retry"
-        )
+        raise WaxStateConflictError("approval creation conflict and no pending row visible; retry")
 
     # --- Lookups -----------------------------------------------------------
 

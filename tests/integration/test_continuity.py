@@ -48,12 +48,10 @@ class TestConversationRepository:
             assert conv.principal_id == principal_id
             assert conv.message_count == 0
 
-    async def test_get_active_for_principal_returns_most_recent(
-        self, principal_id
-    ) -> None:
+    async def test_get_active_for_principal_returns_most_recent(self, principal_id) -> None:
         async with db_session() as session:
             repo = ConversationRepository(session)
-            old = await repo.create(principal_id, "whatsapp")
+            await repo.create(principal_id, "whatsapp")
             # Touch the new one's last_message_at to be later
             new = await repo.create(principal_id, "whatsapp")
             await session.commit()
@@ -65,9 +63,7 @@ class TestConversationRepository:
             # Most recent first
             assert active.id == new.id
 
-    async def test_touch_updates_message_count_and_last_message_at(
-        self, principal_id
-    ) -> None:
+    async def test_touch_updates_message_count_and_last_message_at(self, principal_id) -> None:
         async with db_session() as session:
             repo = ConversationRepository(session)
             conv = await repo.create(principal_id, "whatsapp")
@@ -75,6 +71,7 @@ class TestConversationRepository:
             await session.commit()
 
         import time
+
         time.sleep(0.01)
 
         async with db_session() as session:
@@ -87,9 +84,11 @@ class TestConversationRepository:
             repo = ConversationRepository(session)
             fetched = await repo.get(conv.id)
             assert fetched.message_count == 1
+
             # Normalize timezones for comparison (SQLite may return naive)
             def _aware(dt: datetime) -> datetime:
                 return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
             assert _aware(fetched.last_message_at) > _aware(original_last)
 
     async def test_close_marks_closed(self, principal_id) -> None:
@@ -141,9 +140,7 @@ class TestContinuityService:
         assert context.recent_memories == []
         assert context.conversation_id is None
 
-    async def test_returning_principal_resumes_conversation(
-        self, principal_id
-    ) -> None:
+    async def test_returning_principal_resumes_conversation(self, principal_id) -> None:
         # First, create a conversation
         async with db_session() as session:
             conv_svc = ConversationService(session)

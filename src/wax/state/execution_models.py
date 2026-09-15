@@ -50,9 +50,7 @@ class ExecutionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Status: pending, running, succeeded, failed, cancelled
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     # The objective description (what the human asked for).
     # Stored as a string for now; future versions may use structured form.
@@ -60,19 +58,13 @@ class ExecutionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Opaque checkpoint state — JSON. The execution engine stores whatever
     # it needs to resume: last model message, completed steps, planning state.
-    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # When the execution started (UTC). NULL until started.
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # When the execution ended (UTC). NULL if still running.
-    ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Error message if status == failed
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -94,9 +86,7 @@ class ExecutionStepRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "execution_steps"
-    __table_args__ = (
-        Index("ix_execution_steps_exec", "execution_id", "step_number"),
-    )
+    __table_args__ = (Index("ix_execution_steps_exec", "execution_id", "step_number"),)
 
     execution_id: Mapped[str] = mapped_column(
         String(26),
@@ -120,9 +110,7 @@ class ExecutionStepRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     outputs: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # Status: pending, running, succeeded, failed, skipped
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     # Error message if status == failed
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

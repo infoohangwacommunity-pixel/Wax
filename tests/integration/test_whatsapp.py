@@ -106,28 +106,20 @@ class TestWhatsAppClient:
         with pytest.raises(WaxConfigurationError):
             WhatsAppClient(access_token="x", phone_number_id="", app_secret="y", verify_token="z")
 
-    def test_verify_webhook_signature_valid(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    def test_verify_webhook_signature_valid(self, whatsapp_client: WhatsAppClient) -> None:
         body = b'{"hello":"world"}'
         sig = _sign(body, TEST_APP_SECRET)
         assert whatsapp_client.verify_webhook_signature(body, sig)
 
-    def test_verify_webhook_signature_invalid(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    def test_verify_webhook_signature_invalid(self, whatsapp_client: WhatsAppClient) -> None:
         body = b'{"hello":"world"}'
         sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000"
         assert not whatsapp_client.verify_webhook_signature(body, sig)
 
-    def test_verify_webhook_signature_missing_header(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    def test_verify_webhook_signature_missing_header(self, whatsapp_client: WhatsAppClient) -> None:
         assert not whatsapp_client.verify_webhook_signature(b"{}", "")
 
-    def test_verify_webhook_signature_wrong_prefix(
-        self, whatsapp_client: WhatsAppClient
-    ) -> None:
+    def test_verify_webhook_signature_wrong_prefix(self, whatsapp_client: WhatsAppClient) -> None:
         body = b"{}"
         assert not whatsapp_client.verify_webhook_signature(body, "sha1=abc")
 
@@ -156,9 +148,7 @@ class TestWhatsAppAdapterWebhook:
         )
         assert result["status"] == "invalid_signature"
 
-    async def test_valid_webhook_processes_message(
-        self, adapter: WhatsAppAdapter
-    ) -> None:
+    async def test_valid_webhook_processes_message(self, adapter: WhatsAppAdapter) -> None:
         payload = _build_text_message_webhook(text="hello")
         body = json.dumps(payload).encode()
         sig = _sign(body, TEST_APP_SECRET)
@@ -184,9 +174,7 @@ class TestWhatsAppAdapterWebhook:
         # The adapter should have sent the response back
         adapter._client.send_text.assert_awaited_once()
 
-    async def test_text_message_normalized_correctly(
-        self, adapter: WhatsAppAdapter
-    ) -> None:
+    async def test_text_message_normalized_correctly(self, adapter: WhatsAppAdapter) -> None:
         payload = _build_text_message_webhook(
             from_phone="+2348999999999", text="Hello WAX", contact_name="Ada"
         )
@@ -285,9 +273,7 @@ class TestWhatsAppAdapterWebhook:
         assert result["status"] == "ok"
         assert result["events_processed"] == 1
 
-    async def test_callback_exception_does_not_fail_webhook(
-        self, adapter: WhatsAppAdapter
-    ) -> None:
+    async def test_callback_exception_does_not_fail_webhook(self, adapter: WhatsAppAdapter) -> None:
         """If the runtime callback raises, the webhook still returns 200.
 
         Meta retries on non-2xx; we want to avoid duplicate processing.

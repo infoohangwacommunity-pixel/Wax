@@ -46,9 +46,7 @@ class IntelligenceService:
     response records which provider actually served the request.
     """
 
-    def __init__(
-        self, provider: LLMProvider, fallbacks: list[LLMProvider] | None = None
-    ) -> None:
+    def __init__(self, provider: LLMProvider, fallbacks: list[LLMProvider] | None = None) -> None:
         self._provider = provider
         self._fallbacks: list[LLMProvider] = list(fallbacks or [])
 
@@ -119,10 +117,8 @@ class IntelligenceService:
                 cls._resilient(
                     AnthropicProvider(
                         api_key=settings.anthropic_api_key,
-                        base_url=settings.llm_base_url
-                        or "https://api.anthropic.com/v1",
-                        default_model=settings.llm_model
-                        or "claude-3-5-haiku-latest",
+                        base_url=settings.llm_base_url or "https://api.anthropic.com/v1",
+                        default_model=settings.llm_model or "claude-3-5-haiku-latest",
                     ),
                     settings,
                 ),
@@ -160,9 +156,7 @@ class IntelligenceService:
         )
 
     @staticmethod
-    def _build_fallbacks(
-        settings: WaxSettings, *, exclude: set[str]
-    ) -> list[LLMProvider]:
+    def _build_fallbacks(settings: WaxSettings, *, exclude: set[str]) -> list[LLMProvider]:
         """Parse WAX_LLM_PROVIDER_FALLBACKS into resilient candidates.
 
         A misconfigured fallback is a BOOT error, not a 3am surprise:
@@ -258,9 +252,7 @@ class IntelligenceService:
                     provider=candidate.kind.value,
                     error=str(e),
                     error_type=type(e).__name__,
-                    failover_remaining=len(self.candidates)
-                    - self.candidates.index(candidate)
-                    - 1,
+                    failover_remaining=len(self.candidates) - self.candidates.index(candidate) - 1,
                 )
                 continue
             if candidate is not self._provider:

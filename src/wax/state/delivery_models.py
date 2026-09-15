@@ -52,21 +52,15 @@ class DeliveryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     recipient_id: Mapped[str] = mapped_column(String(255), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
 
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
 
     attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(nullable=False, default=5)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Earliest time the next retry may run (backoff); NULL = due now.
-    next_attempt_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    delivered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)

@@ -43,9 +43,7 @@ class TestDatabaseUrlValidation:
         assert s.database_url == "sqlite+aiosqlite:///./test.db"
 
     def test_postgres_asyncpg_allowed(self) -> None:
-        s = settings_for_testing(
-            database_url="postgresql+asyncpg://u:p@host:5432/wax"
-        )
+        s = settings_for_testing(database_url="postgresql+asyncpg://u:p@host:5432/wax")
         assert "postgresql+asyncpg" in s.database_url
 
     def test_invalid_scheme_rejected(self) -> None:
@@ -127,9 +125,7 @@ class TestPredicates:
 class TestLoadSettings:
     """load_settings() reads from environment."""
 
-    def test_loads_from_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_loads_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Clear any WAX_ env vars.
         for k in list(monkeypatch._setenv.keys() if hasattr(monkeypatch, "_setenv") else []):
             if k.startswith("WAX_"):
@@ -148,9 +144,7 @@ class TestLoadSettings:
         assert s.log_format == LogFormat.JSON
         assert s.secret_key == "test-key"
 
-    def test_load_settings_invalid_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_load_settings_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WAX_DATABASE_URL", "mysql://bad")
         with pytest.raises(WaxConfigurationError):
             load_settings()

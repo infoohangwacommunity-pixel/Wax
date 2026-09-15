@@ -76,9 +76,7 @@ class TestAuthorizationService:
             ok = await auth.check(None, "memory.read", actor_kind="system")
             assert not ok
 
-    async def test_check_returns_false_for_principal_without_role(
-        self, fresh_db
-    ) -> None:
+    async def test_check_returns_false_for_principal_without_role(self, fresh_db) -> None:
         """A principal with no roles has no permissions."""
         async with db_session() as session:
             repo = PrincipalRepository(session)
@@ -89,9 +87,7 @@ class TestAuthorizationService:
             ok = await auth.check(principal.id, "memory.read")
             assert not ok
 
-    async def test_check_returns_true_when_role_grants_permission(
-        self, fresh_db
-    ) -> None:
+    async def test_check_returns_true_when_role_grants_permission(self, fresh_db) -> None:
         """A principal with a role that grants the permission is authorized."""
         async with db_session() as session:
             # Create role with permission
@@ -132,9 +128,7 @@ class TestAuthorizationService:
 
         async with db_session() as session:
             result = await session.execute(
-                select(AuditEvent).where(
-                    AuditEvent.actor_principal_id == principal.id
-                )
+                select(AuditEvent).where(AuditEvent.actor_principal_id == principal.id)
             )
             events = list(result.scalars().all())
             assert len(events) >= 1
@@ -185,12 +179,8 @@ class TestAuthorizationService:
             for permission in BUILTIN_PERMISSIONS:
                 if permission == "admin.*":
                     continue  # wildcard, not a real permission
-                ok = await auth.check(
-                    principal.id, permission, actor_kind="ai"
-                )
-                assert not ok, (
-                    f"AI principal was granted {permission!r} — violates INV-04"
-                )
+                ok = await auth.check(principal.id, permission, actor_kind="ai")
+                assert not ok, f"AI principal was granted {permission!r} — violates INV-04"
 
 
 class TestBuiltinRoles:
@@ -227,9 +217,7 @@ class TestBuiltinRoles:
         would silently authorize nothing — or worse, bypass intent)."""
         for role, permissions in BUILTIN_ROLES.items():
             unknown = permissions - BUILTIN_PERMISSIONS
-            assert not unknown, (
-                f"role {role!r} grants undeclared permissions: {sorted(unknown)}"
-            )
+            assert not unknown, f"role {role!r} grants undeclared permissions: {sorted(unknown)}"
 
     def test_manifest_namespaces_are_declared(self) -> None:
         """PermissionNamespace and the manifest cannot drift: the module

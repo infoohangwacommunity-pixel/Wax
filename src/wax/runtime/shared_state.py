@@ -50,12 +50,8 @@ class RateLimitCounterRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     principal_id: Mapped[str] = mapped_column(String(26), nullable=False)
-    window_start: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     window_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=60, server_default="60"
     )
@@ -65,9 +61,7 @@ class CostTrackingRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     """DB-backed cost tracking for multi-instance correctness."""
 
     __tablename__ = "cost_tracking"
-    __table_args__ = (
-        Index("ix_cost_principal_day", "principal_id", "day", unique=True),
-    )
+    __table_args__ = (Index("ix_cost_principal_day", "principal_id", "day", unique=True),)
 
     principal_id: Mapped[str] = mapped_column(String(26), nullable=False)
     day: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
@@ -172,10 +166,7 @@ class DbBackedCostProtector:
         day = now.strftime("%Y-%m-%d")
 
         result = await session.execute(
-            text(
-                "SELECT total_tokens FROM cost_tracking "
-                "WHERE principal_id = :pid AND day = :day"
-            ),
+            text("SELECT total_tokens FROM cost_tracking WHERE principal_id = :pid AND day = :day"),
             {"pid": principal_id, "day": day},
         )
         row = result.first()

@@ -66,9 +66,7 @@ async def objective_for_execution(
     return result.scalars().first()
 
 
-async def sync_waiting_for_execution(
-    session: AsyncSession, execution_id: str | None
-) -> bool:
+async def sync_waiting_for_execution(session: AsyncSession, execution_id: str | None) -> bool:
     """Durable work was scheduled under this execution → objective waits."""
     try:
         objective = await objective_for_execution(session, execution_id)
@@ -108,9 +106,7 @@ async def sync_awaiting_human_for_execution(
         return False
 
 
-async def sync_active_for_execution(
-    session: AsyncSession, execution_id: str | None
-) -> bool:
+async def sync_active_for_execution(session: AsyncSession, execution_id: str | None) -> bool:
     """The wait resolved (work claimed / approval consumed) → active."""
     try:
         objective = await objective_for_execution(session, execution_id)
@@ -129,9 +125,7 @@ async def sync_active_for_execution(
         return False
 
 
-async def objective_has_outstanding_work(
-    session: AsyncSession, objective_id: str
-) -> bool:
+async def objective_has_outstanding_work(session: AsyncSession, objective_id: str) -> bool:
     """DB truth: does this objective still have pending durable work?
 
     Consulted before any terminal transition. `succeeded` with outstanding
@@ -156,9 +150,7 @@ async def objective_has_outstanding_work(
     return result.first() is not None
 
 
-async def sync_failure_for_work(
-    session: AsyncSession, work_item: WorkItemRecord
-) -> bool:
+async def sync_failure_for_work(session: AsyncSession, work_item: WorkItemRecord) -> bool:
     """A work item died (retries exhausted / wait expired).
 
     The objective fails ONLY when nothing else of it remains pending —

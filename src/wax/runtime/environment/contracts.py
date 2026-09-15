@@ -144,9 +144,7 @@ def validate_environment_requirement(req: dict[str, Any] | None) -> EnvironmentR
     if not purpose.strip():
         raise EnvironmentValidationError("purpose must not be empty")
     if len(purpose) > ENVIRONMENT_PURPOSE_MAX_CHARS:
-        raise EnvironmentValidationError(
-            f"purpose exceeds {ENVIRONMENT_PURPOSE_MAX_CHARS} chars"
-        )
+        raise EnvironmentValidationError(f"purpose exceeds {ENVIRONMENT_PURPOSE_MAX_CHARS} chars")
 
     workspace = None
     ws_raw = req.get("workspace")
@@ -195,9 +193,7 @@ def validate_environment_requirement(req: dict[str, Any] | None) -> EnvironmentR
     credentials: list[CredentialRequirement] = []
     for c in creds_raw:
         if not isinstance(c, dict) or not isinstance(c.get("connector"), str):
-            raise EnvironmentValidationError(
-                "each credential must be {connector: str, ...}"
-            )
+            raise EnvironmentValidationError("each credential must be {connector: str, ...}")
         scopes = c.get("scopes") or []
         if not isinstance(scopes, list):
             raise EnvironmentValidationError("credential.scopes must be a list")
@@ -242,13 +238,10 @@ def validate_environment_requirement(req: dict[str, Any] | None) -> EnvironmentR
     try:
         req_bytes = len(json.dumps(req, default=str).encode("utf-8"))
     except (TypeError, ValueError) as e:
-        raise EnvironmentValidationError(
-            f"requirement is not JSON-serializable: {e}"
-        ) from e
+        raise EnvironmentValidationError(f"requirement is not JSON-serializable: {e}") from e
     if req_bytes > ENVIRONMENT_REQUIREMENT_MAX_BYTES:
         raise EnvironmentValidationError(
-            f"requirement exceeds {ENVIRONMENT_REQUIREMENT_MAX_BYTES} bytes "
-            f"(was {req_bytes})"
+            f"requirement exceeds {ENVIRONMENT_REQUIREMENT_MAX_BYTES} bytes (was {req_bytes})"
         )
 
     return EnvironmentRequirement(

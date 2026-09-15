@@ -24,11 +24,12 @@ async def initialized_db(test_settings) -> AsyncSession:
     # Override DB URL to in-memory SQLite
     test_settings.__dict__["database_url"] = "sqlite+aiosqlite:///:memory:"
     init_engine(test_settings)
-    engine = init_engine.__wrapped__ if hasattr(init_engine, "__wrapped__") else None
+    init_engine.__wrapped__ if hasattr(init_engine, "__wrapped__") else None
 
     # Actually re-init with the override
 
     from wax.state.engine import _engine as cur_engine
+
     if cur_engine is not None:
         await dispose_engine()
 
@@ -105,9 +106,7 @@ class TestSchemaCreation:
             await conn.run_sync(Base.metadata.create_all)
 
         async with engine.connect() as conn:
-            tables = await conn.run_sync(
-                lambda sync_conn: inspect(sync_conn).get_table_names()
-            )
+            tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
 
         expected = {
             "principals",

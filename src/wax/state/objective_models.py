@@ -44,9 +44,7 @@ class ObjectiveRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Lifecycle status
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     # Optional success criteria — the human's stated criteria for completion.
     success_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -91,12 +89,8 @@ class ObjectiveExecutionRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # "bridge" (a live interaction) | "work" (a durable work run).
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Honest terminal outcome of THIS participation:
     # succeeded | failed | cancelled | superseded (resumed elsewhere).

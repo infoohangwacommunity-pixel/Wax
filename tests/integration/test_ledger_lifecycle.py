@@ -59,18 +59,14 @@ async def _emit_many(name: str, count: int, *, age_seconds: float = 0.0) -> None
                 name,
                 payload={"n": i},
                 emitted_by="test",
-                at=datetime.now(UTC)
-                - timedelta(seconds=age_seconds)
-                + timedelta(microseconds=i),
+                at=datetime.now(UTC) - timedelta(seconds=age_seconds) + timedelta(microseconds=i),
             )
         await session.commit()
 
 
 async def _ledger_count() -> int:
     async with db_session() as session:
-        result = await session.execute(
-            select(func.count()).select_from(RuntimeSignalRecord)
-        )
+        result = await session.execute(select(func.count()).select_from(RuntimeSignalRecord))
         return int(result.scalar_one())
 
 
@@ -88,9 +84,7 @@ async def _add_waiter(name: str, *, watermark_age_seconds: float) -> str:
         )
         # The watermark was captured at schedule time (now); move it back
         # to simulate a waiter created BEFORE the signal was emitted.
-        item.wake_watermark = datetime.now(UTC) - timedelta(
-            seconds=watermark_age_seconds
-        )
+        item.wake_watermark = datetime.now(UTC) - timedelta(seconds=watermark_age_seconds)
         await session.commit()
         return item.id
 
@@ -122,7 +116,7 @@ class TestRetentionPruning:
         # A waiter whose watermark PREDATES the signal — the signal can
         # still wake it, so it must survive pruning.
         await _add_waiter(name, watermark_age_seconds=40 * 86400)
-        signal_id = await _emit(name, age_seconds=30 * 86400 + 3600)
+        await _emit(name, age_seconds=30 * 86400 + 3600)
 
         async with db_session() as session:
             stats = await SignalRepository(session).prune(
@@ -178,22 +172,18 @@ class TestRetentionPruning:
             await session.commit()
         assert stats["retention_deleted"] == 1
 
-    async def test_waiter_created_after_prune_cannot_see_old_signals(
-        self, fresh_db
-    ) -> None:
+    async def test_waiter_created_after_prune_cannot_see_old_signals(self, fresh_db) -> None:
         """Replay semantics after pruning: a NEW waiter (watermark=now)
         could never have been woken by pruned rows anyway — semantics
         unchanged."""
         await _emit("external.once", age_seconds=40 * 86400)
         async with db_session() as session:
-            await SignalRepository(session).prune(
-                retention_seconds=30 * 86400.0, max_rows=100_000
-            )
+            await SignalRepository(session).prune(retention_seconds=30 * 86400.0, max_rows=100_000)
             await session.commit()
 
         waiter_id = await _add_waiter("external.once", watermark_age_seconds=0)
         async with db_session() as session:
-            item = await WorkRepository(session).get(waiter_id)
+            await WorkRepository(session).get(waiter_id)
             batch = await WorkRepository(session).claim_due(
                 worker_id="w1", lease_seconds=5.0, limit=10
             )
@@ -205,9 +195,7 @@ class TestBoundedStorage:
     async def test_ledger_is_bounded_to_max_rows(self, fresh_db) -> None:
         await _emit_many("external.bulk", 50)
         async with db_session() as session:
-            stats = await SignalRepository(session).prune(
-                retention_seconds=86400.0, max_rows=30
-            )
+            stats = await SignalRepository(session).prune(retention_seconds=86400.0, max_rows=30)
             await session.commit()
         assert stats["bound_deleted"] == 20
         assert await _ledger_count() == 30
@@ -219,29 +207,21 @@ class TestBoundedStorage:
         await _add_waiter(name, watermark_age_seconds=10)
         await _emit(name, age_seconds=5)
         async with db_session() as session:
-            await SignalRepository(session).prune(
-                retention_seconds=86400.0, max_rows=30
-            )
+            await SignalRepository(session).prune(retention_seconds=86400.0, max_rows=30)
             await session.commit()
         count = await _ledger_count()
         assert count == 30, "bounded to max_rows"
         async with db_session() as session:
             result = await session.execute(
-                select(RuntimeSignalRecord).where(
-                    RuntimeSignalRecord.name == name
-                )
+                select(RuntimeSignalRecord).where(RuntimeSignalRecord.name == name)
             )
-            assert len(result.scalars().all()) == 1, (
-                "the protected signal must survive the bound"
-            )
+            assert len(result.scalars().all()) == 1, "the protected signal must survive the bound"
 
     async def test_prune_is_idempotent(self, fresh_db) -> None:
         await _emit_many("external.bulk", 40)
         for _ in range(2):
             async with db_session() as session:
-                await SignalRepository(session).prune(
-                    retention_seconds=86400.0, max_rows=30
-                )
+                await SignalRepository(session).prune(retention_seconds=86400.0, max_rows=30)
                 await session.commit()
         assert await _ledger_count() == 30
 

@@ -21,7 +21,7 @@ it is provider-independent, requires no tokenizer dependency in the
 runtime core, and errs on the safe side for modern context windows.
 The budget itself is NEGOTIATED (wax.intelligence.context_limits):
 when the selected provider advertises a context limit, the budget is
-derived from it (limit − reserved output tokens); otherwise the
+derived from it (limit - reserved output tokens); otherwise the
 configured `context_char_budget` fallback applies. This module's
 contract is unchanged — it fills whatever budget it is given.
 """
@@ -141,9 +141,7 @@ def build_evidence_sections(context: ContinuityContext) -> list[EvidenceSection]
                 f"{artifact.get('bytes')}B)"
             )
         text = "[evidence: artifacts] " + "; ".join(parts)
-        sections.append(
-            EvidenceSection(kind="artifacts", priority=PRIORITY_ARTIFACTS, text=text)
-        )
+        sections.append(EvidenceSection(kind="artifacts", priority=PRIORITY_ARTIFACTS, text=text))
 
     # Environment facts (interface the interaction arrived on).
     if context.environment:
@@ -151,9 +149,7 @@ def build_evidence_sections(context: ContinuityContext) -> list[EvidenceSection]
         if interface:
             text = f"[evidence: environment] interface={interface}"
             sections.append(
-                EvidenceSection(
-                    kind="environment", priority=PRIORITY_ENVIRONMENT, text=text
-                )
+                EvidenceSection(kind="environment", priority=PRIORITY_ENVIRONMENT, text=text)
             )
 
     return sections

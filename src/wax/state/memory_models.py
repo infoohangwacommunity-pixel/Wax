@@ -64,9 +64,7 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # Status: active, superseded, forgotten (no archived state — nothing
     # writes one; see MemoryStatus in wax.memory.contracts)
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="active"
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
     # The memory itself — structured content
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -95,9 +93,7 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # memory IDs that were consolidated. NULL otherwise. The backward
     # chain (source.superseded_by = this.id) already exists; this is
     # the forward chain (this.consolidation_sources = [source1, ...]).
-    consolidation_sources: Mapped[list[str] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    consolidation_sources: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     # Confidence: 0.0 (low) to 1.0 (high). Not all memories have confidence.
     confidence: Mapped[float | None] = mapped_column(nullable=True)
@@ -114,15 +110,11 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # from created_at when evidence enters the runtime late ("yesterday I
     # finished the exam"). NULL = observed at creation time. Temporal
     # reasoning reads this, not created_at, when present.
-    observed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # When this memory should be considered for forgetting (UTC)
     # NULL = retain indefinitely
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Sensitivity level: 0 (public) to 3 (highly sensitive).
     # CONSTITUTIONAL AUDIT NOTE: this column is currently RESERVED — no
@@ -132,9 +124,7 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Wiring sensitivity into evidence assembly + retention is documented
     # in docs/constitutional-audit/memory-deep-audit.md as the planned
     # remediation.
-    sensitivity: Mapped[int] = mapped_column(
-        nullable=False, default=0, server_default="0"
-    )
+    sensitivity: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
 
     # Optional short human-readable summary (for fast retrieval / display)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -153,9 +143,7 @@ class MemoryLinkRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_memlinks_from", "from_memory_id"),
         Index("ix_memlinks_to", "to_memory_id"),
-        UniqueConstraint(
-            "from_memory_id", "to_memory_id", "kind", name="uq_memlink_edge"
-        ),
+        UniqueConstraint("from_memory_id", "to_memory_id", "kind", name="uq_memlink_edge"),
     )
 
     from_memory_id: Mapped[str] = mapped_column(
@@ -180,6 +168,4 @@ class MemoryLinkRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # Provenance of the LINK decision (which execution proposed it).
-    created_by_execution_id: Mapped[str | None] = mapped_column(
-        String(26), nullable=True
-    )
+    created_by_execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)

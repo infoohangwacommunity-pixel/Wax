@@ -94,21 +94,15 @@ class TestEnvironmentRequirementValidation:
 
     def test_oversized_purpose_raises(self):
         with pytest.raises(EnvironmentValidationError, match="exceeds"):
-            validate_environment_requirement(
-                {"purpose": "x" * (ENVIRONMENT_PURPOSE_MAX_CHARS + 1)}
-            )
+            validate_environment_requirement({"purpose": "x" * (ENVIRONMENT_PURPOSE_MAX_CHARS + 1)})
 
     def test_invalid_isolation_raises(self):
         with pytest.raises(EnvironmentValidationError, match="isolation"):
-            validate_environment_requirement(
-                {"purpose": "test", "isolation": "quantum"}
-            )
+            validate_environment_requirement({"purpose": "test", "isolation": "quantum"})
 
     def test_invalid_network_kind_raises(self):
         with pytest.raises(EnvironmentValidationError, match=r"network\.kind"):
-            validate_environment_requirement(
-                {"purpose": "test", "network": {"kind": "wormhole"}}
-            )
+            validate_environment_requirement({"purpose": "test", "network": {"kind": "wormhole"}})
 
     def test_too_many_tools_raises(self):
         with pytest.raises(EnvironmentValidationError, match="tools"):
@@ -121,9 +115,7 @@ class TestEnvironmentRequirementValidation:
             validate_environment_requirement(
                 {
                     "purpose": "test",
-                    "credentials": [
-                        {"connector": "git_host"} for _ in range(11)
-                    ],
+                    "credentials": [{"connector": "git_host"} for _ in range(11)],
                 }
             )
 
@@ -227,9 +219,7 @@ class TestEnvironmentRequestCapability:
             record = await s.get(EnvironmentLeaseRecord, result.outputs["environment_id"])
             assert record.workspace_resource_id is None
 
-    async def test_request_with_container_isolation_degrades_to_namespace(
-        self, fresh_db, services
-    ):
+    async def test_request_with_container_isolation_degrades_to_namespace(self, fresh_db, services):
         principal_id = await _create_principal()
         async with db_session() as s:
             invoker = services.invoker(s)
@@ -268,9 +258,7 @@ class TestEnvironmentRequestCapability:
         assert result.outcome == "success"
         assert any("network" in d for d in result.outputs["degraded"])
 
-    async def test_request_with_credential_requirement_records_in_plan(
-        self, fresh_db, services
-    ):
+    async def test_request_with_credential_requirement_records_in_plan(self, fresh_db, services):
         principal_id = await _create_principal()
         async with db_session() as s:
             invoker = services.invoker(s)

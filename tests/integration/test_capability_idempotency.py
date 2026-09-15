@@ -43,6 +43,7 @@ from wax.capabilities.invoker import (
     CapabilityInvoker,
     lift_idempotency_key,
 )
+from wax.capabilities.registry import CapabilityRegistry
 from wax.identity.repository import PrincipalRepository
 from wax.state.authority_models import Role
 from wax.state.capability_models import CapabilityInvocationRecord
@@ -63,7 +64,6 @@ async def fresh_db(test_settings):
 
 @pytest.fixture
 def registry() -> CapabilityRegistry:
-    from wax.capabilities.registry import CapabilityRegistry
 
     return CapabilityRegistry()
 
@@ -75,9 +75,7 @@ async def _make_authorized_principal() -> str:
     async with db_session() as session:
         role = await session.get(Role, ROLE_ID)
         if role is None:
-            role = Role(
-                id=ROLE_ID, name="member", description="Member role"
-            )
+            role = Role(id=ROLE_ID, name="member", description="Member role")
             role.add_permission("capability.invoke:built_in")
             session.add(role)
         principal = await PrincipalRepository(session).create_principal()
@@ -116,9 +114,7 @@ def _register_effect(registry, name: str, behavior: str, counter: dict) -> None:
 
 async def _invoke(registry, principal_id: str, key: str | None, name: str = "eff"):
     async with db_session() as session:
-        invoker = CapabilityInvoker(
-            registry, AuthorizationService(session)
-        )
+        invoker = CapabilityInvoker(registry, AuthorizationService(session))
         result = await invoker.invoke(
             CapabilityInvocationRequest(
                 capability_name=name,
@@ -156,9 +152,7 @@ class TestReplaySemantics:
         assert second.outputs == first.outputs
         assert counter["calls"] == 1, "replay must not re-execute the effect"
 
-    async def test_no_key_means_no_ledger_and_both_calls_execute(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_no_key_means_no_ledger_and_both_calls_execute(self, fresh_db, registry) -> None:
         counter = {"calls": 0}
         _register_effect(registry, "eff", "ok", counter)
         principal = await _make_authorized_principal()
@@ -169,9 +163,7 @@ class TestReplaySemantics:
         assert counter["calls"] == 2
         assert await _ledger_rows() == []
 
-    async def test_different_principals_do_not_collide(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_different_principals_do_not_collide(self, fresh_db, registry) -> None:
         """The ledger is keyed by (principal, capability, key): principals
         are independent authorities — one principal's key never blocks
         another's identical-shaped request."""
@@ -190,9 +182,7 @@ class TestReplaySemantics:
 
 
 class TestConcurrency:
-    async def test_concurrent_duplicates_execute_exactly_once(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_concurrent_duplicates_execute_exactly_once(self, fresh_db, registry) -> None:
         counter = {"calls": 0}
         _register_effect(registry, "eff", "ok", counter)
         principal = await _make_authorized_principal()
@@ -203,9 +193,7 @@ class TestConcurrency:
         )
         outcomes = sorted(r.outcome for r in results)
 
-        assert outcomes == ["duplicate", "success"], (
-            "exactly one concurrent claimant may execute"
-        )
+        assert outcomes == ["duplicate", "success"], "exactly one concurrent claimant may execute"
         assert counter["calls"] == 1
 
         # After the winner completed, an identical request is a replay
@@ -215,9 +203,7 @@ class TestConcurrency:
         assert third.idempotent_replay is True
         assert counter["calls"] == 1
 
-    async def test_live_claim_refuses_duplicate_until_completion(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_live_claim_refuses_duplicate_until_completion(self, fresh_db, registry) -> None:
         """Simulate a claim held by another live worker: the identical
         request is refused while the lease is live, then replays the
         recorded outcome once the owner completes."""
@@ -247,9 +233,7 @@ class TestConcurrency:
 
 
 class TestCrashRecovery:
-    async def test_failed_attempt_allows_identical_retry(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_failed_attempt_allows_identical_retry(self, fresh_db, registry) -> None:
         """A failed attempt recorded NO outcome, so an identical retry
         re-executing is honest (at-least-once). After the retry succeeds,
         the recorded success replays."""
@@ -274,9 +258,7 @@ class TestCrashRecovery:
         assert replay.outputs == recovered.outputs
         assert counter["calls"] == 2
 
-    async def test_expired_lease_takeover_reexecutes(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_expired_lease_takeover_reexecutes(self, fresh_db, registry) -> None:
         """A claim abandoned mid-execution (process died between claim
         and completion) holds an `executing` row whose lease expires.
         The effect state is UNKNOWN, so an identical request may take
@@ -300,9 +282,7 @@ class TestCrashRecovery:
             await session.execute(
                 update(CapabilityInvocationRecord)
                 .where(CapabilityInvocationRecord.id == claim.record.id)
-                .values(
-                    claim_expires_at=datetime.now(UTC) - timedelta(seconds=1)
-                )
+                .values(claim_expires_at=datetime.now(UTC) - timedelta(seconds=1))
             )
             await session.commit()
 
@@ -338,9 +318,7 @@ class TestCrashRecovery:
 
 
 class TestEvidenceAndBoundaries:
-    async def test_ledger_is_append_only_evidence(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_ledger_is_append_only_evidence(self, fresh_db, registry) -> None:
         """Failure and replay never delete rows — replay evidence is
         audit evidence."""
         counter = {"calls": 0}
@@ -358,9 +336,7 @@ class TestEvidenceAndBoundaries:
         assert len(rows) == 1, "takeover reuses the row, never adds one"
         assert rows[0].status == "failed"
 
-    async def test_denied_request_does_not_consume_key(
-        self, fresh_db, registry
-    ) -> None:
+    async def test_denied_request_does_not_consume_key(self, fresh_db, registry) -> None:
         """The claim happens AFTER authorization: a denied request must
         not burn the caller's idempotency key."""
         counter = {"calls": 0}
@@ -406,9 +382,7 @@ class TestEvidenceAndBoundaries:
             assert cleaned is inputs or cleaned == inputs
 
         # Overlong keys are clamped, not rejected (bounded evidence).
-        cleaned, key = lift_idempotency_key(
-            {"idempotency_key": "k" * 600}
-        )
+        cleaned, key = lift_idempotency_key({"idempotency_key": "k" * 600})
         assert key is not None and len(key) == 512
 
         # Non-dict inputs pass through untouched.

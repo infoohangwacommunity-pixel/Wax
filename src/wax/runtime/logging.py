@@ -57,9 +57,8 @@ def _redact_sensitive(_logger: Any, _method: str, event_dict: EventDict) -> Even
             event_dict[key] = redacted
         else:
             value = event_dict[key]
-            if isinstance(value, str):
-                if any(sub in value for sub in _SENSITIVE_VALUE_SUBSTRINGS):
-                    event_dict[key] = redacted
+            if isinstance(value, str) and any(sub in value for sub in _SENSITIVE_VALUE_SUBSTRINGS):
+                event_dict[key] = redacted
     return event_dict
 
 

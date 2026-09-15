@@ -72,9 +72,7 @@ class PendingApprovalRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     principal_id: Mapped[str] = mapped_column(String(26), nullable=False)
 
     # The execution that requested the action (traceability).
-    requested_by_execution_id: Mapped[str | None] = mapped_column(
-        String(26), nullable=True
-    )
+    requested_by_execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
     # What action is being authorized — generic fields only:
     capability_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -94,9 +92,7 @@ class PendingApprovalRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         String(16), nullable=False, default=STATUS_PENDING, server_default=STATUS_PENDING
     )
 
-    requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Decision provenance (who decided, when, optional human note).

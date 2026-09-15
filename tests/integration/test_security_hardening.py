@@ -39,9 +39,7 @@ class TestAbuseDetector:
         assert v.level == AbuseLevel.NONE
         assert v.recommended_action == "allow"
 
-    def test_flood_detected(
-        self, detector: AbuseDetector
-    ) -> None:
+    def test_flood_detected(self, detector: AbuseDetector) -> None:
         """5+ messages in the window triggers flood."""
         for _ in range(5):
             v = detector.evaluate(
@@ -146,6 +144,7 @@ class TestRateLimiter:
         assert rl.check("p1") == RateLimitDecision.ALLOWED
         # Bucket is now empty; wait briefly
         import time
+
         time.sleep(0.05)  # 50ms = 5 tokens at 100/sec
         assert rl.check("p1") == RateLimitDecision.ALLOWED
 
@@ -211,7 +210,7 @@ class TestCostProtector:
         assert not cp.check_and_record("p1", tokens=50)
         # Verify p1's recorded usage is still 100 (not 150)
         usage = cp.get_usage("p1")
-        today = list(usage["tokens"].keys())[0]
+        today = next(iter(usage["tokens"].keys()))
         assert usage["tokens"][today] == 100
 
     def test_reset_clears_usage(self) -> None:

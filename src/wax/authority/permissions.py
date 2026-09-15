@@ -143,9 +143,7 @@ BUILTIN_ROLES: dict[str, frozenset[str]] = {
 }
 
 
-def is_permission_granted(
-    granted_permissions: frozenset[str], required: str
-) -> bool:
+def is_permission_granted(granted_permissions: frozenset[str], required: str) -> bool:
     """Check whether `required` permission is satisfied by any in `granted_permissions`.
 
     A granted permission matches `required` if:

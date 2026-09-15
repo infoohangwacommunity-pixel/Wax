@@ -137,28 +137,18 @@ class TestRetrievalIntegration:
         memories matter for this objective', traversed)."""
         async with db_session() as session:
             repo = MemoryRepository(session)
-            hit = await repo.create(
-                _memory("p", "physics exam schedule may june session")
-            )
-            neighbor = await repo.create(
-                _memory("p", "user registered for practicals too")
-            )
-            unrelated = await repo.create(
-                _memory("p", "favorite color is green apparently")
-            )
+            hit = await repo.create(_memory("p", "physics exam schedule may june session"))
+            neighbor = await repo.create(_memory("p", "user registered for practicals too"))
+            unrelated = await repo.create(_memory("p", "favorite color is green apparently"))
             await repo.link(hit.id, neighbor.id, "related_to")
             await session.commit()
 
-            results = await repo.search_relevant(
-                "p", "physics exam schedule", limit=5
-            )
+            results = await repo.search_relevant("p", "physics exam schedule", limit=5)
             await session.commit()
 
         ids = [r.id for r, _ in results]
         assert hit.id in ids
-        assert neighbor.id in ids, (
-            "the linked neighbor of a hit must join the evidence set"
-        )
+        assert neighbor.id in ids, "the linked neighbor of a hit must join the evidence set"
         assert unrelated.id not in ids
         scores = {r.id: s for r, s in results}
         assert scores[hit.id] > scores[neighbor.id], (
@@ -207,15 +197,13 @@ class TestImportanceAndObservationTime:
             )
             await session.commit()
 
-            results = await repo.search_relevant(
-                "p", "waec physics syllabus topic", limit=5
-            )
+            results = await repo.search_relevant("p", "waec physics syllabus topic", limit=5)
             await session.commit()
 
         order = [r.id for r, _ in results]
-        assert order.index(strong.id) < order.index(plain.id) < order.index(
-            weak.id
-        ), f"importance must move the rank: {order}"
+        assert order.index(strong.id) < order.index(plain.id) < order.index(weak.id), (
+            f"importance must move the rank: {order}"
+        )
 
     async def test_observed_at_drives_temporal_ranking(self, fresh_db) -> None:
         """Late-arriving evidence: written today, observed weeks ago —
@@ -238,15 +226,13 @@ class TestImportanceAndObservationTime:
             )
             await session.commit()
 
-            results = await repo.search_relevant(
-                "p", "physics mock result released", limit=5
-            )
+            results = await repo.search_relevant("p", "physics mock result released", limit=5)
             await session.commit()
 
         order = [r.id for r, _ in results]
-        assert order.index(fresh_observation.id) < order.index(
-            old_observation.id
-        ), "the more recently OBSERVED fact must rank higher"
+        assert order.index(fresh_observation.id) < order.index(old_observation.id), (
+            "the more recently OBSERVED fact must rank higher"
+        )
 
     async def test_observed_at_never_fabricates_relevance(self, fresh_db) -> None:
         """A memory that does not match the query stays out, however
@@ -290,9 +276,7 @@ class TestLinkCapabilities:
         from wax.identity.repository import PrincipalRepository
 
         async with db_session() as session:
-            p = await PrincipalRepository(session).create_principal(
-                display_name="Link User"
-            )
+            p = await PrincipalRepository(session).create_principal(display_name="Link User")
             await ensure_principal_role(session, p.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS)
             await session.commit()
             return p.id
@@ -376,9 +360,7 @@ class TestLinkCapabilities:
         assert again.outcome == "success"
         assert again.outputs["existed"] is True
 
-    async def test_consolidation_writes_derived_from_edges(
-        self, fresh_db, services
-    ) -> None:
+    async def test_consolidation_writes_derived_from_edges(self, fresh_db, services) -> None:
         principal_id = await self._principal()
         ids = []
         async with db_session() as session:
@@ -408,6 +390,5 @@ class TestLinkCapabilities:
 
         linked_ids = {e.to_memory_id for e, _ in edges}
         assert linked_ids == set(ids), (
-            "the consolidation must remain traceable to every source via "
-            "derived_from edges"
+            "the consolidation must remain traceable to every source via derived_from edges"
         )

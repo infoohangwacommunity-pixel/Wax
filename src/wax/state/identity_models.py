@@ -38,17 +38,13 @@ class Principal(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "principals"
 
     # Status of the principal (active, suspended, revoked)
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="active"
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
     # Optional display name (set by user or admin, not required)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Soft-delete timestamp. If set, principal is considered deleted.
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationship to credentials (one principal → many credentials)
     credentials: Mapped[list[PrincipalCredential]] = relationship(
@@ -102,9 +98,7 @@ class PrincipalCredential(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # When this credential was last used (UTC)
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationship back to principal
     principal: Mapped[Principal] = relationship("Principal", back_populates="credentials")

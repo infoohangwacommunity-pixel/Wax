@@ -59,9 +59,7 @@ async def record_work_participation(item: WorkItemRecord) -> None:
             )
             await session.commit()
     except Exception as e:
-        log.warning(
-            "objective.work_history_failed", work_id=item.id, reason=str(e)[:300]
-        )
+        log.warning("objective.work_history_failed", work_id=item.id, reason=str(e)[:300])
 
 
 async def capability_handler(services: RuntimeServices, item: WorkItemRecord) -> dict[str, Any]:
@@ -175,9 +173,7 @@ async def capability_handler(services: RuntimeServices, item: WorkItemRecord) ->
 # ============================================================================
 
 
-async def intelligence_handler(
-    services: RuntimeServices, item: WorkItemRecord
-) -> dict[str, Any]:
+async def intelligence_handler(services: RuntimeServices, item: WorkItemRecord) -> dict[str, Any]:
     """Wake the intelligence and re-run the LLM + tool-call loop.
 
     The handler is generic: it validates the bounded payload, builds a
@@ -213,13 +209,10 @@ async def intelligence_handler(
     # 2. The work must have an owner: intelligence work without a principal
     # has no identity to re-enter against.
     if not item.principal_id:
-        raise WorkExecutionError(
-            "intelligence work item has no principal_id; cannot re-enter"
-        )
+        raise WorkExecutionError("intelligence work item has no principal_id; cannot re-enter")
     if not item.execution_id:
         raise WorkExecutionError(
-            "intelligence work item has no execution_id; cannot resolve "
-            "originating objective"
+            "intelligence work item has no execution_id; cannot resolve originating objective"
         )
 
     # 3. Budget for the re-entry: same shape as a capability invocation
@@ -262,9 +255,7 @@ async def intelligence_handler(
             error=str(e)[:500],
             error_type=type(e).__name__,
         )
-        raise WorkExecutionError(
-            f"intelligence re-entry failed: {type(e).__name__}: {e}"
-        ) from e
+        raise WorkExecutionError(f"intelligence re-entry failed: {type(e).__name__}: {e}") from e
 
     log.info(
         "intelligence.reentry.complete",

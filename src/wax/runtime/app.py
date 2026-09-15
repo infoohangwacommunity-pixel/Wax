@@ -211,14 +211,10 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         from wax.runtime.maintenance import stop_maintenance as stop_runtime_maintenance
 
         maintenance_task = asyncio.create_task(
-            maintenance_loop(
-                settings, interval_seconds=300.0, services=app.state.services
-            ),
+            maintenance_loop(settings, interval_seconds=300.0, services=app.state.services),
             name="wax-maintenance",
         )
-        lifecycle.on_shutdown(
-            "runtime_maintenance", stop_runtime_maintenance(maintenance_task)
-        )
+        lifecycle.on_shutdown("runtime_maintenance", stop_runtime_maintenance(maintenance_task))
 
         try:
             yield
@@ -557,9 +553,7 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
                     queue = DeliveryQueue(
                         session,
                         svc,
-                        retry_backoff_seconds=float(
-                            settings.delivery_retry_backoff_seconds
-                        ),
+                        retry_backoff_seconds=float(settings.delivery_retry_backoff_seconds),
                         max_age_seconds=float(settings.delivery_max_age_seconds),
                     )
                     record = await queue.enqueue(

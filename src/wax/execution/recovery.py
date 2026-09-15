@@ -121,12 +121,16 @@ async def classify_crash(
 
     # Read all steps in order
     steps = (
-        await session.execute(
-            select(ExecutionStepRecord)
-            .where(ExecutionStepRecord.execution_id == execution_id)
-            .order_by(ExecutionStepRecord.step_number.asc())
+        (
+            await session.execute(
+                select(ExecutionStepRecord)
+                .where(ExecutionStepRecord.execution_id == execution_id)
+                .order_by(ExecutionStepRecord.step_number.asc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not steps:
         objective_id = await _resolve_objective_id(session, execution_id)
@@ -193,16 +197,12 @@ async def classify_crash(
     last_step = steps[-1]
     if last_step.kind == "llm.complete" and last_step.status == "succeeded":
         # The model call succeeded; was there a capability.invoke after?
-        has_capability_after = any(
-            s.kind == "capability.invoke" for s in steps
-        )
+        has_capability_after = any(s.kind == "capability.invoke" for s in steps)
         if not has_capability_after:
             return CrashPoint.AFTER_MODEL_RESPONSE, envelope
 
     # Was there a capability.invoke that didn't succeed?
-    pending_capability = any(
-        cs.status in ("pending", "running") for cs in capability_steps
-    )
+    pending_capability = any(cs.status in ("pending", "running") for cs in capability_steps)
     if pending_capability:
         return CrashPoint.AFTER_EXTERNAL_EFFECT_BEFORE_RESULT, envelope
 
@@ -219,9 +219,7 @@ async def classify_crash(
     return CrashPoint.AFTER_MODEL_RESPONSE, envelope
 
 
-async def _resolve_objective_id(
-    session: AsyncSession, execution_id: str
-) -> str | None:
+async def _resolve_objective_id(session: AsyncSession, execution_id: str) -> str | None:
     """Resolve the objective an execution is working on (best-effort)."""
     from wax.objective.evidence import objective_for_execution
 
@@ -248,12 +246,8 @@ async def lookup_idempotent_outcome(
         await session.execute(
             select(CapabilityInvocationRecord)
             .where(CapabilityInvocationRecord.principal_id == principal_id)
-            .where(
-                CapabilityInvocationRecord.capability_name == capability_name[:255]
-            )
-            .where(
-                CapabilityInvocationRecord.idempotency_key == idempotency_key[:512]
-            )
+            .where(CapabilityInvocationRecord.capability_name == capability_name[:255])
+            .where(CapabilityInvocationRecord.idempotency_key == idempotency_key[:512])
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -406,8 +400,7 @@ async def recover_execution(
             # Mark the step as succeeded with the recorded outputs
             step = (
                 await session.execute(
-                    select(ExecutionStepRecord)
-                    .where(
+                    select(ExecutionStepRecord).where(
                         ExecutionStepRecord.execution_id == execution_id,
                         ExecutionStepRecord.step_number == unknown.get("step_number"),
                     )

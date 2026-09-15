@@ -138,9 +138,7 @@ class RuntimeMetrics:
     # --- Artifact acquisition ----------------------------------------------
 
     def artifact_acquired(self, *, cache_hit: bool) -> None:
-        self._registry.counter(
-            "artifacts_acquired_total", cache_hit=str(cache_hit).lower()
-        ).inc()
+        self._registry.counter("artifacts_acquired_total", cache_hit=str(cache_hit).lower()).inc()
 
     def artifact_rejected(self, reason: str) -> None:
         self._registry.counter("artifacts_rejected_total", reason=reason).inc()

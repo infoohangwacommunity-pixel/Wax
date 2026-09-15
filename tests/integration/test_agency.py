@@ -49,10 +49,7 @@ class TestAgencyPolicy:
 
     def test_destructive_is_irreversible(self) -> None:
         policy = AgencyPolicy.default()
-        assert (
-            policy.level_for(AgencyDecisionKind.DESTRUCTIVE_ACTION)
-            == ApprovalLevel.IRREVERSIBLE
-        )
+        assert policy.level_for(AgencyDecisionKind.DESTRUCTIVE_ACTION) == ApprovalLevel.IRREVERSIBLE
 
     def test_send_message_requires_human(self) -> None:
         policy = AgencyPolicy.default()

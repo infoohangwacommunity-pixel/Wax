@@ -29,6 +29,7 @@ What this mechanism is NOT:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -112,9 +113,7 @@ def _allowed_hosts(settings: Any) -> list[str]:
 def _derive_filename(url: str) -> str:
     name = Path(urlsplit(url).path).name
     if not name or not _FILENAME_RE.match(name):
-        raise AcquisitionError(
-            "cannot derive a safe filename from the URL; supply 'filename'"
-        )
+        raise AcquisitionError("cannot derive a safe filename from the URL; supply 'filename'")
     return name
 
 
@@ -142,9 +141,7 @@ class ArtifactAcquirer:
                 "are configured in this deployment"
             )
         if host not in allowed:
-            raise AcquisitionError(
-                f"host {host!r} is not an allowlisted artifact source"
-            )
+            raise AcquisitionError(f"host {host!r} is not an allowlisted artifact source")
         return host
 
     @staticmethod
@@ -179,10 +176,8 @@ class ArtifactAcquirer:
             pass
         # Corrupted cache entry: discard it (real failure would be silent
         # supply-chain drift; deleting is the honest recovery).
-        try:
+        with contextlib.suppress(OSError):
             cached.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
 
     # --- Download -----------------------------------------------------------
@@ -234,9 +229,7 @@ class ArtifactAcquirer:
         sha256 = self._check_hash(sha256)
         filename = filename or _derive_filename(url)
         if not _FILENAME_RE.match(filename):
-            raise AcquisitionError(
-                "filename must be 1-128 characters of [A-Za-z0-9._-]"
-            )
+            raise AcquisitionError("filename must be 1-128 characters of [A-Za-z0-9._-]")
 
         workspace = Path(workspace_path)
         # Containment: the destination is inside the verified workspace and

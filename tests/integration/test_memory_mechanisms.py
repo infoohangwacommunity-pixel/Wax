@@ -154,7 +154,7 @@ class TestContextComposition:
             context, _conv = await svc.build_context(
                 principal_id, "whatsapp", "tell me about my physics exam again"
             )
-        by_id = {m["id"]: m for m in context.recent_memories}
+        {m["id"]: m for m in context.recent_memories}
         reasons = {m["reason"] for m in context.recent_memories}
         assert reasons <= {"recent", "relevant", "recent+relevant"}
         # The old physics memory must appear — via relevance, not recency.

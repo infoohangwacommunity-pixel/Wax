@@ -94,9 +94,7 @@ class TestGuardedGet:
     async def test_redirect_to_private_blocked(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.host == "public.example.com":
-                return httpx.Response(
-                    302, headers={"location": "http://169.254.169.254/meta"}
-                )
+                return httpx.Response(302, headers={"location": "http://169.254.169.254/meta"})
             return httpx.Response(200, text="should not happen")
 
         with pytest.raises(NetworkBoundaryError):
@@ -167,9 +165,7 @@ class TestConnectionPinning:
         private = [
             (2, 1, 6, "", ("127.0.0.1", 80)),
         ]
-        monkeypatch.setattr(
-            "wax.security.network.socket.getaddrinfo", lambda *a, **k: public
-        )
+        monkeypatch.setattr("wax.security.network.socket.getaddrinfo", lambda *a, **k: public)
         monkeypatch.setattr(
             "wax.security.network.asyncio.get_running_loop",
             lambda: type(
@@ -184,9 +180,7 @@ class TestConnectionPinning:
         # connection may only land on validated addresses.
         first = [(2, 1, 6, "", ("93.184.216.34", 80))]
         second = [(2, 1, 6, "", ("93.184.216.99", 80))]
-        monkeypatch.setattr(
-            "wax.security.network.socket.getaddrinfo", lambda *a, **k: first
-        )
+        monkeypatch.setattr("wax.security.network.socket.getaddrinfo", lambda *a, **k: first)
         monkeypatch.setattr(
             "wax.security.network.asyncio.get_running_loop",
             lambda: type(
@@ -196,9 +190,7 @@ class TestConnectionPinning:
         with pytest.raises(NetworkBoundaryError, match="rebinding"):
             await guarded_get("http://drift.example/")
 
-    async def test_pinned_connection_reaches_validated_address(
-        self, monkeypatch
-    ) -> None:
+    async def test_pinned_connection_reaches_validated_address(self, monkeypatch) -> None:
         # The happy path: the validated address is the one the stream
         # opens against (a literal IP — no further resolution).
         resolved = [(2, 1, 6, "", ("93.184.216.34", 80))]
@@ -211,9 +203,7 @@ class TestConnectionPinning:
             def get_extra(self, key):
                 return None
 
-        monkeypatch.setattr(
-            "wax.security.network.socket.getaddrinfo", lambda *a, **k: resolved
-        )
+        monkeypatch.setattr("wax.security.network.socket.getaddrinfo", lambda *a, **k: resolved)
 
         class _Loop:
             @staticmethod
@@ -224,9 +214,7 @@ class TestConnectionPinning:
             async def _noop():
                 return None
 
-        monkeypatch.setattr(
-            "wax.security.network.asyncio.get_running_loop", lambda: _Loop()
-        )
+        monkeypatch.setattr("wax.security.network.asyncio.get_running_loop", lambda: _Loop())
 
         backend = net_module._PinningNetworkBackend(frozenset({"93.184.216.34"}))
 

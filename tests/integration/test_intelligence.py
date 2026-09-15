@@ -86,9 +86,7 @@ class TestIntelligenceService:
     async def test_stream_routes_to_provider(self) -> None:
         svc = IntelligenceService(MockLLMProvider())
         chunks = []
-        async for chunk in svc.stream(
-            LLMRequest(messages=[LLMMessage(MessageRole.USER, "test")])
-        ):
+        async for chunk in svc.stream(LLMRequest(messages=[LLMMessage(MessageRole.USER, "test")])):
             chunks.append(chunk)
         assert len(chunks) > 0
 
@@ -104,9 +102,7 @@ class TestProviderIsolationArchitecture:
         import wax.core
 
         violations = []
-        for module_info in pkgutil.walk_packages(
-            wax.core.__path__, prefix="wax.core."
-        ):
+        for module_info in pkgutil.walk_packages(wax.core.__path__, prefix="wax.core."):
             try:
                 mod = importlib.import_module(module_info.name)
             except Exception:

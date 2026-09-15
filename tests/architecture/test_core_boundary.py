@@ -72,9 +72,7 @@ _FORBIDDEN_IO_MODULES: frozenset[str] = frozenset(
 def _walk_wax_core_modules() -> Iterable[str]:
     """Yield fully-qualified module names for every module inside wax.core."""
     yield "wax.core"
-    for module_info in pkgutil.walk_packages(
-        wax.core.__path__, prefix="wax.core."
-    ):
+    for module_info in pkgutil.walk_packages(wax.core.__path__, prefix="wax.core."):
         yield module_info.name
 
 
@@ -151,10 +149,10 @@ class TestCoreHasNoIO:
         """wax.core may only depend on stdlib, pydantic, and itself."""
         allowed_top_level: frozenset[str] = frozenset(
             {
-                "wax",            # itself
+                "wax",  # itself
                 "pydantic",
                 "pydantic_settings",
-                "__future__",     # stdlib — from __future__ import annotations
+                "__future__",  # stdlib — from __future__ import annotations
                 "typing",
                 "typing_extensions",
                 "dataclasses",
@@ -166,7 +164,7 @@ class TestCoreHasNoIO:
                 "functools",
                 "itertools",
                 "uuid",
-                "os",             # allowed in config.py for env reading
+                "os",  # allowed in config.py for env reading
                 "sys",
                 "json",
                 "re",
@@ -260,6 +258,5 @@ class TestNoDomainCoupling:
 
         assert not violations, (
             "wax.core contains forbidden education-domain identifiers "
-            "(violates INV-01):\n  "
-            + "\n  ".join(f"{f}: {c}" for f, c in violations)
+            "(violates INV-01):\n  " + "\n  ".join(f"{f}: {c}" for f, c in violations)
         )

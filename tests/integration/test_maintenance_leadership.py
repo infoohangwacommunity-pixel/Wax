@@ -71,7 +71,7 @@ class TestAcquireOnSingleWriter:
 class TestPassIntegration:
     async def test_leader_pass_runs_sweeps_and_reports_mode(self, fresh_db, test_settings):
         async with db_session() as session:
-            dead, _ = await ApprovalService(session).create_or_get_pending(
+            _dead, _ = await ApprovalService(session).create_or_get_pending(
                 principal_id="01P",
                 capability_name="cap.x",
                 action_kind="destructive",
@@ -86,9 +86,7 @@ class TestPassIntegration:
         assert result["expired_approvals"] == 1
         assert "skipped" not in result
 
-    async def test_follower_pass_skips_visibly(
-        self, fresh_db, test_settings, monkeypatch
-    ):
+    async def test_follower_pass_skips_visibly(self, fresh_db, test_settings, monkeypatch):
         async with db_session() as session:
             dead, _ = await ApprovalService(session).create_or_get_pending(
                 principal_id="01P",
@@ -103,13 +101,9 @@ class TestPassIntegration:
         from wax.runtime import maintenance
 
         async def _fake_acquire(settings):
-            return MaintenanceLeadership(
-                mode="postgres_advisory_lock", is_leader=False
-            )
+            return MaintenanceLeadership(mode="postgres_advisory_lock", is_leader=False)
 
-        monkeypatch.setattr(
-            maintenance.MaintenanceLeadership, "acquire", _fake_acquire
-        )
+        monkeypatch.setattr(maintenance.MaintenanceLeadership, "acquire", _fake_acquire)
         result = await run_maintenance_pass(test_settings)
         assert result["skipped"] == "not_leader"
         assert result["expired_approvals"] == 0
@@ -152,9 +146,7 @@ class TestConversationLifecycleSweep:
         from wax.identity.repository import PrincipalRepository
 
         async with db_session() as session:
-            principal = await PrincipalRepository(session).create_principal(
-                display_name="Lifer"
-            )
+            principal = await PrincipalRepository(session).create_principal(display_name="Lifer")
             repo = ConversationRepository(session)
             conv = await repo.create(principal.id, "whatsapp")
             stale_created = datetime.now(UTC) - timedelta(days=30)
@@ -178,9 +170,7 @@ class TestConversationLifecycleSweep:
         from wax.identity.repository import PrincipalRepository
 
         async with db_session() as session:
-            principal = await PrincipalRepository(session).create_principal(
-                display_name="Active"
-            )
+            principal = await PrincipalRepository(session).create_principal(display_name="Active")
             repo = ConversationRepository(session)
             conv = await repo.create(principal.id, "whatsapp")
             conv.last_message_at = datetime.now(UTC)

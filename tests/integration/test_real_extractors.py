@@ -26,9 +26,7 @@ def _make_png_with_text(text: str) -> bytes:
     img = Image.new("RGB", (600, 160), "white")
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48
-        )
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
     except OSError:  # pragma: no cover - font layout differs on some hosts
         font = ImageFont.load_default()
     draw.text((20, 50), text, fill="black", font=font)
@@ -57,8 +55,7 @@ def _make_pdf_with_text(text: str) -> bytes:
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
-        + stream + b"\nendstream",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
     out = io.BytesIO()
@@ -68,12 +65,12 @@ def _make_pdf_with_text(text: str) -> bytes:
         offsets.append(out.tell())
         out.write(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
     xref_pos = out.tell()
-    out.write(f"xref\n0 {len(objects)+1}\n".encode())
+    out.write(f"xref\n0 {len(objects) + 1}\n".encode())
     out.write(b"0000000000 65535 f \n")
     for off in offsets:
         out.write(f"{off:010d} 00000 n \n".encode())
     out.write(
-        f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode()
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode()
     )
     return out.getvalue()
 
@@ -117,9 +114,7 @@ class TestTesseractOCR:
     async def test_oversize_media_is_refused(self, monkeypatch):
         import shutil as shutil_mod
 
-        monkeypatch.setattr(
-            shutil_mod, "which", lambda name: "/usr/bin/tesseract"
-        )
+        monkeypatch.setattr(shutil_mod, "which", lambda name: "/usr/bin/tesseract")
         result = await TesseractImageExtractor().extract(
             MediaSource(
                 media_id="ocr-3",

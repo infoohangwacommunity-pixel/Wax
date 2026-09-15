@@ -78,7 +78,9 @@ def _destructive_bridge(services: RuntimeServices) -> RuntimeBridge:
             _noop_impl,
         )
     provider = MockLLMProvider(
-        scripted_tool_calls=[[ToolCall(id="call_1", name="test.wipe", arguments={"target": "tmp/old"})]]
+        scripted_tool_calls=[
+            [ToolCall(id="call_1", name="test.wipe", arguments={"target": "tmp/old"})]
+        ]
     )
     return RuntimeBridge(intelligence=IntelligenceService(provider), services=services)
 
@@ -163,14 +165,10 @@ class TestPendingLifecycle:
                 requested_by_execution_id=None,
             )
             await session.commit()
-            await ApprovalService(session).decide(
-                record.id, decided_by="01P", approve=True
-            )
+            await ApprovalService(session).decide(record.id, decided_by="01P", approve=True)
             await session.commit()
             with pytest.raises(ApprovalDecisionError):
-                await ApprovalService(session).decide(
-                    record.id, decided_by="01P", approve=True
-                )
+                await ApprovalService(session).decide(record.id, decided_by="01P", approve=True)
 
     async def test_consume_is_one_time(self, fresh_db) -> None:
         async with db_session() as session:
@@ -230,9 +228,7 @@ class TestPendingLifecycle:
             await session.commit()
             with pytest.raises(ApprovalDecisionError):
                 await ApprovalService(session).cancel(record.id, by_principal_id="01OTHER")
-            cancelled = await ApprovalService(session).cancel(
-                record.id, by_principal_id="01P"
-            )
+            cancelled = await ApprovalService(session).cancel(record.id, by_principal_id="01P")
             await session.commit()
         assert cancelled.status == "cancelled"
 
@@ -291,7 +287,7 @@ class TestBridgeApprovalFlow:
         #    pending is created; nothing silently re-runs.
         bridge = _destructive_bridge(services)
         async with db_session() as session:
-            response3 = await bridge.process(session, _request("msg-3"))
+            await bridge.process(session, _request("msg-3"))
             await session.commit()
         pendings = await _pending_ids()
         pending_now = [p for p in pendings if p.status == "pending"]
@@ -306,7 +302,7 @@ class TestBridgeApprovalFlow:
         approval = (await _pending_ids())[0]
 
         async with db_session() as session:
-            ok, message = await bridge.submit_approval_decision(
+            ok, _message = await bridge.submit_approval_decision(
                 session,
                 interface_kind=InterfaceKind.WHATSAPP,
                 sender_interface_id="+2348000000001",
@@ -376,9 +372,7 @@ class TestBridgeApprovalFlow:
 
     async def test_non_command_text_is_not_intercepted(self, fresh_db, services) -> None:
         bridge = _destructive_bridge(services)
-        request = _request("msg-cmd-3").model_copy(
-            update={"text": "hello there, what can you do?"}
-        )
+        request = _request("msg-cmd-3").model_copy(update={"text": "hello there, what can you do?"})
         async with db_session() as session:
             response = await bridge.match_approval_command(session, request)
         assert response is None
@@ -413,9 +407,9 @@ class TestApprovalCapabilities:
         names = {d.name for d in registry.list_capabilities()}
         assert "approval.list" in names
         assert "approval.cancel" in names
-        assert not any(
-            n.startswith("approval.") and "approve" in n for n in names
-        ), "no capability may grant approval"
+        assert not any(n.startswith("approval.") and "approve" in n for n in names), (
+            "no capability may grant approval"
+        )
 
         # List works for the owning principal.
         async with db_session() as session:

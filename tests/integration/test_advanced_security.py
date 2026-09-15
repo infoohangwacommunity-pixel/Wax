@@ -71,9 +71,7 @@ async def _create_principal(*, phone: str = "1234567890") -> str:
 class TestSecretLeakageScanning:
     """Law 4: Secrets never enter prompts, memory, logs, artifacts, commits."""
 
-    async def test_credential_vault_never_returns_secret_via_capabilities(
-        self, fresh_db, services
-    ):
+    async def test_credential_vault_never_returns_secret_via_capabilities(self, fresh_db, services):
         """Connect a credential, then verify the secret never appears
         in any capability output."""
         principal_id = await _create_principal()
@@ -207,12 +205,16 @@ class TestPromptInjectionBoundary:
 
         async with db_session() as s:
             approvals = (
-                await s.execute(
-                    select(PendingApprovalRecord).where(
-                        PendingApprovalRecord.principal_id == principal_id
+                (
+                    await s.execute(
+                        select(PendingApprovalRecord).where(
+                            PendingApprovalRecord.principal_id == principal_id
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(approvals) == 0, "Prompt injection created unauthorized approvals"
 
     async def test_credential_injection_attempt_rejected(self, fresh_db, services):
@@ -246,12 +248,16 @@ class TestPromptInjectionBoundary:
 
         async with db_session() as s:
             connections = (
-                await s.execute(
-                    select(PrincipalConnectionRecord).where(
-                        PrincipalConnectionRecord.principal_id == principal_id
+                (
+                    await s.execute(
+                        select(PrincipalConnectionRecord).where(
+                            PrincipalConnectionRecord.principal_id == principal_id
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert len(connections) == 0, "Chat-injected credential was registered"
 
 

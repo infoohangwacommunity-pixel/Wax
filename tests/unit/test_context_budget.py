@@ -2,7 +2,7 @@
 
 The evidence budget is no longer a fixed constant guess: when the
 selected provider advertises a context limit, the runtime derives the
-budget from it (limit − reserved output tokens, converted to chars);
+budget from it (limit - reserved output tokens, converted to chars);
 when it doesn't, the configured fallback applies. The assembler contract
 is unchanged — it fills whatever budget it is given, with honest
 truncation.
@@ -127,8 +127,7 @@ class TestNegotiation:
 class TestAssemblyDegradation:
     def _sections(self, count: int, size: int) -> list[EvidenceSection]:
         return [
-            EvidenceSection("memory", PRIORITY_MEMORY, f"m{i} " + "w" * size)
-            for i in range(count)
+            EvidenceSection("memory", PRIORITY_MEMORY, f"m{i} " + "w" * size) for i in range(count)
         ]
 
     def test_tiny_budget_still_delivers_objective(self) -> None:
@@ -191,9 +190,7 @@ class TestBridgeNegotiatedBudget:
         test_settings.__dict__["context_char_budget"] = 1_000_000  # huge fallback
         services = RuntimeServices.build(test_settings)
         provider = MockLLMProvider(context_limit_tokens=8_000)
-        bridge = RuntimeBridge(
-            intelligence=IntelligenceService(provider), services=services
-        )
+        bridge = RuntimeBridge(intelligence=IntelligenceService(provider), services=services)
         context = ContinuityContext(
             principal_id="p",
             is_new_conversation=False,

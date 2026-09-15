@@ -56,7 +56,6 @@ class StubAudioExtractor(MediaExtractor):
         )
 
 
-
 # Registry of default extractors. IMAGE and DOCUMENT are REAL
 # (self-gating) extractors; AUDIO stays an honest stub.
 DEFAULT_EXTRACTORS: dict[MediaKind, MediaExtractor] = {

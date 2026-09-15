@@ -86,9 +86,7 @@ class ObjectiveRepository:
         self._session = session
 
     async def create(self, payload: ObjectiveCreate) -> ObjectiveRecord:
-        kind_value = (
-            payload.kind.value if isinstance(payload.kind, ObjectiveKind) else payload.kind
-        )
+        kind_value = payload.kind.value if isinstance(payload.kind, ObjectiveKind) else payload.kind
         record = ObjectiveRecord(
             id=str(ULID()),
             principal_id=payload.principal_id,
@@ -150,9 +148,7 @@ class ObjectiveRepository:
             return False
         await self._session.refresh(record, attribute_names=["status"])
 
-        new_value = (
-            new_status.value if isinstance(new_status, ObjectiveStatus) else new_status
-        )
+        new_value = new_status.value if isinstance(new_status, ObjectiveStatus) else new_status
         allowed = _VALID_TRANSITIONS.get(record.status, set())
         if new_value not in allowed:
             log.warning(
@@ -173,9 +169,7 @@ class ObjectiveRepository:
         )
         return True
 
-    async def attach_execution(
-        self, objective_id: str, execution_id: str
-    ) -> bool:
+    async def attach_execution(self, objective_id: str, execution_id: str) -> bool:
         """Link an objective to the execution that is working on it."""
         record = await self.get(objective_id)
         if record is None:

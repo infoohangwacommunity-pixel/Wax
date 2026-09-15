@@ -70,9 +70,7 @@ async def _create_execution(
     """Create a pending execution and return its ID."""
     async with db_session() as s:
         repo = ExecutionRepository(s)
-        execution = await repo.create(
-            principal_id=principal_id, kind=kind, objective=objective
-        )
+        execution = await repo.create(principal_id=principal_id, kind=kind, objective=objective)
         await repo.start(execution.id)
         await s.commit()
         return execution.id
@@ -96,7 +94,9 @@ async def _record_step(
             kind=kind,
             inputs=inputs,
             outputs=outputs,
-            status=StepStatus(status) if status in ("succeeded", "failed", "pending", "running", "skipped") else status,
+            status=StepStatus(status)
+            if status in ("succeeded", "failed", "pending", "running", "skipped")
+            else status,
             capability_name=capability_name,
             error=error,
         )
@@ -256,9 +256,7 @@ class TestCrashAfterExternalEffect:
             assert execution.status == EXECUTION_STATUS_UNKNOWN_EFFECT
             assert "human review required" in execution.error
 
-    async def test_in_flight_capability_with_idempotency_lookup_succeeds(
-        self, fresh_db, services
-    ):
+    async def test_in_flight_capability_with_idempotency_lookup_succeeds(self, fresh_db, services):
         principal_id = await _create_principal()
         execution_id = await _create_execution(principal_id)
 
@@ -306,11 +304,16 @@ class TestCrashAfterExternalEffect:
 
             # The step's status was updated to succeeded
             steps = (
-                await s.execute(
-                    select(ExecutionStepRecord)
-                    .where(ExecutionStepRecord.execution_id == execution_id)
+                (
+                    await s.execute(
+                        select(ExecutionStepRecord).where(
+                            ExecutionStepRecord.execution_id == execution_id
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             cap_step = next(s for s in steps if s.kind == "capability.invoke")
             assert cap_step.status == "succeeded"
             assert cap_step.outputs == {"echo": {"message": "hi"}}
@@ -430,16 +433,12 @@ class TestClassifyCrash:
 
 
 class TestRecoverOrphansIntegration:
-    async def test_recover_orphans_classifies_each_crashed_execution(
-        self, fresh_db, services
-    ):
+    async def test_recover_orphans_classifies_each_crashed_execution(self, fresh_db, services):
         principal_id = await _create_principal()
         # Two crashed executions: one before model call, one after model response
         exec1 = await _create_execution(principal_id, objective="crash1")
         exec2 = await _create_execution(principal_id, objective="crash2")
-        await _record_step(
-            exec2, kind="llm.complete", status="succeeded"
-        )
+        await _record_step(exec2, kind="llm.complete", status="succeeded")
 
         # Make their started_at old enough to be considered stale
         cutoff = datetime.now(UTC) - timedelta(seconds=100)
