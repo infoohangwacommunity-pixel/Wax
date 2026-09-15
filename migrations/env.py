@@ -45,6 +45,7 @@ import wax.state.objective_models
 import wax.state.provisioning_models
 import wax.state.terminal_models
 import wax.state.workspace_models
+import wax.state.authority_broker_models  # noqa: F401  (ADR-0048 authority broker)
 import wax.runtime.shared_state  # noqa: F401  (ADR-0044 shared state models)
 import wax.state.work_models  # noqa: F401  (Phase R/V durable work)
 from wax.core.config import WaxSettings

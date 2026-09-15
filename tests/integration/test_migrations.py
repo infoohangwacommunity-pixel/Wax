@@ -229,7 +229,7 @@ class TestUpgradeFromProductionSchema:
         db_file = tmp_path / "ledgerdown.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-7")
+        _alembic(url, "downgrade", "-8")
 
         settings = __import__(
             "wax.core.config", fromlist=["settings_for_testing"]

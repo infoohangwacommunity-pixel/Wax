@@ -31,6 +31,7 @@ from wax.capabilities.runtime_capabilities import register_runtime_capabilities
 from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
+from wax.runtime.authority.broker import AuthorityBroker
 from wax.runtime.connectors.service import ConnectorRuntime
 from wax.runtime.delivery import DeliveryRouter
 from wax.runtime.environment.planner import EnvironmentPlanner
@@ -87,6 +88,11 @@ class RuntimeServices:
     # (GitHub, GitLab, npm, PyPI, Railway, etc.) through the
     # environment — no architectural change when a new platform appears.
     connector_runtime: ConnectorRuntime | None = field(default=None)
+    # ADR-0048 (P0-Authority): authority broker. The SOLE path through
+    # which the intelligence requests external authority. The model
+    # NEVER supplies a raw secret — it requests a handoff; the user
+    # completes it through the secure control plane.
+    authority_broker: AuthorityBroker | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
@@ -128,6 +134,7 @@ class RuntimeServices:
             environment_planner=EnvironmentPlanner(settings),
             credential_vault=CredentialVault(settings),
             connector_runtime=ConnectorRuntime(settings),
+            authority_broker=AuthorityBroker(),
         )
         # Runtime mechanisms exposed to the AI as capabilities
         # (work.schedule / work.cancel / work.list / message.send) —
