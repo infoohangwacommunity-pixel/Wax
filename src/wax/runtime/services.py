@@ -102,11 +102,25 @@ class RuntimeServices:
         registry = CapabilityRegistry()
         register_builtins(registry)
 
+        # P0-10: Use DB-backed rate limiter + cost protector for multi-instance
+        # correctness when the database is PostgreSQL. For SQLite/dev, keep
+        # the in-memory versions (they're process-local but that's fine for
+        # single-process dev mode).
+        db_url = getattr(settings, 'database_url', '') or ''
+        if db_url.startswith('postgresql'):
+
+            rate_limiter_instance = None  # DB-backed, checked per-session
+            cost_protector_instance = None  # DB-backed, checked per-session
+            log.info('runtime.shared_state_enabled', backend='postgresql')
+        else:
+            rate_limiter_instance = RateLimiter()
+            cost_protector_instance = CostProtector()
+
         services = cls(
             settings=settings,
             metrics=get_runtime_metrics(),
-            rate_limiter=RateLimiter(),
-            cost_protector=CostProtector(),
+            rate_limiter=rate_limiter_instance or RateLimiter(),
+            cost_protector=cost_protector_instance or CostProtector(),
             abuse_detector=AbuseDetector(),
             input_sanitizer=InputSanitizer(),
             resource_accountant=ResourceAccountant(),

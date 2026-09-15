@@ -74,6 +74,11 @@ class CapabilityDescriptor(BaseModel):
         default=False,
         description="Whether this capability causes irreversible effects",
     )
+    sensitive_inputs: tuple[str, ...] = Field(
+        default=(),
+        description="P0-5: Input field names whose values must be redacted "
+        "before persistence in execution_steps (e.g. credential secrets)",
+    )
 
 
 class CapabilityInvocationRequest(BaseModel):

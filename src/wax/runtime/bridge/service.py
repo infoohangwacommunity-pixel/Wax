@@ -782,10 +782,19 @@ class RuntimeBridge:
         async def _finalize(
             result: CapabilityInvocationResult,
         ) -> CapabilityInvocationResult:
+            # P0-5: Redact sensitive input fields before persisting to
+            # execution_steps. The descriptor declares which fields are
+            # sensitive (e.g. credential.connect's "secret" field).
+            step_inputs = dict(call.arguments)
+            if descriptor is not None and descriptor.sensitive_inputs:
+                for field_name in descriptor.sensitive_inputs:
+                    if field_name in step_inputs:
+                        step_inputs[field_name] = "[REDACTED]"
+
             await exec_repo.record_step(
                 execution_id,
                 kind="capability.invoke",
-                inputs=dict(call.arguments),
+                inputs=step_inputs,
                 outputs=result.outputs,
                 status=(StepStatus.SUCCEEDED if result.outcome == "success" else StepStatus.FAILED),
                 capability_name=call.name,
@@ -795,6 +804,7 @@ class RuntimeBridge:
             return result
 
         # 1. Existence + status
+        descriptor: Any = None
         try:
             descriptor, _impl = self._services.capability_registry.get(call.name)
         except Exception:
