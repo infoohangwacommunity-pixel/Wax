@@ -23,6 +23,18 @@
   </div>
   {% endif %}
 
+  {% if bulk_flash %}
+  <div class="gc-flash" aria-live="polite">
+    {% if bulk_flash.kind == "ok" %}
+    <div class="ok-note">Bulk cancel finished: <strong>{{ bulk_flash.cancelled }}</strong> handoff{{ "s" if bulk_flash.cancelled != 1 }} cancelled{% if bulk_flash.failed %}, <strong>{{ bulk_flash.failed }}</strong> skipped (already closed){% endif %}.</div>
+    {% elif bulk_flash.kind == "error" %}
+    <div class="error">{{ bulk_flash.message }}</div>
+    {% else %}
+    <div class="banner" style="margin:0">{{ bulk_flash.message }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="cards">
     <div class="card{% if open_count > 0 %} bad{% endif %}" data-card="open">
       <div class="k">Open handoffs</div>
@@ -94,8 +106,9 @@
         {% if until_filter %}<input type="hidden" name="until" value="{{ until_filter }}">{% endif %}
         <input type="search" id="q" name="q" value="{{ q_filter }}" maxlength="100"
                placeholder="Search purpose, origin, ID…" aria-label="Search handoffs"
-               title="Literal substring match over purpose and origin, or ID prefix">
+               title="Literal substring match over purpose and origin, or ID prefix. Press / to focus.">
         <button type="submit">Search</button>
+        <kbd class="kbd" title="Press / to focus search" aria-hidden="true">/</kbd>
         {% if q_filter %}
         <a class="chip-clear" href="/control?status={{ status_filter }}{% if date_only_qs %}&amp;{{ date_only_qs }}{% endif %}" title="Remove the search">clear ×</a>
         {% endif %}
@@ -130,15 +143,20 @@
   </form>
 
   {% if handoffs %}
+  {% set page_open_rows = handoffs | selectattr("open") | list | length %}
+  <form method="post" action="/control/handoffs/cancel-bulk" id="bulk-form">
+    <input type="hidden" name="csrf_token" value="{{ bulk_csrf }}">
   <table>
     <thead>
       <tr>
+        {% if page_open_rows %}<th class="bulk-col"><input type="checkbox" id="bulk-all" title="Select all open rows on this page" aria-label="Select all open handoffs on this page"></th>{% endif %}
         <th>ID</th><th>Purpose</th><th>Kind</th><th>Status</th><th>Created</th><th>Expires</th><th></th>
       </tr>
     </thead>
     <tbody>
       {% for h in handoffs %}
       <tr class="{% if h.open %}row-open{% elif h.display_status == "completed" %}row-completed{% elif h.display_status == "expired" %}row-expired{% endif %}">
+        {% if page_open_rows %}<td class="bulk-col">{% if h.open %}<input type="checkbox" name="handoff_ids" value="{{ h.id }}" aria-label="Select handoff {{ h.id[:12] }} for cancellation">{% endif %}</td>{% endif %}
         <td class="mono nowrap"><a class="link" href="/control/handoffs/{{ h.id }}" title="{{ h.id }}">{{ h.id[:12] }}…</a></td>
         <td class="truncate" title="{{ h.purpose }}">{{ h.purpose }}</td>
         <td><span class="kind">{{ h.kind }}</span></td>
@@ -150,6 +168,16 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <div class="bulk-bar" id="bulk-bar" hidden>
+    <span id="bulk-count">0 selected</span>
+    <button type="submit" class="btn-danger"
+            onclick="return confirm('Cancel the selected open handoffs? Waiting work is woken and told immediately; this cannot be undone.')">
+      Cancel selected
+    </button>
+    <span class="hint">only open handoffs can be cancelled · one audit entry each</span>
+  </div>
+  </form>
   {% else %}
   <div class="empty">
     <span class="big" aria-hidden="true">◻</span>
@@ -193,6 +221,43 @@
   {% endif %}
 
   <div id="poll-state" hidden data-open-count="{{ open_count }}" data-total-count="{{ total_count }}"></div>
+  <script>
+    // Bulk cancel: the header checkbox toggles all open rows; the bar
+    // appears only while a selection exists. The live poller skips its
+    // tick while a selection is pending so it can't wipe the checkboxes.
+    (function () {
+      var form = document.getElementById("bulk-form");
+      if (!form) return;
+      var bar = document.getElementById("bulk-bar");
+      var count = document.getElementById("bulk-count");
+      var all = document.getElementById("bulk-all");
+      function boxes() {
+        return [].slice.call(form.querySelectorAll('input[name="handoff_ids"]'));
+      }
+      function sync() {
+        var n = boxes().filter(function (b) { return b.checked; }).length;
+        if (bar) bar.hidden = n === 0;
+        if (count) count.textContent = n + " selected";
+        if (all) all.checked = n > 0 && n === boxes().length;
+      }
+      form.addEventListener("change", function (ev) {
+        if (ev.target === all) {
+          boxes().forEach(function (b) { b.checked = all.checked; });
+        }
+        if (ev.target === all || ev.target.name === "handoff_ids") sync();
+      });
+      sync();
+    })();
+
+    // Press "/" anywhere (outside a field) to jump to the search box.
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "/" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      var t = ev.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      var q = document.getElementById("q");
+      if (q) { ev.preventDefault(); q.focus(); q.select(); }
+    });
+  </script>
   <script>
     // Live control plane — one poller, two modes, decided by state:
     //
@@ -328,6 +393,8 @@
       }
       function patchHTML() {
         if (document.hidden) return;
+        // never wipe a pending bulk-cancel selection — skip this tick
+        if (document.querySelector('input[name="handoff_ids"]:checked')) return;
         var beforeOpen = pollState();
         fetch(location.href, { headers: { "Accept": "text/html" } })
           .then(function (r) {

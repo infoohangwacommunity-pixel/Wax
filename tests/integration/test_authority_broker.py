@@ -394,6 +394,51 @@ class TestAuthorityRevoke:
             material = await s.get(AuthorityMaterialRecord, grant.authority_material_id)
             assert material.status == "revoked"
 
+    async def test_revoke_emits_wakeup_signal(self, fresh_db, services):
+        """Both revoke paths append authority.grant_revoked:{handle} so
+        work holding the ref can observe the loss immediately."""
+        from wax.state.work_models import RuntimeSignalRecord
+
+        principal_id = await _create_principal()
+        broker = services.authority_broker
+
+        async with db_session() as s:
+            result = await broker.request_authority(
+                s,
+                principal_id=principal_id,
+                request=AuthorityRequest(purpose="signal probe", human_required=True),
+            )
+            await s.commit()
+            submit_result = await broker.submit_handoff(
+                s,
+                handoff_id=result.handoff_ref,
+                principal_id=principal_id,
+                secret_value="test-secret",
+            )
+            await s.commit()
+            authority_ref = submit_result["authority_ref"]
+
+        async with db_session() as s:
+            await broker.revoke_authority(s, authority_ref=authority_ref, principal_id=principal_id)
+            await s.commit()
+
+        async with db_session() as s:
+            signals = (
+                (
+                    await s.execute(
+                        select(RuntimeSignalRecord).where(
+                            RuntimeSignalRecord.name == f"authority.grant_revoked:{authority_ref}"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(signals) == 1
+            assert signals[0].emitted_by == "authority_broker"
+            assert signals[0].payload["revoked_by"] == "principal"
+            assert signals[0].payload["handle"] == authority_ref
+
 
 class TestAuthorityCancel:
     async def test_cancel_marks_open_handoff_cancelled(self, fresh_db, services):

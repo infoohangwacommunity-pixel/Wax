@@ -229,6 +229,20 @@
     .badge.completed { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
     .badge.rejected, .badge.failed, .badge.expired, .badge.revoked { color: var(--bad); background: var(--bad-soft); border-color: rgba(248,113,113,.35); }
     .badge.cancelled { color: var(--muted); background: rgba(151,160,176,.08); border-color: rgba(151,160,176,.3); }
+    /* audit outcome badges (success/denied/failed) */
+    .badge.audit-success { color: var(--ok); background: var(--ok-soft); border-color: rgba(16,185,129,.35); }
+    .badge.audit-denied { color: var(--warn); background: var(--warn-soft); border-color: rgba(245,158,11,.35); }
+    .badge.audit-failed { color: var(--bad); background: var(--bad-soft); border-color: rgba(248,113,113,.35); }
+    /* audit event-kind chips, colored by family */
+    .ev-chip {
+      display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px;
+      font-family: var(--mono); font-size: 11.5px; font-weight: 600; letter-spacing: .2px;
+      border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--muted); white-space: nowrap;
+    }
+    .ev-chip.ev-auth { color: var(--info); border-color: rgba(45,212,191,.35); background: var(--info-soft); }
+    .ev-chip.ev-handoff { color: var(--accent); border-color: rgba(217,119,6,.35); background: var(--accent-soft); }
+    .ev-chip.ev-grant { color: var(--ok); border-color: rgba(16,185,129,.35); background: var(--ok-soft); }
+    .ev-chip.ev-maintenance { color: var(--muted); }
     .kind {
       display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px;
       font-size: 12px; font-family: var(--mono); border: 1px solid var(--border-strong);
@@ -277,6 +291,22 @@
     }
     .btn-danger:hover { background: rgba(248,113,113,.18); border-color: var(--bad); filter: none; }
     .inline-form { display: inline; margin: 0; }
+    /* bulk cancel bar + checkbox column */
+    .bulk-bar {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      margin: 12px 0 0; padding: 10px 14px;
+      background: var(--bad-soft); border: 1px solid rgba(248,113,113,.4); border-radius: var(--radius-sm);
+    }
+    .bulk-bar #bulk-count { font-weight: 650; font-size: 13px; color: var(--bad); }
+    .bulk-bar .btn-danger { margin: 0; }
+    .bulk-col { width: 36px; text-align: center; padding-left: 12px; padding-right: 6px; }
+    .bulk-col input[type="checkbox"] {
+      width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; margin: 0; vertical-align: middle;
+    }
+    kbd.kbd {
+      font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px;
+      border: 1px solid var(--border-strong); border-bottom-width: 2px; background: var(--panel-2); color: var(--muted);
+    }
     .card-link { color: var(--ok); text-decoration: none; font-weight: 600; }
     .card-link:hover { text-decoration: underline; text-underline-offset: 3px; }
     .search-form { display: inline-flex; gap: 7px; align-items: center; margin: 0; }
@@ -542,6 +572,7 @@
     <nav>
       <a href="/control"{% block nav_dashboard %}{% endblock %}>Dashboard</a>
       <a href="/control/grants"{% block nav_grants %}{% endblock %}>Grants</a>
+      <a href="/control/audit"{% block nav_audit %}{% endblock %}>Audit</a>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark theme">
         <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"/></svg>
         <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 14.2A8.8 8.8 0 0 1 9.8 3.4a8.8 8.8 0 1 0 10.8 10.8Z"/></svg>
@@ -565,13 +596,26 @@
     // right theme before first paint; this only handles the click.
     (function () {
       var btn = document.getElementById("theme-toggle");
-      if (!btn) return;
-      btn.addEventListener("click", function () {
-        var root = document.documentElement;
-        var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
-        root.setAttribute("data-theme", next);
-        try { localStorage.setItem("wax-theme", next); } catch (e) {}
-      });
+      if (btn) {
+        btn.addEventListener("click", function () {
+          var root = document.documentElement;
+          var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+          root.setAttribute("data-theme", next);
+          try { localStorage.setItem("wax-theme", next); } catch (e) {}
+        });
+      }
+      // While no explicit choice is stored, follow live OS theme changes.
+      try {
+        var mq = window.matchMedia("(prefers-color-scheme: dark)");
+        var follow = function (ev) {
+          var stored = null;
+          try { stored = localStorage.getItem("wax-theme"); } catch (e) {}
+          if (stored) return; // an explicit choice always wins
+          document.documentElement.setAttribute("data-theme", ev.matches ? "dark" : "light");
+        };
+        if (mq.addEventListener) mq.addEventListener("change", follow);
+        else if (mq.addListener) mq.addListener(follow);
+      } catch (e) {}
     })();
   </script>
 </body>

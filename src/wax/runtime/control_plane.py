@@ -61,6 +61,7 @@ import re
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,7 @@ from wax.runtime.authority.contracts import (
     MaterialType,
 )
 from wax.runtime.logging import get_logger
+from wax.state.audit_models import AuditEvent
 from wax.state.authority_broker_models import (
     AuthorityGrantRecord,
     HumanHandoffRecord,
@@ -150,6 +152,16 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # prefix. Capped — a needle this long is pasted noise, not a search.
 _SEARCH_MAX_LEN = 100
 
+# Audit-page tabs (?kind= on /control/audit). Each tab is a prefix over
+# the event_kind namespace written by this module.
+_AUDIT_KIND_FILTERS = ("all", "login", "handoffs", "grants", "maintenance")
+_AUDIT_KIND_PREFIX = {
+    "login": "control.login",
+    "handoffs": "control.handoff",
+    "grants": "control.grant",
+    "maintenance": "control.blob_gc",
+}
+
 _MATERIAL_LABELS = {
     MaterialType.OPAQUE_SECRET.value: "Opaque secret (API key, password, token)",
     MaterialType.SESSION_MATERIAL.value: "Session material (cookie blob, session id)",
@@ -215,6 +227,43 @@ _login_limiter = LoginRateLimiter()
 def _client_ip(request: Request) -> str:
     client = request.client
     return client.host if client is not None else "unknown"
+
+
+async def _audit_action(
+    session,
+    *,
+    event_kind: str,
+    outcome: str,
+    payload: dict[str, Any] | None = None,
+    request: Request | None = None,
+    actor_kind: str = "human",
+) -> None:
+    """Append a control-plane row to the append-only audit_events ledger.
+
+    INV-06: every security-sensitive action must be attributable. Operators
+    authenticate with the shared deployment token, so there is no principal
+    row — the client IP + auth surface travels in the payload instead. The
+    write shares the caller's transaction, so the audit row exists if and
+    only if the action commits. A failing audit write NEVER blocks the
+    action it records (the gap is loud in logs, not silent in code).
+    Payloads are metadata-only — never secrets, never ciphertext.
+    """
+    from wax.observability.audit import record_audit_event
+
+    enriched = dict(payload or {})
+    if request is not None:
+        enriched.setdefault("client_ip", _client_ip(request))
+    try:
+        await record_audit_event(
+            session,
+            actor_principal_id=None,
+            actor_kind=actor_kind,
+            event_kind=event_kind,
+            outcome=outcome,
+            payload=enriched,
+        )
+    except Exception:
+        log.warning("control.audit_write_failed", event_kind=event_kind)
 
 
 class ControlPlaneAuth:
@@ -371,6 +420,7 @@ def register_control_plane(app) -> None:
             status_filter = "all"
         gc_flash = (request.query_params.get("gc") or "").strip()
         gc_result = _parse_gc_flash(gc_flash)
+        bulk_flash = _parse_bulk_flash((request.query_params.get("bulk") or "").strip())
         try:
             page = int(request.query_params.get("page") or "1")
         except ValueError:
@@ -455,6 +505,8 @@ def register_control_plane(app) -> None:
                 "blob_bytes": blob_stats["bytes"] if blob_stats else None,
                 "blob_gc_enabled": bool(getattr(settings, "blob_gc_enabled", False)),
                 "gc_result": gc_result,
+                "bulk_flash": bulk_flash,
+                "bulk_csrf": auth.make_csrf("cancel"),
                 "gc_csrf": auth.make_csrf("gc") if blob_stats is not None else "",
                 "runtime_counters": _runtime_counters(app),
                 "wax_version": _wax_version,
@@ -642,6 +694,22 @@ def register_control_plane(app) -> None:
                 else AuthorityBroker()
             )
             revoked = await broker.operator_revoke_authority(session, grant_id=grant_id)
+            if revoked:
+                await _audit_action(
+                    session,
+                    event_kind="control.grant_revoked",
+                    outcome="success",
+                    payload={"grant_id": grant_id},
+                    request=request,
+                )
+            else:
+                await _audit_action(
+                    session,
+                    event_kind="control.grant_revoked",
+                    outcome="failed",
+                    payload={"grant_id": grant_id, "reason": "unknown_grant"},
+                    request=request,
+                )
             await session.commit()
 
         if not revoked:
@@ -649,6 +717,150 @@ def register_control_plane(app) -> None:
             return _redirect("/control/grants?revoke=unknown")
         log.info("control.grant_revoked")
         return _redirect("/control/grants?revoked=1")
+
+    @app.get("/control/audit", tags=["control"], include_in_schema=False)
+    async def control_audit(request: Request):
+        """Operator audit trail (same auth as the dashboard).
+
+        Renders the append-only audit_events rows this module writes on
+        every security-sensitive action (INV-06): sign-ins/out, handoff
+        submits/cancels, grant revocations, blob GC runs. Metadata-only —
+        payloads never contain secrets or ciphertext.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        kind_filter = (request.query_params.get("kind") or "all").strip()
+        if kind_filter not in _AUDIT_KIND_FILTERS:
+            kind_filter = "all"
+        try:
+            page = int(request.query_params.get("page") or "1")
+        except ValueError:
+            page = 1
+        page = max(1, page)
+
+        async with db_session() as session:
+            base = (
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_kind.like("control.%"))
+            )
+            total = (await session.execute(base)).scalar_one()
+            prefix = _AUDIT_KIND_PREFIX.get(kind_filter)
+            where = AuditEvent.event_kind.like(f"{prefix}%") if prefix else None
+            filtered_count = total
+            if where is not None:
+                filtered_count = (
+                    await session.execute(select(func.count()).select_from(AuditEvent).where(where))
+                ).scalar_one()
+            pages = max(1, math.ceil(filtered_count / _PAGE_SIZE))
+            if page > pages:
+                page = pages
+
+            query = (
+                select(AuditEvent)
+                .where(AuditEvent.event_kind.like("control.%"))
+                .order_by(AuditEvent.created_at.desc())
+            )
+            if where is not None:
+                query = query.where(where)
+            rows = (
+                (await session.execute(query.offset((page - 1) * _PAGE_SIZE).limit(_PAGE_SIZE)))
+                .scalars()
+                .all()
+            )
+            await session.commit()
+
+        return _html_response(
+            request,
+            "audit.html",
+            {
+                "events": [_audit_view(e) for e in rows],
+                "kind_filter": kind_filter,
+                "kind_filters": _AUDIT_KIND_FILTERS,
+                "total_count": total,
+                "filtered_count": filtered_count,
+                "showing_from": (page - 1) * _PAGE_SIZE + 1 if rows else 0,
+                "showing_to": (page - 1) * _PAGE_SIZE + len(rows),
+                "page": page,
+                "pages": pages,
+                "page_size": _PAGE_SIZE,
+                "page_window": _page_window(page, pages),
+                "wax_version": _wax_version,
+            },
+        )
+
+    @app.post("/control/handoffs/cancel-bulk", tags=["control"], include_in_schema=False)
+    async def control_handoff_cancel_bulk(request: Request):
+        """Operator cancels several OPEN handoffs in one go (noise cleanup).
+
+        Reuses the "cancel" CSRF scope (same action, same authority) and
+        the same broker transition as the single cancel — one audit event
+        per cancelled handoff, one summary flash. Capped at one page of
+        rows (50): bulk housekeeping, not bulk deletion.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        form = await request.form()
+        if not auth.verify_csrf(str(form.get("csrf_token", "") or ""), scope="cancel"):
+            log.warning("control.cancel_bulk_csrf_rejected")
+            return _redirect("/control?bulk=stale_token")
+
+        ids = [v.strip() for v in form.getlist("handoff_ids") if isinstance(v, str)]
+        ids = [i for i in ids if i][:_PAGE_SIZE]
+        if not ids:
+            return _redirect("/control?bulk=none")
+
+        from wax.runtime.authority.broker import AuthorityBroker
+
+        services = getattr(app.state, "services", None)
+        broker = (
+            services.authority_broker
+            if services is not None and services.authority_broker is not None
+            else AuthorityBroker()
+        )
+
+        cancelled: list[str] = []
+        failed = 0
+        async with db_session() as session:
+            for hid in ids:
+                handoff = await session.get(HumanHandoffRecord, hid)
+                if handoff is None:
+                    failed += 1
+                    continue
+                try:
+                    await broker.cancel_handoff(
+                        session,
+                        handoff_id=handoff.id,
+                        principal_id=handoff.principal_id,
+                        reason_safe="Cancelled in bulk via the control plane.",
+                    )
+                except ValueError:
+                    # raised BEFORE any mutation (unknown/wrong status) —
+                    # nothing to roll back for this row
+                    failed += 1
+                    continue
+                await _audit_action(
+                    session,
+                    event_kind="control.handoff_cancelled",
+                    outcome="success",
+                    payload={"handoff_id": handoff.id, "reason": "bulk_cancel"},
+                    request=request,
+                )
+                cancelled.append(handoff.id)
+            await session.commit()
+
+        log.info("control.handoff_cancelled_bulk", cancelled=len(cancelled), failed=failed)
+        return _redirect(f"/control?bulk=cancelled:{len(cancelled)},failed:{failed}")
 
     @app.get("/control/login", tags=["control"], include_in_schema=False)
     async def control_login_form(request: Request):
@@ -682,6 +894,15 @@ def register_control_plane(app) -> None:
         ip = _client_ip(request)
         if _login_limiter.blocked(ip):
             log.warning("control.login_rate_limited", client_ip=ip)
+            async with db_session() as session:
+                await _audit_action(
+                    session,
+                    event_kind="control.login",
+                    outcome="denied",
+                    payload={"reason": "rate_limited"},
+                    request=request,
+                )
+                await session.commit()
             return _html_response(
                 request,
                 "login.html",
@@ -711,6 +932,15 @@ def register_control_plane(app) -> None:
         if not provided or not hmac.compare_digest(provided, auth.token):
             _login_limiter.record_failure(ip)
             log.warning("control.login_failed", client_ip=ip)
+            async with db_session() as session:
+                await _audit_action(
+                    session,
+                    event_kind="control.login",
+                    outcome="denied",
+                    payload={"reason": "invalid_token"},
+                    request=request,
+                )
+                await session.commit()
             return _html_response(
                 request, "login.html", {"dev_open": False, "error": "Invalid access token."}, 401
             )
@@ -724,10 +954,27 @@ def register_control_plane(app) -> None:
             samesite="strict",
             secure=settings.is_production,
         )
+        async with db_session() as session:
+            await _audit_action(
+                session,
+                event_kind="control.login",
+                outcome="success",
+                payload={"via": "token"},
+                request=request,
+            )
+            await session.commit()
         return response
 
     @app.post("/control/logout", tags=["control"], include_in_schema=False)
     async def control_logout(request: Request):
+        async with db_session() as session:
+            await _audit_action(
+                session,
+                event_kind="control.logout",
+                outcome="success",
+                request=request,
+            )
+            await session.commit()
         response = _redirect("/control/login")
         response.delete_cookie(_SESSION_COOKIE)
         return response
@@ -824,6 +1071,14 @@ def register_control_plane(app) -> None:
 
             if not auth.verify_csrf(csrf_token):
                 log.warning("control.submit_csrf_rejected", handoff_id=handoff_id)
+                await _audit_action(
+                    session,
+                    event_kind="control.handoff_submitted",
+                    outcome="denied",
+                    payload={"handoff_id": handoff_id, "reason": "stale_csrf"},
+                    request=request,
+                )
+                await session.commit()
                 view = _handoff_view(handoff)
                 return _html_response(
                     request,
@@ -882,6 +1137,15 @@ def register_control_plane(app) -> None:
             except ValueError as e:
                 await session.rollback()
                 log.warning("control.submit_rejected", handoff_id=handoff_id, reason=str(e)[:200])
+                async with db_session() as audit_session:
+                    await _audit_action(
+                        audit_session,
+                        event_kind="control.handoff_submitted",
+                        outcome="failed",
+                        payload={"handoff_id": handoff_id, "reason": str(e)[:200]},
+                        request=request,
+                    )
+                    await audit_session.commit()
                 fresh = await session.get(HumanHandoffRecord, handoff_id)
                 view = _handoff_view(fresh) if fresh is not None else _handoff_view(handoff)
                 return _html_response(
@@ -900,6 +1164,15 @@ def register_control_plane(app) -> None:
         # SUCCESS: the secret is already encrypted. From here on only
         # opaque handles exist — the submitted value is NEVER echoed.
         log.info("control.handoff_submitted", handoff_id=handoff_id)
+        async with db_session() as audit_session:
+            await _audit_action(
+                audit_session,
+                event_kind="control.handoff_submitted",
+                outcome="success",
+                payload={"handoff_id": handoff_id, "material_type": material_type},
+                request=request,
+            )
+            await audit_session.commit()
         metrics = getattr(getattr(app.state, "services", None), "metrics", None)
         if metrics is not None:
             metrics.control_handoff_submitted()
@@ -949,10 +1222,26 @@ def register_control_plane(app) -> None:
                     principal_id=handoff.principal_id,
                     reason_safe=reason,
                 )
+                await _audit_action(
+                    session,
+                    event_kind="control.handoff_cancelled",
+                    outcome="success",
+                    payload={"handoff_id": handoff.id, "reason": (reason or "")[:200]},
+                    request=request,
+                )
                 await session.commit()
             except ValueError:
                 await session.rollback()
                 log.warning("control.cancel_rejected", handoff_id=handoff_id)
+                async with db_session() as audit_session:
+                    await _audit_action(
+                        audit_session,
+                        event_kind="control.handoff_cancelled",
+                        outcome="failed",
+                        payload={"handoff_id": handoff_id, "reason": "not_cancellable"},
+                        request=request,
+                    )
+                    await audit_session.commit()
                 return _redirect(f"/control/handoffs/{handoff_id}?cancel=error")
 
         log.info("control.handoff_cancelled", handoff_id=handoff_id)
@@ -1043,6 +1332,18 @@ def register_control_plane(app) -> None:
                 removed=gc["removed"], reclaimed_bytes=gc["reclaimed_bytes"]
             )
         log.info("control.gc_run", removed=gc["removed"], reclaimed_bytes=gc["reclaimed_bytes"])
+        async with db_session() as session:
+            await _audit_action(
+                session,
+                event_kind="control.blob_gc",
+                outcome="success",
+                payload={
+                    "removed": gc["removed"],
+                    "reclaimed_bytes": gc["reclaimed_bytes"],
+                },
+                request=request,
+            )
+            await session.commit()
         return _redirect(f"/control?gc={gc['removed']}:{gc['reclaimed_bytes']}")
 
 
@@ -1349,6 +1650,110 @@ def _parse_gc_flash(value: str) -> dict[str, Any] | None:
         if removed_s.isdigit() and bytes_s.isdigit():
             return {"kind": "ok", "removed": int(removed_s), "reclaimed_bytes": int(bytes_s)}
     return None
+
+
+def _parse_bulk_flash(value: str) -> dict[str, Any] | None:
+    """Parse the ?bulk= redirect flash into a displayable summary."""
+    if not value:
+        return None
+    if value == "none":
+        return {"kind": "info", "message": "No handoffs were selected, so nothing was cancelled."}
+    if value == "stale_token":
+        return {
+            "kind": "error",
+            "message": "The bulk-cancel confirmation was stale — reload and select again.",
+        }
+    cancelled = failed = None
+    for part in value.split(","):
+        if part.startswith("cancelled:"):
+            with suppress(ValueError):
+                cancelled = int(part.split(":", 1)[1])
+        elif part.startswith("failed:"):
+            with suppress(ValueError):
+                failed = int(part.split(":", 1)[1])
+    if cancelled is None and failed is None:
+        return None
+    return {"kind": "ok", "cancelled": cancelled or 0, "failed": failed or 0}
+
+
+def _audit_view(e: AuditEvent) -> dict[str, Any]:
+    """Display projection of one audit event: a human sentence built from
+    the safe payload (identities shortened), plus color hints for the UI."""
+    payload = e.payload if isinstance(e.payload, dict) else {}
+    kind = e.event_kind
+    outcome = e.outcome if e.outcome in ("success", "denied", "failed") else "success"
+
+    def _tail(value: Any) -> str:
+        text = str(value or "")
+        return text[-8:] if len(text) > 8 else text
+
+    detail: str
+    if kind == "control.login":
+        if outcome == "success":
+            detail = "Signed in with the access token"
+        elif payload.get("reason") == "rate_limited":
+            detail = "Sign-in refused — too many failed attempts (rate limited)"
+        else:
+            detail = "Sign-in refused — invalid access token"
+    elif kind == "control.logout":
+        detail = "Signed out"
+    elif kind == "control.handoff_submitted":
+        hid = str(payload.get("handoff_id") or "")
+        if outcome == "success":
+            detail = (
+                f"Submitted {payload.get('material_type', 'material')} for handoff …{_tail(hid)}"
+            )
+        elif payload.get("reason") == "stale_csrf":
+            detail = f"Submit refused — stale form token (handoff …{_tail(hid)})"
+        else:
+            detail = f"Submit failed — {payload.get('reason', 'unknown')}"
+    elif kind == "control.handoff_cancelled":
+        hid = str(payload.get("handoff_id") or "")
+        if outcome == "success":
+            detail = f"Cancelled handoff …{_tail(hid)}"
+            reason = str(payload.get("reason") or "")
+            if reason and reason != "bulk_cancel":
+                detail += f" — {reason[:120]}"
+            elif reason == "bulk_cancel":
+                detail += " (bulk cancel)"
+        else:
+            detail = f"Cancel failed — {payload.get('reason', 'unknown')}"
+    elif kind == "control.grant_revoked":
+        gid = str(payload.get("grant_id") or "")
+        if outcome == "success":
+            detail = f"Revoked authority grant …{_tail(gid)}"
+        else:
+            detail = "Revoke failed — unknown grant"
+    elif kind == "control.blob_gc":
+        removed = payload.get("removed")
+        kb = (payload.get("reclaimed_bytes") or 0) / 1024
+        detail = f"Blob GC removed {removed} object(s), reclaimed {kb:.1f} KB"
+    else:
+        detail = kind
+
+    # color family for the kind chip
+    if kind.startswith("control.login") or kind == "control.logout":
+        family = "auth"
+    elif kind.startswith("control.handoff"):
+        family = "handoff"
+    elif kind.startswith("control.grant"):
+        family = "grant"
+    else:
+        family = "maintenance"
+
+    created = e.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return {
+        "kind": kind,
+        "family": family,
+        "outcome": outcome,
+        "detail": detail,
+        "client_ip": str(payload.get("client_ip") or "—"),
+        "actor_kind": e.actor_kind,
+        "created": _fmt_dt(created),
+        "created_rel": _rel_dt(created),
+    }
 
 
 def _runtime_counters(app) -> list[tuple[str, float]]:

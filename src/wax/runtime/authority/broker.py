@@ -453,6 +453,21 @@ class AuthorityBroker:
             material.status = AuthorityStatus.REVOKED.value
             material.revoked_at = datetime.now(UTC)
 
+        # Emit a signal so work holding this authority_ref can observe the
+        # revocation immediately instead of failing on next use.
+        from wax.runtime.work.signals import SignalRepository
+
+        await SignalRepository(session).emit(
+            f"authority.grant_revoked:{grant.handle}",
+            payload={
+                "grant_id": grant.id,
+                "handle": grant.handle,
+                "principal_id": grant.principal_id,
+                "revoked_by": "principal",
+            },
+            emitted_by="authority_broker",
+        )
+
         log.info(
             "authority.revoked",
             grant_id=grant.id,
@@ -495,6 +510,21 @@ class AuthorityBroker:
         if material and material.status == AuthorityStatus.ACTIVE.value:
             material.status = AuthorityStatus.REVOKED.value
             material.revoked_at = datetime.now(UTC)
+
+        # Emit a signal so work holding this authority_ref can observe the
+        # operator revocation immediately instead of failing on next use.
+        from wax.runtime.work.signals import SignalRepository
+
+        await SignalRepository(session).emit(
+            f"authority.grant_revoked:{grant.handle}",
+            payload={
+                "grant_id": grant.id,
+                "handle": grant.handle,
+                "principal_id": grant.principal_id,
+                "revoked_by": "operator",
+            },
+            emitted_by="authority_broker",
+        )
 
         log.info(
             "authority.revoked_by_operator",

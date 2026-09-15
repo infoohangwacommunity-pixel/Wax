@@ -1499,3 +1499,241 @@ class TestThemeToggle:
         login = await client.get("/control/login")
         assert 'id="theme-toggle"' in login.text
         assert "wax-theme" in login.text
+
+
+# ---------------------------------------------------------------------------
+# Round 7: control-plane audit trail, bulk cancel, broker revoke signal
+# ---------------------------------------------------------------------------
+
+
+async def _audit_rows(kind_prefix: str = "control.%") -> list:
+    from wax.state.audit_models import AuditEvent as _AE
+
+    async with db_session() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(_AE)
+                    .where(_AE.event_kind.like(kind_prefix))
+                    .order_by(_AE.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return rows
+
+
+class TestAuditLog:
+    async def test_submit_and_cancel_write_audit_events(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        assert resp.status_code == 200
+
+        # a second handoff stays open — cancel it (audited success)
+        other_id = await _create_handoff(principal_id, purpose="Audit probe second")
+        other_page = await client.get(f"/control/handoffs/{other_id}")
+        other_csrf = _csrf_from_form(other_page.text, "/cancel")
+        await client.post(f"/control/handoffs/{other_id}/cancel", data={"csrf_token": other_csrf})
+
+        # now attempt to cancel the FIRST handoff (terminal since the
+        # submit) with the still-valid cancel-scope token — the broker
+        # refuses and the refusal is audited as failed
+        await client.post(f"/control/handoffs/{handoff_id}/cancel", data={"csrf_token": other_csrf})
+
+        events = await _audit_rows()
+        kinds = [(e.event_kind, e.outcome) for e in events]
+        assert ("control.handoff_submitted", "success") in kinds
+        assert ("control.handoff_cancelled", "success") in kinds
+        assert ("control.handoff_cancelled", "failed") in kinds
+        # payloads carry metadata, never the secret
+        for e in events:
+            import json as _json
+
+            flat = _json.dumps(e.payload or {})
+            assert SECRET_TYPED_BY_HUMAN not in flat
+            assert "ciphertext" not in flat
+
+    async def test_login_paths_are_audited(self, client, app):
+        from wax.runtime.control_plane import _login_limiter
+
+        _login_limiter.reset()
+        app.state.settings.control_plane_token = "op-token-audit"
+        try:
+            denied = await client.post("/control/login", data={"token": "wrong"})
+            assert denied.status_code == 401
+            ok = await client.post("/control/login", data={"token": "op-token-audit"})
+            assert ok.status_code == 200
+            await client.post("/control/logout")
+        finally:
+            app.state.settings.control_plane_token = ""
+            _login_limiter.reset()
+        events = await _audit_rows("control.%")
+        kinds = [(e.event_kind, e.outcome) for e in events]
+        assert ("control.login", "denied") in kinds
+        assert ("control.login", "success") in kinds
+        assert ("control.logout", "success") in kinds
+
+    async def test_audit_page_renders_events_with_filters(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        resp = await client.get("/control/audit")
+        assert resp.status_code == 200
+        assert "Audit log" in resp.text
+        assert "ev-chip" in resp.text and "ev-handoff" in resp.text
+        assert "badge audit-success" in resp.text
+        assert "Submitted opaque_secret" in resp.text
+        # kind tabs + filter
+        assert "/control/audit?kind=handoffs" in resp.text
+        only_handoffs = await client.get("/control/audit", params={"kind": "handoffs"})
+        assert "control.handoff_submitted" in only_handoffs.text
+        only_grants = await client.get("/control/audit", params={"kind": "grants"})
+        assert "control.handoff_submitted" not in only_grants.text
+
+    async def test_operator_revoke_is_audited_and_signals(self, client, app):
+        p = await _create_principal()
+        handle = await _seed_grant(p, handle="K" * 40)
+        grant_id = await _grant_id_for(handle)
+        page = await client.get("/control/grants")
+        csrf = _csrf_from_form(page.text, "/revoke")
+        resp = await client.post(f"/control/grants/{grant_id}/revoke", data={"csrf_token": csrf})
+        assert "Authority grant revoked" in resp.text
+
+        events = await _audit_rows("control.grant%")
+        assert len(events) == 1
+        assert events[0].event_kind == "control.grant_revoked"
+        assert events[0].outcome == "success"
+        assert events[0].payload["grant_id"] == grant_id
+
+        # the broker emitted the operator-path wakeup signal for this handle
+        from wax.state.work_models import RuntimeSignalRecord
+
+        async with db_session() as s:
+            signals = (
+                (
+                    await s.execute(
+                        select(RuntimeSignalRecord).where(
+                            RuntimeSignalRecord.name == f"authority.grant_revoked:{handle}"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(signals) == 1
+        assert signals[0].payload["revoked_by"] == "operator"
+
+    async def test_audit_page_never_shows_secret_material(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/submit")
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        resp = await client.get("/control/audit")
+        assert SECRET_TYPED_BY_HUMAN not in resp.text
+
+    async def test_audit_nav_link_and_reachability(self, client, app):
+        dash = await client.get("/control")
+        assert 'href="/control/audit"' in dash.text
+        audit = await client.get("/control/audit")
+        assert 'aria-current="page"' in audit.text
+
+
+class TestBulkCancel:
+    async def test_bulk_cancel_happy_path(self, client, app):
+        principal_id = await _create_principal()
+        id1 = await _create_handoff(principal_id, purpose="Bulk probe alpha")
+        id2 = await _create_handoff(principal_id, purpose="Bulk probe beta")
+        dash = await client.get("/control")
+        assert 'name="handoff_ids"' in dash.text
+        assert 'id="bulk-all"' in dash.text  # header toggle present with open rows
+        csrf = _csrf_from_form(dash.text, "cancel-bulk")
+        resp = await client.post(
+            "/control/handoffs/cancel-bulk",
+            data={"csrf_token": csrf, "handoff_ids": [id1, id2]},
+        )
+        assert "Bulk cancel finished" in resp.text
+        assert "<strong>2</strong> handoffs cancelled" in resp.text
+        async with db_session() as s:
+            for hid in (id1, id2):
+                row = await s.get(HumanHandoffRecord, hid)
+                assert row.status == "cancelled"
+                assert row.failure_reason_safe == "Cancelled in bulk via the control plane."
+        # one audit event per cancelled handoff
+        events = await _audit_rows("control.handoff_cancelled")
+        assert len([e for e in events if e.outcome == "success"]) == 2
+        assert all(
+            e.payload.get("reason") == "bulk_cancel" for e in events if e.outcome == "success"
+        )
+
+    async def test_bulk_cancel_mixed_results_flash(self, client, app):
+        principal_id = await _create_principal()
+        good_id = await _create_handoff(principal_id, purpose="Bulk probe gamma")
+        dash = await client.get("/control")
+        csrf = _csrf_from_form(dash.text, "cancel-bulk")
+        resp = await client.post(
+            "/control/handoffs/cancel-bulk",
+            data={"csrf_token": csrf, "handoff_ids": [good_id, "NOPE" + "X" * 20]},
+        )
+        assert "<strong>1</strong> handoff cancelled" in resp.text
+        assert "<strong>1</strong> skipped" in resp.text
+
+    async def test_bulk_cancel_requires_selection(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id, purpose="Bulk probe empty submit")
+        dash = await client.get("/control")
+        csrf = _csrf_from_form(dash.text, "cancel-bulk")
+        resp = await client.post("/control/handoffs/cancel-bulk", data={"csrf_token": csrf})
+        assert "nothing was cancelled" in resp.text
+
+    async def test_bulk_cancel_rejects_foreign_scope_csrf(self, client, app):
+        principal_id = await _create_principal()
+        hid = await _create_handoff(principal_id, purpose="Bulk probe delta")
+        detail = await client.get(f"/control/handoffs/{hid}")
+        submit_csrf = _csrf_from_form(detail.text, "/submit")
+        resp = await client.post(
+            "/control/handoffs/cancel-bulk",
+            data={"csrf_token": submit_csrf, "handoff_ids": [hid]},
+        )
+        assert "stale" in resp.text.lower()
+        async with db_session() as s:
+            row = await s.get(HumanHandoffRecord, hid)
+            assert row.status != "cancelled"
+
+    async def test_checkboxes_render_only_for_open_rows(self, client, app):
+        principal_id = await _create_principal()
+        open_id = await _create_handoff(principal_id, purpose="Bulk probe open row")
+        # one completed row (no checkbox expected)
+        await _seed_handoff_on(principal_id, days_ago=0, purpose="Completed row no box")
+        dash = await client.get("/control")
+        assert f'value="{open_id}"' in dash.text
+        # exactly one selectable checkbox (the one open row)
+        assert (
+            dash.text.count('name="handoff_ids" type="checkbox"')
+            + dash.text.count('type="checkbox" name="handoff_ids"')
+            >= 1
+        )
+        # the completed seeded row never gets a checkbox
+        rows = [r for r in dash.text.split("<tr") if "Completed row no box" in r]
+        assert rows and 'name="handoff_ids"' not in rows[0]
+
+    async def test_poller_skips_ticks_while_selection_pending(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id, purpose="Poller guard probe")
+        dash = await client.get("/control")
+        assert 'input[name="handoff_ids"]:checked' in dash.text
