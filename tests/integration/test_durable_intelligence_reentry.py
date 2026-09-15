@@ -510,13 +510,10 @@ class TestReentryFailurePaths:
 
         async with db_session() as s:
             item = await s.get(WorkItemRecord, work_id)
-            # The handler returned a result dict with outcome="failed" —
-            # but the work runner treats that as success (the handler
-            # itself didn't raise). The work is "succeeded" but its result
-            # records the failure honestly.
-            assert item.status == "succeeded"
-            assert item.result["outcome"] == "failed"
-            assert "no objective" in (item.result["error"] or "").lower()
+            # P0-9 fix: failed re-entry outcome now raises WorkExecutionError
+            # so the work runner marks it failed (not succeeded).
+            assert item.status in ("failed", "dead")
+            assert "no objective" in (item.last_error or "").lower()
 
     async def test_wrong_principal_rejected(self, runtime_setup):
         """A re-entry work item whose principal_id does not match the
@@ -582,9 +579,9 @@ class TestReentryFailurePaths:
 
         async with db_session() as s:
             item = await s.get(WorkItemRecord, work_id)
-            assert item.status == "succeeded"
-            assert item.result["outcome"] == "failed"
-            assert "principal" in (item.result["error"] or "").lower()
+            # P0-9 fix: failed re-entry raises WorkExecutionError
+            assert item.status in ("failed", "dead")
+            assert "principal" in (item.last_error or "").lower()
 
 
 # ----------------------------------------------------------------------------

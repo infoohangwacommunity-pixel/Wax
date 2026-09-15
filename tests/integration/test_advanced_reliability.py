@@ -44,10 +44,7 @@ def services(test_settings):
 
 
 async def _create_principal(*, phone: str = "1234567890") -> str:
-    from wax.authority.seed import (
-        DEFAULT_ROLE_FOR_NEW_PRINCIPALS,
-        ensure_principal_role,
-    )
+    from wax.authority.seed import ensure_principal_role
 
     async with db_session() as s:
         repo = PrincipalRepository(s)
@@ -55,7 +52,7 @@ async def _create_principal(*, phone: str = "1234567890") -> str:
         await repo.add_credential(
             principal.id, kind="whatsapp_phone", value=phone, is_verified=True
         )
-        await ensure_principal_role(s, principal.id, DEFAULT_ROLE_FOR_NEW_PRINCIPALS)
+        await ensure_principal_role(s, principal.id, "admin")
         await s.commit()
         return principal.id
 

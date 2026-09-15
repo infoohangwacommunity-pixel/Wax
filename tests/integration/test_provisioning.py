@@ -223,9 +223,10 @@ class TestScratchWorkspaceCapability:
             )
             await session.commit()
         assert result.outcome == "success", result.error
-        from pathlib import Path
 
-        assert Path(result.outputs["path"]).is_dir()
+        # P0-12: path field removed from scratch.workspace output
+        # The test now checks the resource_id instead
+        assert result.outputs["resource_id"]
         assert result.outputs["kind"] == "scratch_dir"
 
     async def test_invalid_ttl_is_honestly_refused(self, fresh_db, services) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -98,7 +99,7 @@ class TestIntegrity:
         assert result["cache_hit"] is False
         assert result["sha256"] == CONTENT_SHA
         assert result["bytes"] == len(CONTENT)
-        with open(result["path"], "rb") as handle:
+        with open(Path(record.uri) / result["path"], "rb") as handle:
             assert handle.read() == CONTENT
 
     async def test_hash_mismatch_refuses_and_leaves_nothing(self, fresh_db, services) -> None:
@@ -118,9 +119,8 @@ class TestIntegrity:
                 sha256=wrong_sha,
                 filename="pkg-1.0.tar.gz",
             )
-        import pathlib
 
-        workspace = pathlib.Path(record.uri)
+        workspace = Path(record.uri)
         assert not (workspace / "pkg-1.0.tar.gz").exists(), "no artifact is kept"
         assert not any(workspace.glob(".tmp-*")), "no temp residue"
 
@@ -265,7 +265,7 @@ class TestCaching:
             filename="pkg.tar.gz",
         )
         assert result["cache_hit"] is False, "poisoned entry not trusted"
-        with open(result["path"], "rb") as handle:
+        with open(Path(record.uri) / result["path"], "rb") as handle:
             assert handle.read() == CONTENT
         assert not poisoned.exists() or poisoned.read_bytes() == CONTENT
 

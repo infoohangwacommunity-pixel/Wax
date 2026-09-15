@@ -264,6 +264,16 @@ async def intelligence_handler(services: RuntimeServices, item: WorkItemRecord) 
         outcome=result.outcome,
     )
 
+    # P0-9: A failed re-entry outcome must NOT be treated as work success.
+    # The work runner marks items "succeeded" when the handler returns
+    # normally. A re-entry that returned outcome="failed" is a real
+    # failure — raise WorkExecutionError so the runner applies retry/
+    # backoff semantics instead of silently marking succeeded.
+    if result.outcome == "failed":
+        raise WorkExecutionError(
+            f"intelligence re-entry returned outcome=failed: {result.error or 'unknown error'}"
+        )
+
     # 5. Return the result dict — the runner will mark_succeeded with
     # this as the work's result. The objective's state was already
     # reconciled inside the bridge (waiting / awaiting_human / in_progress

@@ -79,13 +79,23 @@ _DEV_KEY = b"WAX_DEV_VAULT_KEY_DO_NOT_USE_IN_PRODUCTION_32B"
 def _get_vault_key() -> bytes:
     """Read the vault encryption key from WAX_VAULT_KEY.
 
-    Returns a 32-byte key. If WAX_VAULT_KEY is not set, falls back to
-    the development-mode key (loudly logged as a warning).
+    Returns a 32-byte key. If WAX_VAULT_KEY is not set:
+    - In production (WAX_ENV=production): RAISES (fail-closed)
+    - In dev/staging: falls back to the development-mode key (loudly logged)
     """
     env_key = os.environ.get("WAX_VAULT_KEY")
     if env_key:
         # Hash to 32 bytes (supports any-length key from env)
         return hashlib.sha256(env_key.encode("utf-8")).digest()
+
+    wax_env = os.environ.get("WAX_ENV", "development").lower()
+    if wax_env == "production":
+        raise RuntimeError(
+            "WAX_VAULT_KEY is not set and WAX_ENV=production. "
+            "The credential vault requires an encryption key in production. "
+            "Set WAX_VAULT_KEY to a strong random value (>= 32 bytes)."
+        )
+
     log.warning(
         "vault.dev_key_in_use",
         detail="WAX_VAULT_KEY not set; using development-mode XOR cipher. "

@@ -97,7 +97,13 @@ class TestSandboxedComposition:
         ws = await _invoke(services, principal_id, "scratch.workspace", {"ttl_seconds": 600})
         assert ws.outcome == "success", ws.error
         workspace_id = ws.outputs["resource_id"]
-        workspace_path = ws.outputs["path"]
+        # P0-12: scratch.workspace no longer returns 'path' (host path leak fix).
+        # Resolve the workspace path from the provisioning record instead.
+        from wax.state.provisioning_models import ProvisionedResourceRecord
+
+        async with db_session() as session:
+            ws_record = await session.get(ProvisionedResourceRecord, workspace_id)
+            workspace_path = ws_record.uri
 
         # Seed an artifact only the sandbox can now see/write.
         seed = tmp_path / "seed.txt"

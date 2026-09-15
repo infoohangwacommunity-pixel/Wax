@@ -268,7 +268,8 @@ class ArtifactAcquirer:
             filename=filename,
         )
         return {
-            "path": str(dest),
+            # P0-12: Return only the filename, NOT the absolute host path.
+            "path": filename,
             "sha256": sha256,
             "bytes": size,
             "cache_hit": cache_hit,
@@ -350,7 +351,7 @@ def register_workspace_acquire_capability(
                 principal_id=ctx.principal_id,
                 workspace_resource_id=workspace_resource_id,
                 filename=Path(result["path"]).name,
-                path=str(Path(result["path"]).relative_to(Path(workspace_path))),
+                path=result["path"],
                 sha256=result["sha256"],
                 size_bytes=result["bytes"],
                 source="workspace.acquire",

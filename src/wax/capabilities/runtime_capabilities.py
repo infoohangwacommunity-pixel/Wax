@@ -855,7 +855,9 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
         return {
             "resource_id": record.id,
             "kind": "scratch_dir",
-            "path": record.uri,
+            # P0-12: Do NOT return the absolute host path (record.uri).
+            # The intelligence receives only the opaque resource_id; the
+            # host filesystem layout is an implementation detail.
             "expires_at": record.expires_at.isoformat() if record.expires_at else None,
         }
 
@@ -1127,8 +1129,24 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             # Execute the command in a subprocess with process group
             # (governed by the session's environment lease — workspace +
             # isolation boundary are inherited from the environment).
-            env = dict(os.environ)
+            # SECURITY (P0-3): DO NOT inherit os.environ
+            env = {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": "/tmp",
+                "LANG": "en_US.UTF-8",
+            }
             env.update(record.env_vars or {})
+
+            # Resolve the workspace path for cwd
+            cwd = None
+            if record.environment_id:
+                from wax.state.environment_models import EnvironmentLeaseRecord
+                lease = await session.get(EnvironmentLeaseRecord, record.environment_id)
+                if lease and lease.workspace_resource_id:
+                    from wax.state.provisioning_models import ProvisionedResourceRecord
+                    ws = await session.get(ProvisionedResourceRecord, lease.workspace_resource_id)
+                    if ws and ws.uri:
+                        cwd = ws.uri
 
             try:
                 proc = await asyncio.create_subprocess_shell(
@@ -1136,8 +1154,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
-                    # Process group isolation (Unix only; future: Windows
-                    # support needs a different mechanism)
+                    cwd=cwd,
                     preexec_fn=os.setsid if hasattr(os, "setsid") else None,
                 )
                 try:
@@ -2892,7 +2909,7 @@ TERMINAL_SESSION_OPEN_DESCRIPTOR = CapabilityDescriptor(
             "expires_at": {"type": "string"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:terminal",
     timeout_seconds=10.0,
     idempotent=False,
     is_destructive=False,
@@ -2933,10 +2950,10 @@ TERMINAL_EXECUTE_DESCRIPTOR = CapabilityDescriptor(
             "duration_ms": {"type": "number"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:terminal",
     timeout_seconds=600.0,
     idempotent=False,
-    is_destructive=False,
+    is_destructive=True,
 )
 
 TERMINAL_SESSION_CLOSE_DESCRIPTOR = CapabilityDescriptor(
@@ -2956,7 +2973,7 @@ TERMINAL_SESSION_CLOSE_DESCRIPTOR = CapabilityDescriptor(
             "state": {"type": "string"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:terminal",
     timeout_seconds=10.0,
     idempotent=True,
     is_destructive=True,
@@ -2996,10 +3013,10 @@ CREDENTIAL_CONNECT_DESCRIPTOR = CapabilityDescriptor(
             "scopes": {"type": "array", "items": {"type": "string"}},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:credential",
     timeout_seconds=10.0,
     idempotent=False,
-    is_destructive=False,
+    is_destructive=True,
 )
 
 CREDENTIAL_REQUEST_DESCRIPTOR = CapabilityDescriptor(
@@ -3033,10 +3050,10 @@ CREDENTIAL_REQUEST_DESCRIPTOR = CapabilityDescriptor(
             "connector": {"type": "string"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:credential",
     timeout_seconds=10.0,
     idempotent=False,
-    is_destructive=False,
+    is_destructive=True,
 )
 
 CREDENTIAL_LIST_DESCRIPTOR = CapabilityDescriptor(
@@ -3051,10 +3068,10 @@ CREDENTIAL_LIST_DESCRIPTOR = CapabilityDescriptor(
             "count": {"type": "integer"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:credential",
     timeout_seconds=5.0,
     idempotent=True,
-    is_destructive=False,
+    is_destructive=True,
 )
 
 CREDENTIAL_REVOKE_DESCRIPTOR = CapabilityDescriptor(
@@ -3078,7 +3095,7 @@ CREDENTIAL_REVOKE_DESCRIPTOR = CapabilityDescriptor(
             "revoked": {"type": "array", "items": {"type": "string"}},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:credential",
     timeout_seconds=10.0,
     idempotent=True,
     is_destructive=True,
@@ -3128,7 +3145,7 @@ CONNECTOR_DISCOVER_DESCRIPTOR = CapabilityDescriptor(
             "count": {"type": "integer"},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:connector",
     timeout_seconds=5.0,
     idempotent=True,
     is_destructive=False,
@@ -3161,7 +3178,7 @@ CONNECTOR_RESOLVE_DESCRIPTOR = CapabilityDescriptor(
             "available_operations": {"type": "array", "items": {"type": "string"}},
         },
     },
-    required_permission="capability.invoke:built_in",
+    required_permission="capability.invoke:connector",
     timeout_seconds=10.0,
     idempotent=True,
     is_destructive=False,
