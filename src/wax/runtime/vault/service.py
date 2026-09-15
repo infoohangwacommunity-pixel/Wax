@@ -13,9 +13,6 @@ row), not a code change.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import os
 import secrets as pysecrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from wax.runtime.logging import get_logger
+from wax.runtime.vault.crypto import (
+    deserialize_envelope,
+    serialize_envelope,
+)
 from wax.state.credential_models import (
     ConnectorDefinitionRecord,
     CredentialEventRecord,
@@ -77,58 +78,11 @@ _DEV_KEY = b"WAX_DEV_VAULT_KEY_DO_NOT_USE_IN_PRODUCTION_32B"
 
 
 def _get_vault_key() -> bytes:
-    """Read the vault encryption key from WAX_VAULT_KEY.
+    """Read the vault encryption key from WAX_VAULT_KEY. Delegates to
+    crypto.py's _get_master_key(). Kept for backward compat."""
+    from wax.runtime.vault.crypto import _get_master_key
 
-    Returns a 32-byte key. If WAX_VAULT_KEY is not set:
-    - In production (WAX_ENV=production): RAISES (fail-closed)
-    - In dev/staging: falls back to the development-mode key (loudly logged)
-    """
-    env_key = os.environ.get("WAX_VAULT_KEY")
-    if env_key:
-        # Hash to 32 bytes (supports any-length key from env)
-        return hashlib.sha256(env_key.encode("utf-8")).digest()
-
-    wax_env = os.environ.get("WAX_ENV", "development").lower()
-    if wax_env == "production":
-        raise RuntimeError(
-            "WAX_VAULT_KEY is not set and WAX_ENV=production. "
-            "The credential vault requires an encryption key in production. "
-            "Set WAX_VAULT_KEY to a strong random value (>= 32 bytes)."
-        )
-
-    log.warning(
-        "vault.dev_key_in_use",
-        detail="WAX_VAULT_KEY not set; using development-mode XOR cipher. "
-        "Production deployments MUST set WAX_VAULT_KEY.",
-    )
-    return _DEV_KEY
-
-
-def _xor_encrypt(plaintext: str, key: bytes) -> str:
-    """XOR cipher (development-grade). For production, replace with
-    AES-GCM via the `cryptography` library (a future ADR)."""
-    plaintext_bytes = plaintext.encode("utf-8")
-    key_stream = (key * (len(plaintext_bytes) // len(key) + 1))[: len(plaintext_bytes)]
-    encrypted = bytes(a ^ b for a, b in zip(plaintext_bytes, key_stream, strict=False))
-    return base64.b64encode(encrypted).decode("ascii")
-
-
-def _xor_decrypt(ciphertext: str, key: bytes) -> str:
-    """XOR decrypt (symmetric)."""
-    encrypted = base64.b64decode(ciphertext.encode("ascii"))
-    key_stream = (key * (len(encrypted) // len(key) + 1))[: len(encrypted)]
-    decrypted = bytes(a ^ b for a, b in zip(encrypted, key_stream, strict=False))
-    return decrypted.decode("utf-8")
-
-
-def encrypt_secret(secret: str) -> str:
-    """Encrypt a secret for at-rest storage."""
-    return _xor_encrypt(secret, _get_vault_key())
-
-
-def decrypt_secret(encrypted: str) -> str:
-    """Decrypt a secret for in-boundary injection (NEVER for model)."""
-    return _xor_decrypt(encrypted, _get_vault_key())
+    return _get_master_key()
 
 
 async def seed_builtin_connectors(session: AsyncSession) -> int:
@@ -200,8 +154,15 @@ class CredentialVault:
                 f"Supported: {conn.supported_scopes}"
             )
 
-        # Encrypt the secret at rest
-        encrypted_secret = encrypt_secret(secret)
+        # Encrypt the secret at rest using AES-GCM envelope encryption
+        from wax.runtime.vault.crypto import encrypt_secret as aes_encrypt
+
+        envelope = aes_encrypt(
+            secret,
+            record_id="",  # will be set after the record is created
+            principal_id=principal_id,
+        )
+        encrypted_secret = serialize_envelope(envelope)
 
         # Check for an existing active connection for the same (principal, connector)
         existing = (
@@ -489,12 +450,19 @@ class CredentialVault:
             )
             return None
 
-        # Decrypt the secret
+        # Decrypt the secret using AES-GCM envelope decryption
         conn = await session.get(PrincipalConnectionRecord, grant.connection_id)
         if conn is None or conn.status != "active":
             return None
 
-        return decrypt_secret(conn.secret_blob)
+        from wax.runtime.vault.crypto import decrypt_secret as aes_decrypt
+
+        try:
+            envelope = deserialize_envelope(conn.secret_blob)
+            return aes_decrypt(envelope, record_id=conn.id, principal_id=principal_id)
+        except Exception as e:
+            log.error("vault.decrypt_failed", error=str(e)[:300])
+            return None
 
     async def _record_event(
         self,

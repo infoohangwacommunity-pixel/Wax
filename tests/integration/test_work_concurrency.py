@@ -85,9 +85,7 @@ async def _schedule(
     """Insert a work item directly (repo level — the unit under test is the
     runner, not the capability surface)."""
     async with db_session() as session:
-        expires_at = (
-            datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
-        )
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
         item = await WorkRepository(session).schedule(
             kind=kind,
             payload={"capability_name": capability, "inputs": inputs or {}},
@@ -113,17 +111,13 @@ async def _work(work_id: str) -> WorkItemRecord | None:
 async def _signal_count(name_prefix: str) -> int:
     async with db_session() as session:
         result = await session.execute(
-            select(RuntimeSignalRecord).where(
-                RuntimeSignalRecord.name.like(f"{name_prefix}%")
-            )
+            select(RuntimeSignalRecord).where(RuntimeSignalRecord.name.like(f"{name_prefix}%"))
         )
         return len(result.scalars().all())
 
 
 class TestExclusiveClaiming:
-    async def test_second_runner_cannot_claim_leased_item(
-        self, fresh_db, services
-    ) -> None:
+    async def test_second_runner_cannot_claim_leased_item(self, fresh_db, services) -> None:
         """The multi-worker guarantee: an item claimed by a live runner is
         invisible to every other runner's claim pass."""
         work_id = await _schedule()
@@ -194,9 +188,7 @@ class TestFencing:
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
             assert len(batch.claimed) == 1
-            await WorkRepository(session).mark_running(
-                work_id, expected_owner=runner_a._worker_id
-            )
+            await WorkRepository(session).mark_running(work_id, expected_owner=runner_a._worker_id)
             await session.commit()
 
         # A's lease expires. B reclaims (and is now the authoritative owner).
@@ -270,9 +262,7 @@ class TestFencing:
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
             assert len(batch.claimed) == 1
-            await WorkRepository(session).mark_running(
-                work_id, expected_owner=runner_a._worker_id
-            )
+            await WorkRepository(session).mark_running(work_id, expected_owner=runner_a._worker_id)
             await session.commit()
 
         await asyncio.sleep(0.2)  # lease expires
@@ -305,17 +295,13 @@ class TestFencing:
         runner = _runner(services)
         await runner.run_once()
         async with db_session() as session:
-            status = await WorkRepository(session).mark_succeeded(
-                work_id, {"again": True}
-            )
+            status = await WorkRepository(session).mark_succeeded(work_id, {"again": True})
             await session.commit()
         assert status == "stale"
 
 
 class TestHeartbeat:
-    async def test_heartbeat_protects_slow_worker_from_reclaim(
-        self, fresh_db, services
-    ) -> None:
+    async def test_heartbeat_protects_slow_worker_from_reclaim(self, fresh_db, services) -> None:
         """A healthy worker processing a long item keeps its lease alive."""
         release = asyncio.Event()
 
@@ -380,9 +366,7 @@ class TestCrashRecovery:
             await WorkRepository(session).claim_due(
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
-            await WorkRepository(session).mark_running(
-                work_id, expected_owner=runner_a._worker_id
-            )
+            await WorkRepository(session).mark_running(work_id, expected_owner=runner_a._worker_id)
             await session.commit()
         assert (await _work(work_id)).status == "running"
 
@@ -411,9 +395,7 @@ class TestCrashRecovery:
             await WorkRepository(session).claim_due(
                 worker_id=runner_a._worker_id, lease_seconds=0.15, limit=10
             )
-            await WorkRepository(session).mark_running(
-                work_id, expected_owner=runner_a._worker_id
-            )
+            await WorkRepository(session).mark_running(work_id, expected_owner=runner_a._worker_id)
             await session.commit()
         await asyncio.sleep(0.2)  # lease expires
 
@@ -423,9 +405,7 @@ class TestCrashRecovery:
                 worker_id="worker-B", lease_seconds=0.15, limit=10
             )
             assert len(batch.claimed) == 1
-            await WorkRepository(session).mark_running(
-                work_id, expected_owner="worker-B"
-            )
+            await WorkRepository(session).mark_running(work_id, expected_owner="worker-B")
             await session.commit()
         await asyncio.sleep(0.2)  # lease expires again
 

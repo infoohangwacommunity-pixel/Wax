@@ -1141,9 +1141,11 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
             cwd = None
             if record.environment_id:
                 from wax.state.environment_models import EnvironmentLeaseRecord
+
                 lease = await session.get(EnvironmentLeaseRecord, record.environment_id)
                 if lease and lease.workspace_resource_id:
                     from wax.state.provisioning_models import ProvisionedResourceRecord
+
                     ws = await session.get(ProvisionedResourceRecord, lease.workspace_resource_id)
                     if ws and ws.uri:
                         cwd = ws.uri

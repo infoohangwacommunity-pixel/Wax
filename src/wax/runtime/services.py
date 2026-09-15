@@ -106,12 +106,11 @@ class RuntimeServices:
         # correctness when the database is PostgreSQL. For SQLite/dev, keep
         # the in-memory versions (they're process-local but that's fine for
         # single-process dev mode).
-        db_url = getattr(settings, 'database_url', '') or ''
-        if db_url.startswith('postgresql'):
-
+        db_url = getattr(settings, "database_url", "") or ""
+        if db_url.startswith("postgresql"):
             rate_limiter_instance = None  # DB-backed, checked per-session
             cost_protector_instance = None  # DB-backed, checked per-session
-            log.info('runtime.shared_state_enabled', backend='postgresql')
+            log.info("runtime.shared_state_enabled", backend="postgresql")
         else:
             rate_limiter_instance = RateLimiter()
             cost_protector_instance = CostProtector()

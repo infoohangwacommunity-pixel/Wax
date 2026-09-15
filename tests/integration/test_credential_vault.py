@@ -22,8 +22,6 @@ from wax.capabilities.contracts import CapabilityInvocationRequest
 from wax.identity.repository import PrincipalRepository
 from wax.runtime.services import RuntimeServices
 from wax.runtime.vault import (
-    decrypt_secret,
-    encrypt_secret,
     seed_builtin_connectors,
 )
 from wax.state.credential_models import (
@@ -77,16 +75,28 @@ async def _create_principal(*, display_name: str = "Test", phone: str = "1234567
 
 class TestEncryptionAtRest:
     def test_encrypt_decrypt_roundtrip(self):
+        from wax.runtime.vault.crypto import (
+            decrypt_secret,
+            deserialize_envelope,
+            encrypt_secret,
+            serialize_envelope,
+        )
+
         original = "ghp_secrettoken_12345"
-        encrypted = encrypt_secret(original)
-        decrypted = decrypt_secret(encrypted)
+        envelope = encrypt_secret(original, record_id="test", principal_id="test")
+        serialized = serialize_envelope(envelope)
+        restored = deserialize_envelope(serialized)
+        decrypted = decrypt_secret(restored, record_id="test", principal_id="test")
         assert decrypted == original
-        assert encrypted != original  # the encrypted form is NOT the plaintext
+        assert serialized != original  # the encrypted form is NOT the plaintext
 
     def test_encrypt_does_not_leak_plaintext_prefix(self):
+        from wax.runtime.vault.crypto import encrypt_secret, serialize_envelope
+
         secret = "UNIQUE_PREFIX_abc123"
-        encrypted = encrypt_secret(secret)
-        assert "UNIQUE_PREFIX" not in encrypted
+        envelope = encrypt_secret(secret, record_id="test", principal_id="test")
+        serialized = serialize_envelope(envelope)
+        assert "UNIQUE_PREFIX" not in serialized
 
 
 # ----------------------------------------------------------------------------

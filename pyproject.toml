@@ -33,6 +33,7 @@ dependencies = [
     "tenacity>=9.0.0",          # bounded retries with backoff
     "python-ulid>=2.7.0",       # ULID identifiers (lexicographically sortable)
     "pyyaml>=6.0.2",
+    "cryptography>=43.0.0",     # AES-GCM authenticated encryption for the vault
 ]
 
 [project.optional-dependencies]
