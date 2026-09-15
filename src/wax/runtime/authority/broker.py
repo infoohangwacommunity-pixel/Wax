@@ -312,6 +312,58 @@ class AuthorityBroker:
             "expires_at": grant.expires_at.isoformat(),
         }
 
+    async def cancel_handoff(
+        self,
+        session: AsyncSession,
+        *,
+        handoff_id: str,
+        principal_id: str,
+        reason_safe: str | None = None,
+    ) -> dict[str, Any]:
+        """Cancel an OPEN handoff (operator action, control plane only).
+
+        Cancelling is a deliberate noise-cleanup affordance: the request
+        is marked `cancelled`, the safe reason (never any secret — none
+        was ever entered) is recorded, and a signal wakes any work that
+        was waiting on this handoff so it can observe the cancellation
+        instead of blocking until the challenge times out.
+        """
+        handoff = await session.get(HumanHandoffRecord, handoff_id)
+        if handoff is None:
+            raise ValueError(f"No such handoff: {handoff_id}")
+        if handoff.principal_id != principal_id:
+            raise ValueError("handoff belongs to a different principal")
+        if handoff.status not in (
+            HandoffStatus.PENDING.value,
+            HandoffStatus.OPENED.value,
+            HandoffStatus.AWAITING_HUMAN.value,
+        ):
+            raise ValueError(f"handoff is {handoff.status}; cannot cancel")
+
+        handoff.status = HandoffStatus.CANCELLED.value
+        handoff.failure_reason_safe = (reason_safe or "").strip()[:500] or (
+            "Cancelled by an operator via the control plane."
+        )
+
+        # Emit a signal so waiting work can observe the cancellation.
+        from wax.runtime.work.signals import SignalRepository
+
+        await SignalRepository(session).emit(
+            f"authority.handoff_cancelled:{handoff.id}",
+            payload={
+                "handoff_id": handoff.id,
+                "reason_safe": handoff.failure_reason_safe,
+            },
+            emitted_by="authority_broker",
+        )
+
+        log.info(
+            "authority.handoff_cancelled",
+            handoff_id=handoff.id,
+            principal_id=principal_id,
+        )
+        return {"handoff_id": handoff.id, "status": HandoffStatus.CANCELLED.value}
+
     async def get_status(
         self,
         session: AsyncSession,

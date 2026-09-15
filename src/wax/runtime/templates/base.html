@@ -289,8 +289,74 @@
     }
 
     /* ---------- row states ---------- */
+    tbody tr.row-open td { background: rgba(217,119,6,.045); }
+    tbody tr.row-open td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
     tbody tr.row-completed td { background: rgba(16,185,129,.028); }
     tbody tr.row-expired td { background: rgba(248,113,113,.035); }
+
+    /* ---------- pager ---------- */
+    .pager {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      margin: 18px 0 0; flex-wrap: wrap;
+    }
+    .pager a, .pager .current, .pager .disabled, .pager .ellipsis {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 34px; height: 34px; padding: 0 11px;
+      border-radius: var(--radius-sm); font-size: 13px; font-weight: 600;
+      border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+      text-decoration: none; font-variant-numeric: tabular-nums;
+    }
+    .pager a { transition: color .15s, border-color .15s, background .15s; }
+    .pager a:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    .pager .current { color: var(--accent); background: var(--accent-soft); border-color: rgba(217,119,6,.45); }
+    .pager .disabled { color: var(--faint); opacity: .55; cursor: default; }
+    .pager .ellipsis { border: none; background: transparent; padding: 0 2px; }
+    .pager .pager-info { color: var(--faint); font-size: 12px; margin-right: 8px; font-variant-numeric: tabular-nums; }
+
+    /* ---------- link buttons ---------- */
+    a.a-btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      margin: 0; padding: 7px 14px; font-size: 12.5px; font-weight: 600;
+      background: var(--panel-3); color: var(--text); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); cursor: pointer; text-decoration: none;
+      transition: border-color .15s, color .15s;
+    }
+    a.a-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ---------- cancel disclosure ---------- */
+    .cancel-box {
+      margin-top: 22px; border: 1px dashed rgba(248,113,113,.35); border-radius: var(--radius-sm);
+      background: rgba(248,113,113,.04); padding: 12px 16px;
+    }
+    .cancel-box summary {
+      cursor: pointer; color: var(--bad); font-size: 13.5px; font-weight: 600; user-select: none;
+    }
+    .cancel-box summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .cancel-box[open] summary { margin-bottom: 6px; }
+    .cancel-box button.danger { margin-top: 14px; }
+
+    /* ---------- toast notifications (polling) ---------- */
+    #toast-stack {
+      position: fixed; right: 18px; bottom: 18px; z-index: 50;
+      display: flex; flex-direction: column; gap: 10px;
+      max-width: min(360px, calc(100vw - 36px));
+    }
+    .toast {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--border-strong); border-left: 4px solid var(--info);
+      color: var(--text); border-radius: var(--radius-sm); padding: 12px 16px;
+      font-size: 13.5px; box-shadow: var(--shadow);
+      opacity: 0; transform: translateY(8px);
+      transition: opacity .35s ease, transform .35s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.hide { opacity: 0; transform: translateY(6px); }
+    .toast.warn { border-left-color: var(--warn); }
+    .toast.ok { border-left-color: var(--ok); }
+
+    /* ---------- footer ---------- */
+    .f-link { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
+    .f-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
 
     /* ---------- runtime activity list ---------- */
     .metric-rows { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -337,7 +403,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer>
-    WAX Runtime v{{ wax_version | default("?") }} — infrastructure, not intelligence<span class="sep">·</span>server-rendered same-origin dashboard (ADR-0048)<span class="sep">·</span>secrets are encrypted on submission and never displayed again
+    WAX Runtime v{{ wax_version | default("?") }} — infrastructure, not intelligence<span class="sep">·</span>server-rendered same-origin dashboard (ADR-0048)<span class="sep">·</span>secrets are encrypted on submission and never displayed again<span class="sep">·</span><a class="f-link" href="/control/api/status">status API</a>
   </footer>
 </body>
 </html>

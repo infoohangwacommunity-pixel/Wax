@@ -3,6 +3,16 @@
 {% block content %}
   <p style="margin:0 0 16px"><a class="link" href="/control">← Back to dashboard</a></p>
 
+  {% if cancel_flash %}
+  <div class="gc-flash" aria-live="polite">
+    {% if cancel_flash.kind == "ok" %}
+    <div class="ok-note">{{ cancel_flash.message }}</div>
+    {% else %}
+    <div class="error">{{ cancel_flash.message }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="panel">
     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
       <div class="id-row">
@@ -62,6 +72,21 @@
       <li class="done">
         <div class="t-what">Completed — value encrypted &amp; stored</div>
         <div class="t-when">{{ h.completed_at }}</div>
+      </li>
+      {% elif h.status == "cancelled" %}
+      <li class="mute">
+        <div class="t-what">Cancelled by an operator</div>
+        <div class="t-when">{{ h.failure_reason or "—" }}</div>
+      </li>
+      {% elif h.status == "rejected" %}
+      <li class="bad">
+        <div class="t-what">Rejected by the operator</div>
+        <div class="t-when">{{ h.failure_reason or "—" }}</div>
+      </li>
+      {% elif h.status == "failed" %}
+      <li class="bad">
+        <div class="t-what">Failed</div>
+        <div class="t-when">{{ h.failure_reason or "—" }}</div>
       </li>
       {% elif h.expired %}
       <li class="bad">
@@ -139,6 +164,27 @@
     <div class="banner" style="margin:0">
       This handoff is <span class="badge {{ h.status }}">{{ h.status }}</span> — no submission is possible.
     </div>
+  </div>
+  {% endif %}
+
+  {% if h.open %}
+  <div class="panel cancel-zone">
+    <h3 style="margin:0 0 4px;font-size:13.5px;color:var(--bad);text-transform:uppercase;letter-spacing:.8px">Danger zone</h3>
+    <details class="cancel-box" style="margin-top:10px">
+      <summary>Cancel this handoff…</summary>
+      <p class="hint" style="margin-top:8px">
+        Cancelling tells the waiting intelligence the request was withdrawn — it observes a
+        cancellation instead of blocking until the challenge expires. This cannot be undone.
+      </p>
+      <form method="post" action="/control/handoffs/{{ h.id }}/cancel"
+            onsubmit="return confirm('Cancel this handoff? The waiting intelligence will be told it was cancelled. This cannot be undone.')">
+        <input type="hidden" name="csrf_token" value="{{ cancel_csrf }}">
+        <label for="cancel_reason">Optional note (safe metadata only — never enter a secret here)</label>
+        <input type="text" id="cancel_reason" name="reason" maxlength="500"
+               placeholder="e.g. superseded by a newer request for the same vendor">
+        <button class="danger" type="submit">Cancel handoff</button>
+      </form>
+    </details>
   </div>
   {% endif %}
 

@@ -393,3 +393,106 @@ class TestAuthorityRevoke:
 
             material = await s.get(AuthorityMaterialRecord, grant.authority_material_id)
             assert material.status == "revoked"
+
+
+class TestAuthorityCancel:
+    async def test_cancel_marks_open_handoff_cancelled(self, fresh_db, services):
+        principal_id = await _create_principal()
+        broker = services.authority_broker
+
+        async with db_session() as s:
+            result = await broker.request_authority(
+                s,
+                principal_id=principal_id,
+                request=AuthorityRequest(purpose="cancel me", human_required=True),
+            )
+            await s.commit()
+            handoff_id = result.handoff_ref
+
+            outcome = await broker.cancel_handoff(
+                s,
+                handoff_id=handoff_id,
+                principal_id=principal_id,
+                reason_safe="superseded by a newer request",
+            )
+            await s.commit()
+
+        assert outcome["status"] == HandoffStatus.CANCELLED.value
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            assert handoff.status == HandoffStatus.CANCELLED.value
+            assert handoff.failure_reason_safe == "superseded by a newer request"
+
+    async def test_cancel_emits_wakeup_signal(self, fresh_db, services):
+        principal_id = await _create_principal()
+        broker = services.authority_broker
+
+        async with db_session() as s:
+            result = await broker.request_authority(
+                s,
+                principal_id=principal_id,
+                request=AuthorityRequest(purpose="cancel signal", human_required=True),
+            )
+            await s.commit()
+            handoff_id = result.handoff_ref
+            await broker.cancel_handoff(s, handoff_id=handoff_id, principal_id=principal_id)
+            await s.commit()
+
+        from wax.state.work_models import RuntimeSignalRecord
+
+        async with db_session() as s:
+            signals = (
+                (
+                    await s.execute(
+                        select(RuntimeSignalRecord).where(
+                            RuntimeSignalRecord.name == f"authority.handoff_cancelled:{handoff_id}"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(signals) == 1
+            assert "reason_safe" in str(signals[0].payload)
+
+    async def test_cancel_rejects_terminal_handoff(self, fresh_db, services):
+        principal_id = await _create_principal()
+        broker = services.authority_broker
+
+        async with db_session() as s:
+            result = await broker.request_authority(
+                s,
+                principal_id=principal_id,
+                request=AuthorityRequest(purpose="already done", human_required=True),
+            )
+            await s.commit()
+            handoff_id = result.handoff_ref
+            await broker.submit_handoff(
+                s,
+                handoff_id=handoff_id,
+                principal_id=principal_id,
+                secret_value="secret",
+            )
+            await s.commit()
+
+            with pytest.raises(ValueError, match="cannot cancel"):
+                await broker.cancel_handoff(s, handoff_id=handoff_id, principal_id=principal_id)
+
+    async def test_cancel_rejects_wrong_principal(self, fresh_db, services):
+        principal_id = await _create_principal()
+        other_principal_id = await _create_principal(phone="9990001111")
+        broker = services.authority_broker
+
+        async with db_session() as s:
+            result = await broker.request_authority(
+                s,
+                principal_id=principal_id,
+                request=AuthorityRequest(purpose="not yours", human_required=True),
+            )
+            await s.commit()
+            handoff_id = result.handoff_ref
+
+            with pytest.raises(ValueError, match="different principal"):
+                await broker.cancel_handoff(
+                    s, handoff_id=handoff_id, principal_id=other_principal_id
+                )

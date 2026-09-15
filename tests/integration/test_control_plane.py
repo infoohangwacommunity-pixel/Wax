@@ -85,6 +85,21 @@ def _csrf_from(html: str) -> str:
     return match.group(1)
 
 
+def _csrf_from_form(html: str, action_fragment: str) -> str:
+    """Extract the csrf token from THE form whose action contains
+    action_fragment — pages can carry multiple forms (submit, cancel,
+    GC, logout) with independently scoped tokens."""
+    form_re = re.compile(
+        r'<form[^>]*action="[^"]*' + re.escape(action_fragment) + r'[^"]*"[^>]*>(.*?)</form>',
+        re.DOTALL,
+    )
+    match = form_re.search(html)
+    assert match, f"no form with action containing {action_fragment!r}"
+    token = re.search(r'name="csrf_token" value="([^"]+)"', match.group(1))
+    assert token, "form must embed a csrf token"
+    return token.group(1)
+
+
 @pytest.fixture
 async def db():
     test_app_settings = None
@@ -294,8 +309,10 @@ class TestHandoffSubmit:
 
     async def test_expired_handoff_shows_expired_panel_not_form(self, client, app):
         """An expired challenge is NOT submittable: the detail page renders
-        an explicit expired panel (no form, no csrf) so an operator never
-        types a secret the runtime would refuse."""
+        an explicit expired panel (no submit form, no submit csrf) so an
+        operator never types a secret the runtime would refuse. (A cancel
+        form may legitimately appear — cancelling an expired-but-unmarked
+        handoff is a supported cleanup action.)"""
         principal_id = await _create_principal()
         handoff_id = await _create_handoff(principal_id)
         # Force the challenge to be expired.
@@ -308,7 +325,8 @@ class TestHandoffSubmit:
         assert page.status_code == 200
         assert "has expired" in page.text
         assert 'name="secret_value"' not in page.text
-        assert 'name="csrf_token"' not in page.text
+        assert 'name="material_type"' not in page.text
+        assert f'action="/control/handoffs/{handoff_id}/submit"' not in page.text
 
     async def test_expired_handoff_submit_still_refused_by_broker(self, client, app):
         """Defense in depth: even a hand-forged valid CSRF token cannot
@@ -625,3 +643,299 @@ class TestFooterVersion:
         for url in ("/control", "/control/login"):
             resp = await client.get(url)
             assert "WAX Runtime v" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Round 4: pagination, CSV export, cancel, JSON status API, poll toasts
+# ---------------------------------------------------------------------------
+
+
+async def _seed_handoff_rows(
+    principal_id: str, n: int, *, status: str = "completed", purpose_prefix: str = "Bulk"
+) -> None:
+    """Insert n handoff rows directly (fast bulk seeding for pagination)."""
+    from ulid import ULID
+
+    async with db_session() as s:
+        for i in range(n):
+            s.add(
+                HumanHandoffRecord(
+                    id=str(ULID()),
+                    principal_id=principal_id,
+                    purpose=f"{purpose_prefix} row {i:03d} — seeded for pagination",
+                    origin_reference="https://bulk.example.com/job",
+                    requested_actions_json={"handoff_kind": "secret", "actions": []},
+                    status=status,
+                    challenge_hash="seeded",
+                    created_at_col=datetime.now(UTC) - timedelta(minutes=n - i),
+                )
+            )
+        await s.commit()
+
+
+class TestDashboardPagination:
+    async def test_large_table_is_paginated(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 55)
+
+        page1 = await client.get("/control")
+        assert page1.status_code == 200
+        assert page1.text.count(">Bulk row") == 50
+        assert "page 1 / 2" in page1.text
+        assert "showing 1\u201350 of 55" in page1.text
+        assert 'href="/control?status=all&amp;page=2"' in page1.text
+
+        page2 = await client.get("/control", params={"page": 2})
+        assert page2.status_code == 200
+        assert page2.text.count(">Bulk row") == 5
+        assert "showing 51\u201355 of 55" in page2.text
+        assert 'href="/control?status=all&amp;page=1"' in page2.text
+
+    async def test_out_of_range_pages_clamp(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 120)
+
+        for bad_page in ("0", "-3", "abc", ""):
+            resp = await client.get("/control", params={"page": bad_page})
+            assert resp.status_code == 200
+            # non-numeric / non-positive pages clamp to the first page
+            assert "page 1 / 3" in resp.text
+
+        beyond = await client.get("/control", params={"page": "999"})
+        assert beyond.status_code == 200
+        # beyond the last page → clamped to the last page
+        assert "page 3 / 3" in beyond.text
+
+    async def test_pagination_respects_status_filter(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 60, status="completed", purpose_prefix="Done")
+        await _seed_handoff_rows(principal_id, 3, status="rejected", purpose_prefix="Refused")
+
+        resp = await client.get("/control", params={"status": "failed"})
+        assert resp.status_code == 200
+        assert "showing 1\u20133 of 3 (failed)" in resp.text
+        assert resp.text.count(">Refused row") == 3
+        assert "Done row" not in resp.text
+
+    async def test_pager_renders_ellipsis_for_many_pages(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 500)
+
+        resp = await client.get("/control", params={"page": 5})
+        assert resp.status_code == 200
+        assert "page 5 / 10" in resp.text
+        assert 'class="ellipsis"' in resp.text
+        assert 'aria-current="page">5<' in resp.text
+        # first and last page always reachable
+        assert 'href="/control?status=all&amp;page=1"' in resp.text
+        assert 'href="/control?status=all&amp;page=10"' in resp.text
+
+    async def test_no_pager_for_single_page(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 3)
+        resp = await client.get("/control")
+        assert 'class="pager"' not in resp.text
+
+
+class TestHandoffCsvExport:
+    async def test_export_requires_authentication(self, client, app):
+        app.state.settings.control_plane_token = "csv-token-1"
+        try:
+            resp = await client.get("/control/handoffs/export.csv", follow_redirects=False)
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/control/login"
+        finally:
+            app.state.settings.control_plane_token = ""
+
+    async def test_export_returns_metadata_only_csv(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 3, purpose_prefix="Exported")
+        resp = await client.get("/control/handoffs/export.csv")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert "attachment" in resp.headers["content-disposition"]
+        assert "wax-handoffs-" in resp.headers["content-disposition"]
+        lines = resp.text.strip().splitlines()
+        assert lines[0].split(",")[0] == "id"
+        assert "Exported row" in resp.text
+        # metadata-only: no secret columns, no ciphertext, no purpose secrets
+        assert "secret_value" not in resp.text
+        assert "ciphertext" not in resp.text
+
+    async def test_export_honors_status_filter(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 4, status="completed", purpose_prefix="Keep")
+        await _seed_handoff_rows(principal_id, 2, status="rejected", purpose_prefix="Drop")
+        resp = await client.get("/control/handoffs/export.csv", params={"status": "completed"})
+        assert resp.status_code == 200
+        assert "Keep row" in resp.text
+        assert "Drop row" not in resp.text
+
+    async def test_export_neutralizes_spreadsheet_formula_prefixes(self, client, app):
+        principal_id = await _create_principal()
+        from ulid import ULID
+
+        async with db_session() as s:
+            s.add(
+                HumanHandoffRecord(
+                    id=str(ULID()),
+                    principal_id=principal_id,
+                    purpose="=HYPERLINK('https://evil.example','click')",
+                    requested_actions_json={"handoff_kind": "secret", "actions": []},
+                    status="completed",
+                    created_at_col=datetime.now(UTC),
+                )
+            )
+            await s.commit()
+        resp = await client.get("/control/handoffs/export.csv")
+        assert resp.status_code == 200
+        assert "'=HYPERLINK" in resp.text
+        # the raw formula must never begin a cell untouched
+        assert "\n=HYPERLINK" not in resp.text and "\r\n=HYPERLINK" not in resp.text
+
+
+class TestHandoffCancel:
+    async def test_danger_zone_renders_only_for_open_handoffs(self, client, app):
+        principal_id = await _create_principal()
+        open_id = await _create_handoff(principal_id)
+        open_page = await client.get(f"/control/handoffs/{open_id}")
+        assert "Danger zone" in open_page.text
+        assert f'action="/control/handoffs/{open_id}/cancel"' in open_page.text
+
+    async def test_cancel_with_valid_csrf_completes(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from_form(page.text, "/cancel")
+
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/cancel",
+            data={"csrf_token": csrf, "reason": "superseded by a newer request"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/control/handoffs/{handoff_id}?cancelled=1"
+
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            assert handoff.status == "cancelled"
+            assert handoff.failure_reason_safe == "superseded by a newer request"
+
+        # the follow-up page shows the confirmation flash + timeline event
+        # (the browser lands on the redirect target, query string included)
+        detail = await client.get(f"/control/handoffs/{handoff_id}", params={"cancelled": "1"})
+        assert "Handoff cancelled" in detail.text
+        assert "Cancelled by an operator" in detail.text
+        assert "superseded by a newer request" in detail.text
+
+    async def test_cancel_rejects_wrong_scope_csrf(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        # token minted for the SUBMIT form must not cancel
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        submit_csrf = _csrf_from(page.text)  # first form in the page is the submit form
+
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/cancel",
+            data={"csrf_token": submit_csrf},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].endswith("?cancel=stale_token")
+
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            # viewing the detail page marked it opened (still open, still uncancellable-by-that-token)
+            assert handoff.status == "opened"
+
+    async def test_cancel_rejects_terminal_handoff(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+
+        # completed handoffs no longer render the danger zone
+        done_page = await client.get(f"/control/handoffs/{handoff_id}")
+        assert "Danger zone" not in done_page.text
+
+        from wax.runtime.control_plane import ControlPlaneAuth
+
+        auth = ControlPlaneAuth(app.state.settings)
+        resp = await client.post(
+            f"/control/handoffs/{handoff_id}/cancel",
+            data={"csrf_token": auth.make_csrf("cancel")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].endswith("?cancel=error")
+
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            assert handoff.status == "completed"
+
+
+class TestApiStatus:
+    async def test_status_requires_authentication(self, client, app):
+        app.state.settings.control_plane_token = "api-token-1"
+        try:
+            resp = await client.get("/control/api/status")
+            assert resp.status_code == 401
+            assert resp.json() == {"error": "not authenticated"}
+        finally:
+            app.state.settings.control_plane_token = ""
+
+    async def test_status_returns_counts_and_metadata(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        await _seed_handoff_rows(principal_id, 2)
+
+        resp = await client.get("/control/api/status")
+        assert resp.status_code == 200
+        assert resp.headers["Cache-Control"] == "no-store"
+        payload = resp.json()
+        assert payload["status"] == "ok"
+        assert payload["version"]
+        assert payload["env"] == "development"
+        assert payload["counts"]["handoffs_open"] == 1
+        assert payload["counts"]["handoffs_completed"] == 2
+        assert payload["counts"]["handoffs_total"] == 3
+
+    async def test_status_works_with_bearer_token(self, client, app):
+        app.state.settings.control_plane_token = "api-token-2"
+        try:
+            resp = await client.get(
+                "/control/api/status", headers={"Authorization": "Bearer api-token-2"}
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "ok"
+        finally:
+            app.state.settings.control_plane_token = ""
+
+    async def test_status_never_leaks_purpose_text(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 1, purpose_prefix="TOPSECRET-MARKER")
+        resp = await client.get("/control/api/status")
+        assert "TOPSECRET-MARKER" not in resp.text
+
+
+class TestPollToasts:
+    async def test_poll_state_marker_and_toast_code_rendered(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert resp.status_code == 200
+        assert 'id="poll-state"' in resp.text
+        assert 'data-open-count="1"' in resp.text
+        # toast machinery ships with the poller
+        assert "toast-stack" in resp.text
+        assert "new handoff" in resp.text
+
+    async def test_no_poll_state_without_open_handoffs(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_rows(principal_id, 2)
+        resp = await client.get("/control")
+        assert 'id="poll-state"' not in resp.text

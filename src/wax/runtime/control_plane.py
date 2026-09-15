@@ -7,15 +7,22 @@ a human. This module is that missing HTTP layer.
 
 Surface (all server-rendered HTML, same-origin, no external assets):
 
-- GET  /control                          dashboard home (handoff overview)
+- GET  /control                          dashboard home (handoff overview,
+                                         paginated)
 - GET  /control/login                    operator login
 - POST /control/login                    verify token → session cookie
 - POST /control/logout                   clear session
 - GET  /control/handoffs/{id}            handoff detail (metadata only)
 - POST /control/handoffs/{id}/submit     submit the secret (encrypted
                                          immediately, never echoed)
+- POST /control/handoffs/{id}/cancel     operator cancels an open handoff
+                                         (CSRF-protected, wakes waiting work)
+- GET  /control/handoffs/export.csv      metadata-only CSV export (same auth;
+                                         spreadsheet-formula sanitized)
 - POST /control/maintenance/gc           run blob-store garbage collection
                                          (operator-only, CSRF-protected)
+- GET  /control/api/status               read-only JSON status endpoint (same
+                                         auth) for external monitoring
 
 Security posture (per ADR-0048 "Control plane"):
 - Authentication: requires WAX_CONTROL_PLANE_TOKEN (bearer header,
@@ -40,8 +47,11 @@ domains, education, or WhatsApp.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
+import math
 import threading
 import time
 from collections import defaultdict, deque
@@ -50,7 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
@@ -95,6 +105,14 @@ _CSRF_TTL_SECONDS = 15 * 60
 # conservative defaults: 8 failed attempts per IP per 5 minutes.
 _LOGIN_MAX_FAILURES = 8
 _LOGIN_WINDOW_SECONDS = 5 * 60
+
+# Dashboard page size: handoff table pages at 50 rows so an operator's
+# browser never renders an unbounded table; older history stays reachable
+# through the pager and the CSV export.
+_PAGE_SIZE = 50
+# CSV export cap: metadata-only rows are small, but the export is still
+# bounded so a runaway table cannot balloon a single response.
+_CSV_MAX_ROWS = 5000
 
 # Statuses shown as "actionable" on the dashboard and submittable.
 OPEN_STATUSES = (
@@ -333,48 +351,35 @@ def register_control_plane(app) -> None:
             status_filter = "all"
         gc_flash = (request.query_params.get("gc") or "").strip()
         gc_result = _parse_gc_flash(gc_flash)
+        try:
+            page = int(request.query_params.get("page") or "1")
+        except ValueError:
+            page = 1
+        page = max(1, page)
 
         async with db_session() as session:
-            open_count = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(HumanHandoffRecord)
-                    .where(HumanHandoffRecord.status.in_(OPEN_STATUSES))
-                )
-            ).scalar_one()
-            completed_count = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(HumanHandoffRecord)
-                    .where(HumanHandoffRecord.status == HandoffStatus.COMPLETED.value)
-                )
-            ).scalar_one()
-            failed_count = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(HumanHandoffRecord)
-                    .where(HumanHandoffRecord.status.in_(FAILED_STATUSES))
-                )
-            ).scalar_one()
-            total_count = (
-                await session.execute(select(func.count()).select_from(HumanHandoffRecord))
-            ).scalar_one()
-            active_grants = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(AuthorityGrantRecord)
-                    .where(AuthorityGrantRecord.status == AuthorityStatus.ACTIVE.value)
-                )
-            ).scalar_one()
+            counts = await _handoff_counts(session)
+            where = _status_where(status_filter)
+
+            filtered_count = counts["total"]
+            if where is not None:
+                filtered_count = (
+                    await session.execute(
+                        select(func.count()).select_from(HumanHandoffRecord).where(where)
+                    )
+                ).scalar_one()
+            pages = max(1, math.ceil(filtered_count / _PAGE_SIZE))
+            if page > pages:
+                page = pages
 
             query = select(HumanHandoffRecord).order_by(HumanHandoffRecord.created_at.desc())
-            if status_filter == "open":
-                query = query.where(HumanHandoffRecord.status.in_(OPEN_STATUSES))
-            elif status_filter == "completed":
-                query = query.where(HumanHandoffRecord.status == HandoffStatus.COMPLETED.value)
-            elif status_filter == "failed":
-                query = query.where(HumanHandoffRecord.status.in_(FAILED_STATUSES))
-            rows = (await session.execute(query.limit(50))).scalars().all()
+            if where is not None:
+                query = query.where(where)
+            rows = (
+                (await session.execute(query.offset((page - 1) * _PAGE_SIZE).limit(_PAGE_SIZE)))
+                .scalars()
+                .all()
+            )
             await session.commit()
 
         handoffs = [_handoff_view(h) for h in rows]
@@ -383,14 +388,21 @@ def register_control_plane(app) -> None:
             request,
             "dashboard.html",
             {
-                "open_count": open_count,
-                "completed_count": completed_count,
-                "failed_count": failed_count,
-                "total_count": total_count,
-                "active_grants": active_grants,
+                "open_count": counts["open"],
+                "completed_count": counts["completed"],
+                "failed_count": counts["failed"],
+                "total_count": counts["total"],
+                "active_grants": counts["grants"],
                 "handoffs": handoffs,
                 "status_filter": status_filter,
                 "status_filters": _STATUS_FILTERS,
+                "page": page,
+                "pages": pages,
+                "page_size": _PAGE_SIZE,
+                "filtered_count": filtered_count,
+                "showing_from": (page - 1) * _PAGE_SIZE + 1 if rows else 0,
+                "showing_to": (page - 1) * _PAGE_SIZE + len(rows),
+                "page_window": _page_window(page, pages),
                 "env": settings.env.value,
                 "isolation_backend": settings.isolation_backend,
                 "dev_open": auth.dev_open,
@@ -403,6 +415,51 @@ def register_control_plane(app) -> None:
                 "wax_version": _wax_version,
             },
         )
+
+    @app.get("/control/handoffs/export.csv", tags=["control"], include_in_schema=False)
+    async def control_handoff_export_csv(request: Request):
+        """Metadata-only CSV export (same auth as the dashboard).
+
+        Registered BEFORE the /control/handoffs/{handoff_id} detail route:
+        FastAPI matches in registration order, so the literal path must
+        win over the ID pattern or "export.csv" would be treated as an
+        unknown handoff ID.
+
+        Contains NO secret material — only statuses, timestamps and safe
+        reasons. Cells that could be interpreted as spreadsheet formulas
+        (= + - @ prefixes) are neutralized on export.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        status_filter = (request.query_params.get("status") or "all").strip()
+        if status_filter not in _STATUS_FILTERS:
+            status_filter = "all"
+
+        async with db_session() as session:
+            query = (
+                select(HumanHandoffRecord)
+                .order_by(HumanHandoffRecord.created_at.desc())
+                .limit(_CSV_MAX_ROWS)
+            )
+            where = _status_where(status_filter)
+            if where is not None:
+                query = query.where(where)
+            rows = (await session.execute(query)).scalars().all()
+            await session.commit()
+
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        response = Response(
+            content=_handoffs_csv([_handoff_view(h) for h in rows]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="wax-handoffs-{stamp}.csv"'},
+        )
+        _harden(response)
+        return response
 
     @app.get("/control/login", tags=["control"], include_in_schema=False)
     async def control_login_form(request: Request):
@@ -512,6 +569,31 @@ def register_control_plane(app) -> None:
             # secret the runtime would have to refuse.
             submittable = view["open"] and not view["expired"]
             csrf = auth.make_csrf() if submittable else ""
+            # Cancelling stays available for ANY open handoff (including an
+            # expired-but-not-yet-marked one): it is the cleanup affordance
+            # for stale requests, so it intentionally outlives the challenge.
+            cancel_csrf = auth.make_csrf("cancel") if view["open"] else ""
+
+        cancel_flash: dict[str, str] | None = None
+        cancel_param = (request.query_params.get("cancel") or "").strip()
+        if request.query_params.get("cancelled") == "1":
+            cancel_flash = {
+                "kind": "ok",
+                "message": (
+                    "Handoff cancelled — the waiting intelligence was notified and will "
+                    "observe the cancellation instead of blocking on this request."
+                ),
+            }
+        elif cancel_param == "stale_token":
+            cancel_flash = {
+                "kind": "error",
+                "message": "The cancel request was rejected (stale token) — please retry.",
+            }
+        elif cancel_param == "error":
+            cancel_flash = {
+                "kind": "error",
+                "message": "The handoff can no longer be cancelled (it already reached a terminal state).",
+            }
 
         return _html_response(
             request,
@@ -519,6 +601,8 @@ def register_control_plane(app) -> None:
             {
                 "h": view,
                 "csrf": csrf,
+                "cancel_csrf": cancel_csrf,
+                "cancel_flash": cancel_flash,
                 "material_labels": _material_choices(view["kind"]),
                 "wax_version": _wax_version,
             },
@@ -628,6 +712,101 @@ def register_control_plane(app) -> None:
             metrics.control_handoff_submitted()
         return _redirect(f"/control/handoffs/{handoff_id}?submitted=1")
 
+    @app.post("/control/handoffs/{handoff_id}/cancel", tags=["control"], include_in_schema=False)
+    async def control_handoff_cancel(request: Request, handoff_id: str):
+        """Operator cancels an OPEN handoff (noise-cleanup affordance).
+
+        The broker marks the handoff `cancelled`, records a SAFE reason,
+        and emits `authority.handoff_cancelled:{id}` so waiting work wakes
+        immediately instead of blocking until the challenge expires.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return _html_response(request, "error.html", {"error": "Control plane disabled."}, 503)
+        if not auth.is_authenticated(request):
+            return _redirect("/control/login")
+
+        form = await request.form()
+        if not auth.verify_csrf(str(form.get("csrf_token", "") or ""), scope="cancel"):
+            log.warning("control.cancel_csrf_rejected", handoff_id=handoff_id)
+            return _redirect(f"/control/handoffs/{handoff_id}?cancel=stale_token")
+        # The optional reason is operator-supplied metadata (never a secret
+        # entry field) and is stored truncated + plainly labeled.
+        reason = str(form.get("reason", "") or "").strip() or None
+
+        async with db_session() as session:
+            handoff = await session.get(HumanHandoffRecord, handoff_id)
+            if handoff is None:
+                return _html_response(
+                    request, "error.html", {"error": "No such handoff."}, status_code=404
+                )
+            from wax.runtime.authority.broker import AuthorityBroker
+
+            services = getattr(app.state, "services", None)
+            broker = (
+                services.authority_broker
+                if services is not None and services.authority_broker is not None
+                else AuthorityBroker()
+            )
+            try:
+                await broker.cancel_handoff(
+                    session,
+                    handoff_id=handoff.id,
+                    principal_id=handoff.principal_id,
+                    reason_safe=reason,
+                )
+                await session.commit()
+            except ValueError:
+                await session.rollback()
+                log.warning("control.cancel_rejected", handoff_id=handoff_id)
+                return _redirect(f"/control/handoffs/{handoff_id}?cancel=error")
+
+        log.info("control.handoff_cancelled", handoff_id=handoff_id)
+        return _redirect(f"/control/handoffs/{handoff_id}?cancelled=1")
+
+    @app.get("/control/api/status", tags=["control"])
+    async def control_api_status(request: Request):
+        """Read-only JSON status endpoint for external monitoring.
+
+        Same authentication as the dashboard (session cookie or token).
+        Deliberately metadata-only: counters, versions and storage size —
+        never handoff contents, purposes, or any secret material.
+        """
+        settings = app.state.settings
+        auth = ControlPlaneAuth(settings)
+        if not auth.enabled and settings.is_production:
+            return JSONResponse({"error": "control plane disabled"}, status_code=503)
+        if not auth.is_authenticated(request):
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        async with db_session() as session:
+            counts = await _handoff_counts(session)
+        blob_stats = _blob_stats(app)
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "version": _wax_version,
+            "env": settings.env.value,
+            "isolation_backend": settings.isolation_backend,
+            "utc_now": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "counts": {
+                "handoffs_open": counts["open"],
+                "handoffs_completed": counts["completed"],
+                "handoffs_failed": counts["failed"],
+                "handoffs_total": counts["total"],
+                "authority_grants_active": counts["grants"],
+            },
+            "blob_gc_enabled": bool(getattr(settings, "blob_gc_enabled", False)),
+        }
+        if blob_stats is not None:
+            payload["blob_store"] = {
+                "objects": blob_stats["objects"],
+                "bytes": blob_stats["bytes"],
+            }
+        response = JSONResponse(payload)
+        _harden(response)
+        return response
+
     @app.post("/control/maintenance/gc", tags=["control"], include_in_schema=False)
     async def control_maintenance_gc(request: Request):
         """Operator-triggered blob-store garbage collection.
@@ -677,6 +856,127 @@ def register_control_plane(app) -> None:
 # ---------------------------------------------------------------------------
 # View helpers
 # ---------------------------------------------------------------------------
+
+
+async def _handoff_counts(session) -> dict[str, int]:
+    """Aggregate counts shared by the dashboard and /control/api/status."""
+    open_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(HumanHandoffRecord)
+            .where(HumanHandoffRecord.status.in_(OPEN_STATUSES))
+        )
+    ).scalar_one()
+    completed_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(HumanHandoffRecord)
+            .where(HumanHandoffRecord.status == HandoffStatus.COMPLETED.value)
+        )
+    ).scalar_one()
+    failed_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(HumanHandoffRecord)
+            .where(HumanHandoffRecord.status.in_(FAILED_STATUSES))
+        )
+    ).scalar_one()
+    total_count = (
+        await session.execute(select(func.count()).select_from(HumanHandoffRecord))
+    ).scalar_one()
+    active_grants = (
+        await session.execute(
+            select(func.count())
+            .select_from(AuthorityGrantRecord)
+            .where(AuthorityGrantRecord.status == AuthorityStatus.ACTIVE.value)
+        )
+    ).scalar_one()
+    return {
+        "open": open_count,
+        "completed": completed_count,
+        "failed": failed_count,
+        "total": total_count,
+        "grants": active_grants,
+    }
+
+
+def _status_where(status_filter: str):
+    """SQLAlchemy WHERE clause for a dashboard status filter (None = all)."""
+    if status_filter == "open":
+        return HumanHandoffRecord.status.in_(OPEN_STATUSES)
+    if status_filter == "completed":
+        return HumanHandoffRecord.status == HandoffStatus.COMPLETED.value
+    if status_filter == "failed":
+        return HumanHandoffRecord.status.in_(FAILED_STATUSES)
+    return None
+
+
+def _page_window(current: int, total: int, span: int = 1) -> list[int | None]:
+    """Page numbers to render in the pager (None renders as an ellipsis).
+    Always shows the first and last page plus a window around current."""
+    if total <= 7:
+        return list(range(1, total + 1))
+    shown: set[int] = {1, total, current}
+    for delta in range(1, span + 1):
+        shown.update({current - delta, current + delta})
+    numbers = sorted(p for p in shown if 1 <= p <= total)
+    window: list[int | None] = []
+    previous = 0
+    for p in numbers:
+        if p - previous > 1:
+            window.append(None)
+        window.append(p)
+        previous = p
+    return window
+
+
+_CSV_HEADER = (
+    "id",
+    "status",
+    "kind",
+    "purpose",
+    "origin_reference",
+    "created_at_utc",
+    "opened_at_utc",
+    "completed_at_utc",
+    "challenge_expires_at_utc",
+    "evidence_material_type",
+    "failure_reason_safe",
+)
+
+
+def _csv_cell(value: Any) -> str:
+    """Neutralize spreadsheet formula injection: a cell beginning with
+    =, +, - or @ would be evaluated by common spreadsheet apps."""
+    text = "" if value is None else str(value)
+    if text[:1] in ("=", "+", "-", "@"):
+        return "'" + text
+    return text
+
+
+def _handoffs_csv(views: list[dict[str, Any]]) -> str:
+    """Render handoff VIEWS as metadata-only CSV (no secret material)."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_CSV_HEADER)
+    for v in views:
+        evidence = v.get("evidence") or {}
+        writer.writerow(
+            [
+                _csv_cell(v.get("id")),
+                _csv_cell(v.get("display_status") or v.get("status")),
+                _csv_cell(v.get("kind")),
+                _csv_cell(v.get("purpose")),
+                _csv_cell(v.get("origin_reference")),
+                _csv_cell(v.get("created_at")),
+                _csv_cell(v.get("opened_at")),
+                _csv_cell(v.get("completed_at")),
+                _csv_cell(v.get("expires_at")),
+                _csv_cell(evidence.get("material_type", "")),
+                _csv_cell(v.get("failure_reason")),
+            ]
+        )
+    return buffer.getvalue()
 
 
 def _parse_gc_flash(value: str) -> dict[str, Any] | None:
@@ -791,6 +1091,7 @@ def _handoff_view(h: HumanHandoffRecord) -> dict[str, Any]:
         "expires_at": _fmt_dt(h.challenge_expires_at),
         "completed_at": _fmt_dt(h.completed_at),
         "evidence": h.completion_evidence_json or {},
+        "failure_reason": h.failure_reason_safe or "",
     }
 
 
