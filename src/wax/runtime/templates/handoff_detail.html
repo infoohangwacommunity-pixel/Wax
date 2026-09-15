@@ -188,6 +188,11 @@
   </div>
   {% endif %}
 
+  <details class="meta-json">
+    <summary>Metadata JSON (debug view — no secret material)</summary>
+    <pre class="json-pre">{{ metadata_json }}</pre>
+  </details>
+
   <script>
     // Progressive enhancement only: copy the full handoff ID. Works
     // clipboard-first with a fallback for non-secure contexts; the page

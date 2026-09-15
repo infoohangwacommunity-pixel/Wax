@@ -8,7 +8,8 @@ a human. This module is that missing HTTP layer.
 Surface (all server-rendered HTML, same-origin, no external assets):
 
 - GET  /control                          dashboard home (handoff overview,
-                                         paginated)
+                                         paginated, ?status= + ?since=/?until=
+                                         UTC-day filters)
 - GET  /control/login                    operator login
 - POST /control/login                    verify token → session cookie
 - POST /control/logout                   clear session
@@ -51,13 +52,16 @@ import csv
 import hashlib
 import hmac
 import io
+import json
 import math
+import re
 import threading
 import time
 from collections import defaultdict, deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -129,6 +133,9 @@ FAILED_STATUSES = (
 )
 
 _STATUS_FILTERS = ("all", "open", "completed", "failed")
+
+# Date-range filters (?since=YYYY-MM-DD&until=YYYY-MM-DD, UTC days).
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _MATERIAL_LABELS = {
     MaterialType.OPAQUE_SECRET.value: "Opaque secret (API key, password, token)",
@@ -357,9 +364,23 @@ def register_control_plane(app) -> None:
             page = 1
         page = max(1, page)
 
+        try:
+            since_dt, since_raw = _parse_date_param(request, "since")
+            until_dt, until_raw = _parse_date_param(request, "until")
+        except ValueError as e:
+            return _html_response(request, "error.html", {"error": str(e)}, status_code=400)
+        date_qs = _date_query_string(since_raw, until_raw)
+
         async with db_session() as session:
             counts = await _handoff_counts(session)
             where = _status_where(status_filter)
+            date_where = _date_where(since_dt, until_dt)
+            if date_where is not None:
+                from sqlalchemy import and_ as _and
+
+                where = (
+                    date_where if where is None else _and(where, date_where)
+                )  # combined filter for the table
 
             filtered_count = counts["total"]
             if where is not None:
@@ -372,7 +393,11 @@ def register_control_plane(app) -> None:
             if page > pages:
                 page = pages
 
-            query = select(HumanHandoffRecord).order_by(HumanHandoffRecord.created_at.desc())
+            query = select(HumanHandoffRecord).order_by(
+                func.coalesce(
+                    HumanHandoffRecord.created_at_col, HumanHandoffRecord.created_at
+                ).desc()
+            )
             if where is not None:
                 query = query.where(where)
             rows = (
@@ -396,6 +421,9 @@ def register_control_plane(app) -> None:
                 "handoffs": handoffs,
                 "status_filter": status_filter,
                 "status_filters": _STATUS_FILTERS,
+                "since_filter": since_raw,
+                "until_filter": until_raw,
+                "date_qs": date_qs,
                 "page": page,
                 "pages": pages,
                 "page_size": _PAGE_SIZE,
@@ -439,14 +467,28 @@ def register_control_plane(app) -> None:
         status_filter = (request.query_params.get("status") or "all").strip()
         if status_filter not in _STATUS_FILTERS:
             status_filter = "all"
+        try:
+            since_dt, _since_raw = _parse_date_param(request, "since")
+            until_dt, _until_raw = _parse_date_param(request, "until")
+        except ValueError as e:
+            return _html_response(request, "error.html", {"error": str(e)}, status_code=400)
 
         async with db_session() as session:
             query = (
                 select(HumanHandoffRecord)
-                .order_by(HumanHandoffRecord.created_at.desc())
+                .order_by(
+                    func.coalesce(
+                        HumanHandoffRecord.created_at_col, HumanHandoffRecord.created_at
+                    ).desc()
+                )
                 .limit(_CSV_MAX_ROWS)
             )
             where = _status_where(status_filter)
+            date_where = _date_where(since_dt, until_dt)
+            if date_where is not None:
+                from sqlalchemy import and_ as _and
+
+                where = date_where if where is None else _and(where, date_where)
             if where is not None:
                 query = query.where(where)
             rows = (await session.execute(query)).scalars().all()
@@ -604,6 +646,10 @@ def register_control_plane(app) -> None:
                 "cancel_csrf": cancel_csrf,
                 "cancel_flash": cancel_flash,
                 "material_labels": _material_choices(view["kind"]),
+                # Metadata-only JSON view of this handoff (the same fields
+                # the page already renders — no secret material, no
+                # ciphertext, no challenge hash) for operator debugging.
+                "metadata_json": json.dumps(view, indent=2, sort_keys=True),
                 "wax_version": _wax_version,
             },
         )
@@ -909,6 +955,54 @@ def _status_where(status_filter: str):
     if status_filter == "failed":
         return HumanHandoffRecord.status.in_(FAILED_STATUSES)
     return None
+
+
+def _parse_date_param(request: Request, name: str) -> tuple[datetime | None, str]:
+    """Parse a ?since=/&until= UTC-day filter (YYYY-MM-DD).
+
+    Returns (day_start_utc, raw_string). Raises ValueError for malformed
+    or impossible dates — misconfiguration must be loud (400), never a
+    silently-ignored filter that makes the operator trust wrong data.
+    """
+    raw = (request.query_params.get(name) or "").strip()
+    if not raw:
+        return None, ""
+    if not _DATE_RE.match(raw):
+        raise ValueError(f"Invalid {name} filter: expected YYYY-MM-DD, got {raw!r}.")
+    try:
+        day = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError as e:
+        raise ValueError(f"Invalid {name} filter: {raw!r} is not a real calendar date.") from e
+    return day, raw
+
+
+def _date_where(since: datetime | None, until: datetime | None):
+    """WHERE clause bounding the handoff creation day (coalescing the
+    explicit created_at_col with the mixin timestamp), or None."""
+    clauses = []
+    created = func.coalesce(HumanHandoffRecord.created_at_col, HumanHandoffRecord.created_at)
+    if since is not None:
+        clauses.append(created >= since)
+    if until is not None:
+        clauses.append(created < until + timedelta(days=1))  # inclusive day
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    from sqlalchemy import and_
+
+    return and_(*clauses)
+
+
+def _date_query_string(since_raw: str, until_raw: str) -> str:
+    """urlencode'd 'since=…&until=…' fragment ('' when both absent), shared
+    by tab links, the pager and the CSV export so filters survive links."""
+    pairs = []
+    if since_raw:
+        pairs.append(("since", since_raw))
+    if until_raw:
+        pairs.append(("until", until_raw))
+    return urlencode(pairs)
 
 
 def _page_window(current: int, total: int, span: int = 1) -> list[int | None]:

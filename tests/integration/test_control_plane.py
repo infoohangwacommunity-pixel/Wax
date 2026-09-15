@@ -438,6 +438,8 @@ class TestDashboardFiltersAndRefresh:
         )
         resp = await client.get("/control")
         assert 'http-equiv="refresh"' not in resp.text
+        # with zero open handoffs the poller runs in JSON-heartbeat mode
+        assert '"/control/api/status"' in resp.text
 
     async def test_relative_timestamps_rendered(self, client, app):
         principal_id = await _create_principal()
@@ -575,10 +577,13 @@ class TestDashboardLivePolling:
         await _create_handoff(principal_id)
         resp = await client.get("/control")
         assert 'http-equiv="refresh"' in resp.text  # no-JS fallback
-        assert 'meta[http-equiv="refresh"]' in resp.text  # JS removes it
+        assert "meta[http-equiv=refresh]" in resp.text  # JS removes it
         assert "live-dot" in resp.text
 
     async def test_no_poll_script_without_open_handoffs(self, client, app):
+        """No open handoffs → still no meta refresh, but the poller now
+        ALWAYS renders and runs in heartbeat mode (JSON API polling with
+        live stat-card sync) — the dashboard never goes fully dark."""
         principal_id = await _create_principal()
         handoff_id = await _create_handoff(principal_id)
         page = await client.get(f"/control/handoffs/{handoff_id}")
@@ -589,7 +594,9 @@ class TestDashboardLivePolling:
         )
         resp = await client.get("/control")
         assert 'http-equiv="refresh"' not in resp.text
-        assert "setInterval" not in resp.text
+        assert "setInterval" in resp.text  # heartbeat poller present
+        assert '"/control/api/status"' in resp.text
+        assert "heartbeat monitoring every 30s" in resp.text
 
 
 class TestDashboardRuntimeActivity:
@@ -934,8 +941,281 @@ class TestPollToasts:
         assert "toast-stack" in resp.text
         assert "new handoff" in resp.text
 
-    async def test_no_poll_state_without_open_handoffs(self, client, app):
+    async def test_marker_and_heartbeat_rendered_without_open_handoffs(self, client, app):
+        """The marker + poller now ALWAYS render; with zero open handoffs
+        the poller runs in heartbeat mode (JSON API + stat-card sync)."""
         principal_id = await _create_principal()
         await _seed_handoff_rows(principal_id, 2)
         resp = await client.get("/control")
-        assert 'id="poll-state"' not in resp.text
+        assert resp.status_code == 200
+        assert 'id="poll-state"' in resp.text
+        assert 'data-open-count="0"' in resp.text
+        assert '"/control/api/status"' in resp.text
+        # stat cards carry data hooks the heartbeat updates live
+        assert 'data-stat="open"' in resp.text
+        assert 'data-card="open"' in resp.text
+
+    async def test_stale_indicator_and_toast_deep_link_code_rendered(self, client, app):
+        """Poll failures surface a reconnecting state; new-handoff toasts
+        deep-link into the open filter."""
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert "live updates paused" in resp.text  # stale indicator text
+        assert "live-dot stale" in resp.text
+        assert "Live updates resumed" in resp.text  # recovery toast
+        assert "toast-action" in resp.text
+        assert "/control?status=open" in resp.text  # deep-link target
+
+
+# ---------------------------------------------------------------------------
+# Round 5: date-range filters, metadata JSON panel, unified live poller
+# ---------------------------------------------------------------------------
+
+
+async def _seed_handoff_on(principal_id: str, *, days_ago: int, purpose: str) -> None:
+    """One handoff row created exactly `days_ago` days before now."""
+    from ulid import ULID
+
+    async with db_session() as s:
+        s.add(
+            HumanHandoffRecord(
+                id=str(ULID()),
+                principal_id=principal_id,
+                purpose=purpose,
+                origin_reference="https://dates.example.com/job",
+                requested_actions_json={"handoff_kind": "secret", "actions": []},
+                status="completed",
+                challenge_hash="seeded",
+                created_at_col=datetime.now(UTC) - timedelta(days=days_ago),
+            )
+        )
+        await s.commit()
+
+
+class TestDateRangeFilter:
+    async def test_since_excludes_older_rows(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_on(principal_id, days_ago=30, purpose="Old winter row")
+        await _seed_handoff_on(principal_id, days_ago=1, purpose="Fresh recent row")
+
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        resp = await client.get("/control", params={"since": cutoff})
+        assert resp.status_code == 200
+        assert "Fresh recent row" in resp.text
+        assert "Old winter row" not in resp.text
+        # the applied range is visible as a chip
+        assert f"created {cutoff}" in resp.text
+        assert "chip-clear" in resp.text
+
+    async def test_until_excludes_newer_rows(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_on(principal_id, days_ago=30, purpose="Ancient archived row")
+        await _seed_handoff_on(principal_id, days_ago=0, purpose="Today fresh row")
+
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        resp = await client.get("/control", params={"until": cutoff})
+        assert resp.status_code == 200
+        assert "Ancient archived row" in resp.text
+        assert "Today fresh row" not in resp.text
+
+    async def test_until_day_is_inclusive(self, client, app):
+        """until=2026-01-10 must include rows created ON that UTC day."""
+        principal_id = await _create_principal()
+        from ulid import ULID
+
+        async with db_session() as s:
+            s.add(
+                HumanHandoffRecord(
+                    id=str(ULID()),
+                    principal_id=principal_id,
+                    purpose="Boundary day row",
+                    requested_actions_json={"handoff_kind": "secret", "actions": []},
+                    status="completed",
+                    challenge_hash="seeded",
+                    created_at_col=datetime(2026, 1, 10, 23, 59, 0, tzinfo=UTC),
+                )
+            )
+            await s.commit()
+
+        resp = await client.get("/control", params={"until": "2026-01-10"})
+        assert resp.status_code == 200
+        assert "Boundary day row" in resp.text
+
+        excluded = await client.get("/control", params={"until": "2026-01-09"})
+        assert "Boundary day row" not in excluded.text
+
+    async def test_since_and_until_combine_with_status_filter(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_on(principal_id, days_ago=1, purpose="Range completed row")
+        await _seed_handoff_on(principal_id, days_ago=1, purpose="Range failed row")
+
+        # mark the second row rejected
+        async with db_session() as s:
+            from sqlalchemy import select as _select
+
+            row = (
+                await s.execute(
+                    _select(HumanHandoffRecord).where(
+                        HumanHandoffRecord.purpose == "Range failed row"
+                    )
+                )
+            ).scalar_one()
+            row.status = "rejected"
+            await s.commit()
+
+        cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
+        resp = await client.get("/control", params={"status": "failed", "since": cutoff})
+        assert resp.status_code == 200
+        assert "Range failed row" in resp.text
+        assert "Range completed row" not in resp.text
+        assert "showing 1\u20131 of 1 (failed)" in resp.text
+
+    async def test_invalid_date_returns_loud_400(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_on(principal_id, days_ago=1, purpose="Unrelated row")
+
+        for bad in ("not-a-date", "2026-13-40", "20260101"):
+            resp = await client.get("/control", params={"since": bad})
+            assert resp.status_code == 400, f"{bad!r} must be rejected loudly"
+            assert "Invalid since filter" in resp.text
+            # the error page links back to the dashboard
+            assert "Return to the dashboard" in resp.text
+
+        # impossible calendar date on until too
+        resp = await client.get("/control", params={"until": "2026-02-30"})
+        assert resp.status_code == 400
+        assert "not a real calendar date" in resp.text
+
+    async def test_pager_preserves_date_filter(self, client, app):
+        principal_id = await _create_principal()
+        # 55 rows within the range → 2 pages, all inside the date window
+        from ulid import ULID
+
+        async with db_session() as s:
+            for i in range(55):
+                s.add(
+                    HumanHandoffRecord(
+                        id=str(ULID()),
+                        principal_id=principal_id,
+                        purpose=f"Dated bulk row {i:03d}",
+                        requested_actions_json={"handoff_kind": "secret", "actions": []},
+                        status="completed",
+                        challenge_hash="seeded",
+                        created_at_col=datetime.now(UTC) - timedelta(minutes=i),
+                    )
+                )
+            await s.commit()
+
+        cutoff = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        resp = await client.get("/control", params={"since": cutoff})
+        assert "page 1 / 2" in resp.text
+        assert f"status=all&amp;since={cutoff}&amp;page=2" in resp.text
+        page2 = await client.get("/control", params={"since": cutoff, "page": 2})
+        assert "showing 51\u201355 of 55" in page2.text
+
+    async def test_csv_export_honors_date_range(self, client, app):
+        principal_id = await _create_principal()
+        await _seed_handoff_on(principal_id, days_ago=30, purpose="CSV old row")
+        await _seed_handoff_on(principal_id, days_ago=1, purpose="CSV new row")
+
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        resp = await client.get("/control/handoffs/export.csv", params={"since": cutoff})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert "CSV new row" in resp.text
+        assert "CSV old row" not in resp.text
+
+    async def test_csv_export_rejects_invalid_date(self, client, app):
+        resp = await client.get("/control/handoffs/export.csv", params={"until": "bogus"})
+        assert resp.status_code == 400
+        assert "Invalid until filter" in resp.text
+
+
+class TestMetadataJsonPanel:
+    @staticmethod
+    def _json_payload(html: str) -> dict:
+        import html as _html
+        import json as _json
+
+        match = re.search(r'<pre class="json-pre">(.*?)</pre>', html, re.DOTALL)
+        assert match, "json pre block must render"
+        # the pre block is HTML-escaped (correctly — purposes can contain
+        # markup); unescape before parsing
+        return _json.loads(_html.unescape(match.group(1)))
+
+    async def test_detail_renders_metadata_only_json(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        resp = await client.get(f"/control/handoffs/{handoff_id}")
+        assert resp.status_code == 200
+        assert "Metadata JSON" in resp.text
+        payload = self._json_payload(resp.text)
+        assert payload["id"] == handoff_id
+        assert payload["purpose"].startswith("Deploy service")
+        assert payload["status"] in ("pending", "opened")
+
+    async def test_json_panel_never_contains_secret_material(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
+        )
+        resp = await client.get(f"/control/handoffs/{handoff_id}")
+        assert SECRET_TYPED_BY_HUMAN not in resp.text  # never echoed, anywhere
+        payload = self._json_payload(resp.text)
+        # metadata-only: evidence carries opaque handles, never ciphertext
+        import json as _json
+
+        flat = _json.dumps(payload)
+        assert "ciphertext" not in flat
+        assert "challenge_hash" not in flat
+        for key in payload.get("evidence", {}):
+            assert key in ("material_type", "material_id", "grant_id")
+
+    async def test_json_panel_escapes_html_in_purpose(self, client, app):
+        """A purpose containing HTML must be escaped in the JSON view."""
+        principal_id = await _create_principal()
+        from ulid import ULID
+
+        async with db_session() as s:
+            s.add(
+                HumanHandoffRecord(
+                    id=str(ULID()),
+                    principal_id=principal_id,
+                    purpose="</pre><script>alert(1)</script>",
+                    requested_actions_json={"handoff_kind": "secret", "actions": []},
+                    status="completed",
+                    challenge_hash="seeded",
+                    created_at_col=datetime.now(UTC),
+                )
+            )
+            await s.commit()
+        resp = await client.get(f"/control/handoffs/{await _last_handoff_id()}")
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;/pre&gt;&lt;script&gt;" in resp.text
+        # after unescaping, the payload still carries the true purpose
+        payload = self._json_payload(resp.text)
+        assert payload["purpose"] == "</pre><script>alert(1)</script>"
+
+
+async def _last_handoff_id() -> str:
+    async with db_session() as s:
+        from sqlalchemy import select as _select
+
+        row = (
+            (
+                await s.execute(
+                    _select(HumanHandoffRecord).order_by(
+                        HumanHandoffRecord.created_at_col.desc().nullslast()
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert row is not None
+        return row.id
