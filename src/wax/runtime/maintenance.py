@@ -1,6 +1,6 @@
 """Runtime maintenance loop — lifecycle hygiene the runtime owns.
 
-Four deterministic sweeps, one loop, in the lifespan alongside the other
+Deterministic sweeps, one loop, in the lifespan alongside the other
 reapers:
 
 1. Approval expiry — pending approvals past their deadline become
@@ -11,7 +11,10 @@ reapers:
 3. Delivery retries — outbound messages that could not be delivered are
    retried with backoff until delivered, exhausted, or past the
    deliverability horizon (ADR-0021, mission §55).
-4. Observability — each sweep emits structured logs and metrics so the
+4. Conversation lifecycle — active → idle → archived marking.
+5. Blob-store garbage collection (opt-in, WAX_BLOB_GC_ENABLED).
+6. Audit-ledger retention (opt-in, WAX_AUDIT_RETENTION_DAYS).
+7. Observability — each sweep emits structured logs and metrics so the
    operator sees what the runtime cleaned up.
 
 Nothing here is AI-driven and nothing here is domain-specific: it is
@@ -21,6 +24,7 @@ pure lifecycle infrastructure.
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from wax.runtime.leadership import MaintenanceLeadership
@@ -187,6 +191,36 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
                         )
             else:
                 results["blob_gc"] = {"skipped": "no_blob_store"}
+
+        # 6. Audit-ledger retention (OPT-IN via WAX_AUDIT_RETENTION_DAYS).
+        # The audit ledger is append-only (INV-06): the application never
+        # updates or silently deletes history. When the operator sets an
+        # explicit retention window, events older than it are removed by
+        # the scheduled pass — the same "deletion is a decision, never a
+        # default" philosophy as blob GC. Gate off (default) → the sweep
+        # does nothing and the ledger grows unbounded (the audit page
+        # shows a growth warning so the operator always knows).
+        results["audit_events_pruned"] = 0
+        retention_days = int(getattr(settings, "audit_retention_days", 0) or 0)
+        if retention_days > 0:
+            from sqlalchemy import delete
+
+            from wax.state.audit_models import AuditEvent
+
+            cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+            async with db_session() as session:
+                deleted = await session.execute(
+                    delete(AuditEvent).where(AuditEvent.created_at < cutoff)
+                )
+                await session.commit()
+            pruned_audit = int(deleted.rowcount or 0)
+            results["audit_events_pruned"] = pruned_audit
+            if pruned_audit:
+                log.info(
+                    "runtime.audit_retention_pass",
+                    removed=pruned_audit,
+                    retention_days=retention_days,
+                )
 
         _metric().maintenance_led()
         if results["expired_approvals"] or pruned or results["delivery_retries"].get("due", 0):

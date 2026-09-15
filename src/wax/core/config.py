@@ -169,6 +169,15 @@ class WaxSettings(BaseSettings):
     # oldest prune-safe rows beyond the bound are removed.
     signal_max_ledger_rows: int = 100_000
 
+    # --- Audit ledger retention (control plane) ---
+    # The audit_events ledger is append-only (INV-06): the application
+    # never updates or silently deletes history. When this is > 0, the
+    # maintenance pass deletes events older than N days as an EXPLICIT
+    # operator retention policy (the same philosophy as blob GC:
+    # deletion is a decision, never a default). 0 keeps history forever —
+    # the audit page then shows a growth warning once the ledger is large.
+    audit_retention_days: int = 0
+
     # --- Durable outbound delivery (ADR-0021) ---
     # A completed result whose interface send fails becomes recoverable
     # state: the maintenance loop retries with exponential backoff until

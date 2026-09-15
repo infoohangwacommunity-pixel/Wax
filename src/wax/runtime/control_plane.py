@@ -175,6 +175,11 @@ _AUDIT_KIND_PREFIX = {
     "maintenance": "control.blob_gc",
 }
 
+# Growth warning threshold for the append-only audit ledger: when no
+# retention policy is configured and the ledger passes this many rows,
+# the audit page says so honestly instead of growing silently forever.
+_AUDIT_WARN_ROWS = 50_000
+
 _MATERIAL_LABELS = {
     MaterialType.OPAQUE_SECRET.value: "Opaque secret (API key, password, token)",
     MaterialType.SESSION_MATERIAL.value: "Session material (cookie blob, session id)",
@@ -453,6 +458,22 @@ def register_control_plane(app) -> None:
 
         async with db_session() as session:
             counts = await _handoff_counts(session)
+            # Last GC fact for the storage card: the most recent blob-GC
+            # audit event (scheduled system sweep OR operator-run). One
+            # indexed query; the card says honestly when storage was
+            # last cleaned and by whom.
+            last_gc_row = (
+                (
+                    await session.execute(
+                        select(AuditEvent)
+                        .where(AuditEvent.event_kind.in_(("system.blob_gc", "control.blob_gc")))
+                        .order_by(AuditEvent.created_at.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
             where = _combine_where(
                 _status_where(status_filter),
                 _date_where(since_dt, until_dt),
@@ -517,6 +538,7 @@ def register_control_plane(app) -> None:
                 "blob_objects": blob_stats["objects"] if blob_stats else None,
                 "blob_bytes": blob_stats["bytes"] if blob_stats else None,
                 "blob_gc_enabled": bool(getattr(settings, "blob_gc_enabled", False)),
+                "last_gc": _last_gc_view(last_gc_row),
                 "gc_result": gc_result,
                 "bulk_flash": bulk_flash,
                 "bulk_csrf": auth.make_csrf("cancel"),
@@ -669,6 +691,8 @@ def register_control_plane(app) -> None:
                 "revoke_csrf": auth.make_csrf("revoke"),
                 "revoked_flash": revoked_flash == "1",
                 "revoke_flash": revoke_flash,
+                "heartbeat": True,
+                "dev_open": auth.dev_open,
                 "wax_version": _wax_version,
             },
         )
@@ -809,6 +833,7 @@ def register_control_plane(app) -> None:
         except ValueError:
             page = 1
         page = max(1, page)
+        retention_days = int(getattr(settings, "audit_retention_days", 0) or 0)
 
         async with db_session() as session:
             base_where = _audit_base_where()
@@ -817,6 +842,7 @@ def register_control_plane(app) -> None:
                     select(func.count()).select_from(AuditEvent).where(base_where)
                 )
             ).scalar_one()
+            kind_counts = await _audit_family_counts(session)
             where = _combine_where(
                 _audit_kind_where(kind_filter),
                 _audit_search_where(q_filter),
@@ -847,6 +873,13 @@ def register_control_plane(app) -> None:
                 "events": [_audit_view(e) for e in rows],
                 "kind_filter": kind_filter,
                 "kind_filters": _AUDIT_KIND_FILTERS,
+                "kind_counts": kind_counts,
+                "retention_days": retention_days,
+                "retention_warning": _retention_warning(
+                    total, retention_days, threshold=_AUDIT_WARN_ROWS
+                ),
+                "heartbeat": True,
+                "dev_open": auth.dev_open,
                 "q_filter": q_filter,
                 "filter_qs": _filter_query_string(("kind", kind_filter), ("q", q_filter)),
                 "total_count": total,
@@ -1153,6 +1186,7 @@ def register_control_plane(app) -> None:
                 "csrf": csrf,
                 "cancel_csrf": cancel_csrf,
                 "cancel_flash": cancel_flash,
+                "dev_open": auth.dev_open,
                 "material_labels": _material_choices(view["kind"]),
                 # Metadata-only JSON view of this handoff (the same fields
                 # the page already renders — no secret material, no
@@ -1202,6 +1236,7 @@ def register_control_plane(app) -> None:
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
                         "wax_version": _wax_version,
+                        "dev_open": auth.dev_open,
                         "error": "Session expired — the form token is stale. Please submit again.",
                     },
                     status_code=403,
@@ -1217,6 +1252,7 @@ def register_control_plane(app) -> None:
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
                         "wax_version": _wax_version,
+                        "dev_open": auth.dev_open,
                         "error": "The value must not be empty.",
                     },
                     status_code=400,
@@ -1270,6 +1306,7 @@ def register_control_plane(app) -> None:
                         "csrf": auth.make_csrf(),
                         "material_labels": _material_choices(view["kind"]),
                         "wax_version": _wax_version,
+                        "dev_open": auth.dev_open,
                         "error": str(e),
                     },
                     status_code=400,
@@ -1614,16 +1651,22 @@ def _audit_base_where():
 def _audit_kind_where(kind_filter: str):
     """WHERE clause for an audit kind tab, or None ("all"). The
     maintenance tab covers both the operator-triggered GC and the
-    system's scheduled GC."""
+    system's scheduled GC; the login tab covers the whole auth-session
+    family (sign-ins AND sign-outs — a sign-out has no other home)."""
     prefix = _AUDIT_KIND_PREFIX.get(kind_filter)
     if not prefix:
         return None
-    if kind_filter == "maintenance":
-        from sqlalchemy import or_
+    from sqlalchemy import or_
 
+    if kind_filter == "maintenance":
         return or_(
             AuditEvent.event_kind.like(f"{prefix}%"),
             AuditEvent.event_kind.like("system.%"),
+        )
+    if kind_filter == "login":
+        return or_(
+            AuditEvent.event_kind.like("control.login%"),
+            AuditEvent.event_kind.like("control.logout%"),
         )
     return AuditEvent.event_kind.like(f"{prefix}%")
 
@@ -1658,6 +1701,82 @@ def _combine_where(*clauses):
     from sqlalchemy import and_
 
     return and_(*present)
+
+
+async def _audit_family_counts(session) -> dict[str, int]:
+    """Per-tab event counts for the audit kind tabs, from ONE grouped
+    query (no extra round-trip per tab). Family mapping mirrors
+    _audit_kind_where — the maintenance tab covers both the
+    operator-triggered GC (control.blob_gc) and the system's scheduled
+    GC (system.*); the login tab covers sign-ins AND sign-outs. Kinds
+    outside every family still count toward "all" (honest totals), they
+    just have no dedicated tab."""
+    rows = await session.execute(
+        select(AuditEvent.event_kind, func.count())
+        .where(_audit_base_where())
+        .group_by(AuditEvent.event_kind)
+    )
+    counts = {f: 0 for f in _AUDIT_KIND_FILTERS}
+    for kind, n in rows.all():
+        n = int(n)
+        counts["all"] += n
+        if kind.startswith("control.login") or kind.startswith("control.logout"):
+            counts["login"] += n
+        elif kind.startswith("control.handoff"):
+            counts["handoffs"] += n
+        elif kind.startswith("control.grant"):
+            counts["grants"] += n
+        elif kind.startswith("control.blob_gc") or kind.startswith("system."):
+            counts["maintenance"] += n
+    return counts
+
+
+def _retention_warning(
+    total: int, retention_days: int, threshold: int = _AUDIT_WARN_ROWS
+) -> str | None:
+    """Growth warning for the audit page header, or None.
+
+    The ledger is append-only (INV-06): with no retention policy it grows
+    forever. Once it passes the threshold, the page says so plainly and
+    names the setting that bounds it — a misconfigured deployment must
+    not become a silent storage leak. A configured policy (> 0 days)
+    means the ledger is bounded and never warns."""
+    if retention_days > 0 or total < threshold:
+        return None
+    return (
+        f"The audit ledger holds {total:,} events and no retention policy is "
+        "configured — it grows unbounded. Set WAX_AUDIT_RETENTION_DAYS "
+        "(days) to bound its growth."
+    )
+
+
+def _last_gc_view(row) -> dict[str, Any] | None:
+    """Display projection of the most recent GC audit event for the
+    dashboard's storage card — scheduled system sweep OR operator-run.
+    Metadata only; the numbers come from the audit payload."""
+    if row is None:
+        return None
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    try:
+        removed = int(payload.get("removed", 0))
+        reclaimed = int(payload.get("reclaimed_bytes", 0))
+    except (TypeError, ValueError):
+        removed, reclaimed = 0, 0
+    when = row.created_at
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    scheduled = row.event_kind == "system.blob_gc"
+    actor_label = "scheduled" if scheduled else "operator"
+    return {
+        "removed": removed,
+        "reclaimed_kb": reclaimed / 1024,
+        "when_rel": _rel_dt(when) or "—",
+        "when_abs": when.strftime("%Y-%m-%d %H:%M:%SZ") if when else "",
+        "scheduled": scheduled,
+        "actor_label": actor_label,
+        "title_text": f"last GC: {when.strftime('%Y-%m-%d %H:%M:%SZ') if when else ''} "
+        f"({'scheduled sweep' if scheduled else 'operator run'})",
+    }
 
 
 def _grant_status_where(status_filter: str, now: datetime):

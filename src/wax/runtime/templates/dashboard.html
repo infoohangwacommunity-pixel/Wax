@@ -55,7 +55,9 @@
         n/a
         {% endif %}
       </div>
-      <div class="sub">content-addressed · scheduled GC {{ "on" if blob_gc_enabled else "off" }}</div>
+      <div class="sub">content-addressed · scheduled GC {{ "on" if blob_gc_enabled else "off" }}
+        {%- if last_gc %} · <span title="{{ last_gc.title_text }}">last GC removed {{ last_gc.removed }} blob{{ "s" if last_gc.removed != 1 }} ({{ "%.1f" | format(last_gc.reclaimed_kb) }} KB) {{ last_gc.when_rel }}, {{ last_gc.actor_label }}</span>{% endif %}
+      </div>
     </div>
     <div class="card" data-card="activity">
       <div class="k">Runtime activity</div>

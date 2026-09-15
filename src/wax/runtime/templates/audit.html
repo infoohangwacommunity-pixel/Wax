@@ -5,13 +5,20 @@
   <div class="section-head">
     <h2>Audit log</h2>
     <span class="note">append-only record of every operator action (INV-06) · metadata only —
-    never secrets, never ciphertext</span>
+    never secrets, never ciphertext · retention
+    {% if retention_days > 0 %}<span class="chip" title="Events older than this are removed by the scheduled maintenance pass">{{ retention_days }}d</span>{% else %}<span class="muted">off (kept forever)</span>{% endif %}</span>
   </div>
+
+  {% if retention_warning %}
+  <div class="warn-note" role="status">{{ retention_warning }}</div>
+  {% endif %}
 
   <div class="section-head" style="margin-bottom:16px">
     <div class="tabs" role="tablist" aria-label="Filter audit events by kind">
       {% for f in kind_filters %}
-      <a href="/control/audit?kind={{ f }}{% if q_filter %}&amp;q={{ q_filter|urlencode }}{% endif %}" class="{{ "active" if kind_filter == f }}" role="tab" aria-selected="{{ "true" if kind_filter == f else "false" }}">{{ f }}</a>
+      <a href="/control/audit?kind={{ f }}{% if q_filter %}&amp;q={{ q_filter|urlencode }}{% endif %}" class="{{ "active" if kind_filter == f }}" role="tab" aria-selected="{{ "true" if kind_filter == f else "false" }}">{{ f }}
+        <span class="count" title="Events in this family (all pages)">{{ kind_counts[f] }}</span>
+      </a>
       {% endfor %}
     </div>
     <span class="note">showing {{ showing_from }}–{{ showing_to }} of {{ filtered_count }}{% if kind_filter != "all" %} ({{ kind_filter }}){% endif %}{% if q_filter %} matching “{{ q_filter }}”{% endif %}</span>

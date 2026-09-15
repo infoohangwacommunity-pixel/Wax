@@ -361,6 +361,23 @@
       border: 1px solid rgba(16,185,129,.4); background: var(--ok-soft);
       color: var(--ok-text); border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
     }
+    /* quiet amber advisory (e.g. unbounded audit ledger) — visible but
+       not alarming: it is a configuration gap, not an incident */
+    .warn-note {
+      border: 1px solid rgba(245,158,11,.4); background: var(--warn-soft);
+      color: var(--warn); border-radius: var(--radius-sm); padding: 11px 14px; margin: 16px 0 0; font-size: 13.5px;
+    }
+    .warn-note .mono { font-size: 12.5px; }
+
+    /* ---------- keyboard focus (a11y) ----------
+       Every interactive element gets a visible ring when TABBED to
+       (:focus-visible), never on mouse click — keyboard operators must
+       always see where they are. */
+    a:focus-visible, button:focus-visible, input:focus-visible,
+    select:focus-visible, textarea:focus-visible, summary:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+    }
 
     /* ---------- definition lists ---------- */
     dl.meta { display: grid; grid-template-columns: 170px 1fr; gap: 9px 18px; margin: 0; }
@@ -430,6 +447,23 @@
     }
     .live-dot.on { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
     .live-dot.stale { background: var(--warn); animation: none; box-shadow: 0 0 0 3px var(--warn-soft); }
+
+    /* heartbeat pill (audit/grants pages): fixed, quiet, always visible;
+       warn state when handoffs are waiting; clicking it opens the open-
+       handoffs view. Bottom-left keeps it clear of the toast stack. */
+    .hb-pill {
+      position: fixed; left: 16px; bottom: 16px; z-index: 40;
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 13px; border-radius: 999px; font-size: 12px; font-weight: 600;
+      font-variant-numeric: tabular-nums; text-decoration: none; cursor: default;
+      background: var(--panel);
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+      border: 1px solid var(--border-strong); color: var(--muted);
+      box-shadow: var(--shadow); backdrop-filter: blur(6px);
+    }
+    a.hb-pill { cursor: pointer; }
+    a.hb-pill:hover { color: var(--text); border-color: var(--accent); }
+    .hb-pill.waiting { color: var(--warn); border-color: rgba(245,158,11,.45); }
     @keyframes pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,.45); }
       50% { box-shadow: 0 0 0 5px rgba(16,185,129,0); }
@@ -615,6 +649,72 @@
   <footer>
     WAX Runtime v{{ wax_version | default("?") }} — infrastructure, not intelligence<span class="sep">·</span>server-rendered same-origin dashboard (ADR-0048)<span class="sep">·</span>secrets are encrypted on submission and never displayed again<span class="sep">·</span><a class="f-link" href="/control/api/status">status API</a>
   </footer>
+  {% if heartbeat %}
+  <script>
+    // Heartbeat (audit/grants pages): poll the status API every 30s and
+    // keep a small fixed pill honest — quiet when nothing is waiting,
+    // amber with a count when open handoffs exist (then it is a link to
+    // the open-handoffs view), "reconnecting" after two failed polls.
+    // These are ledger pages: no HTML patching (filters/pagination must
+    // never be wiped), the pill only reports. The dashboard does NOT
+    // render this script — it has its own two-mode poller.
+    (function () {
+      var INTERVAL = 30000;
+      var failures = 0, stale = false, current = null;
+
+      function build(open, staleNow) {
+        var cls = "hb-pill";
+        var text;
+        if (staleNow) {
+          text = "reconnecting\u2026";
+        } else if (open > 0) {
+          cls += " waiting";
+          text = open === 1 ? "1 handoff waiting" : open + " handoffs waiting";
+        } else {
+          text = "all quiet";
+        }
+        var el = document.createElement(staleNow || open === 0 ? "div" : "a");
+        if (el.tagName === "A") {
+          el.href = "/control?status=open";
+          el.title = "Review the open handoffs";
+        }
+        el.id = "hb-pill";
+        el.className = cls;
+        el.setAttribute("role", "status");
+        el.setAttribute("aria-label", "Live control plane status");
+        el.innerHTML = '<span class="live-dot' + (staleNow ? " stale" : " on")
+          + '" aria-hidden="true"></span>' + text;
+        return el;
+      }
+      function render(open, staleNow) {
+        var next = build(open, staleNow);
+        if (current) current.replaceWith(next);
+        else document.body.appendChild(next);
+        current = next;
+      }
+      function poll() {
+        if (document.hidden) return;
+        fetch("/control/api/status", { headers: { "Accept": "application/json" } })
+          .then(function (r) {
+            if (!r.ok) throw new Error("http " + r.status);
+            return r.json();
+          })
+          .then(function (payload) {
+            failures = 0;
+            stale = false;
+            var open = payload && payload.counts ? Number(payload.counts.handoffs_open || 0) : 0;
+            render(open, false);
+          })
+          .catch(function () {
+            failures++;
+            if (failures >= 2 && !stale) { stale = true; render(0, true); }
+          });
+      }
+      poll();
+      setInterval(poll, INTERVAL);
+    })();
+  </script>
+  {% endif %}
   <script>
     // Theme toggle: flips the data-theme attribute and remembers the
     // operator's choice. The head bootstrap script already applied the
