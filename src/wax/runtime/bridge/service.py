@@ -570,6 +570,8 @@ class RuntimeBridge:
         request: RuntimeRequest,
         context: ContinuityContext,
         sanitizer_result: SanitizerResult | None,
+        *,
+        initial_messages: list[LLMMessage] | None = None,
     ) -> str:
         """Run the intelligence loop and return the final response text.
 
@@ -580,6 +582,11 @@ class RuntimeBridge:
         as tool messages; the loop is bounded by settings.max_tool_rounds.
 
         Raises on failure — the caller owns the failure semantics.
+
+        P0-8: When `initial_messages` is provided (re-entry path), use
+        them instead of calling _build_messages. This ensures the runtime
+        observation (added as a TOOL message in run_reentry) actually
+        reaches the provider.
         """
         accountant = self._services.resource_accountant
         metrics = self._services.metrics
@@ -604,14 +611,20 @@ class RuntimeBridge:
             token_counter=budget.counter,
         )
 
-        messages = self._build_messages(
-            principal_display,
-            request,
-            context,
-            sanitizer_result,
-            principal_id,
-            budget_chars=budget.budget_chars,
-        )
+        # P0-8: When initial_messages are provided (re-entry path), use
+        # them instead of rebuilding from _build_messages. This ensures the
+        # runtime observation actually reaches the provider.
+        if initial_messages is not None:
+            messages = initial_messages
+        else:
+            messages = self._build_messages(
+                principal_display,
+                request,
+                context,
+                sanitizer_result,
+                principal_id,
+                budget_chars=budget.budget_chars,
+            )
         tools = self._capability_tools()
         max_rounds = max(0, int(self._services.settings.max_tool_rounds))
 
@@ -1201,6 +1214,7 @@ class RuntimeBridge:
                     ),
                     context=context,
                     sanitizer_result=None,
+                    initial_messages=messages,  # P0-8: pass the pre-built messages
                 )
 
                 # 11. Persist continuation memory (episodic)

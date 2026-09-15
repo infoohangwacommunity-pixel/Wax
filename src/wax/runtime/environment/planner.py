@@ -221,9 +221,16 @@ class EnvironmentPlanner:
             isolation=plan.isolation_grade.value,
         )
 
+        # P0-11: Update the plan with the actual workspace_id now that
+        # the workspace is provisioned. EnvironmentPlan is frozen, so we
+        # create a new one with the workspace_id set.
+        from dataclasses import replace as dc_replace
+
+        updated_plan = dc_replace(plan, workspace_id=workspace_resource_id)
+
         return EnvironmentLease(
             environment_id=environment_id,
-            plan=plan,
+            plan=updated_plan,
             expires_at=expires_at,
             owner_execution_id=execution_id or "",
             state=EnvironmentState.PROVISIONED,
