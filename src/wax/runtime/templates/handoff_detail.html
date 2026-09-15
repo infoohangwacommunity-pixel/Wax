@@ -1,18 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Handoff {{ h.id[:12] }} — WAX Control Plane{% endblock %}
 {% block content %}
-  <p style="margin:0 0 14px"><a class="link" href="/control">← Back to dashboard</a></p>
+  <p style="margin:0 0 16px"><a class="link" href="/control">← Back to dashboard</a></p>
 
   <div class="panel">
     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
-      <h2 style="margin:0;font-size:17px" class="mono">Handoff {{ h.id }}</h2>
-      <span>
-        <span class="kind">{{ h.kind }}</span>
-        <span class="badge {{ h.status }}" style="margin-left:8px">{{ h.status }}</span>
+      <div class="id-row">
+        <h2 style="margin:0;font-size:16px" class="mono">Handoff {{ h.id[:18] }}…</h2>
+        <button class="copy-btn" type="button" data-copy="{{ h.id }}" title="Copy full handoff ID">copy ID</button>
+      </div>
+      <span style="display:inline-flex;gap:8px;align-items:center">
+        <span class="kind">
+          {% if h.kind == "browser" %}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          {% else %}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          {% endif %}
+          {{ h.kind }}
+        </span>
+        <span class="badge {{ h.display_status }}">{{ h.display_status }}</span>
       </span>
     </div>
 
-    <dl class="meta" style="margin-top:18px">
+    <dl class="meta" style="margin-top:20px">
       <dt>Purpose</dt><dd>{{ h.purpose }}</dd>
       {% if h.origin_reference %}
       <dt>Origin</dt><dd class="mono">{{ h.origin_reference }}</dd>
@@ -37,9 +47,9 @@
     {% endif %}
   </div>
 
-  {% if h.open %}
+  {% if h.submittable %}
   <div class="panel">
-    <h3 style="margin:0 0 4px;font-size:15px">
+    <h3 style="margin:0 0 4px;font-size:15.5px">
       {% if h.kind == "browser" %}Provide the browser session reference{% else %}Provide the secret{% endif %}
     </h3>
     <p class="muted" style="margin:0;font-size:13px">
@@ -72,14 +82,26 @@
       <button type="submit">Encrypt &amp; submit</button>
     </form>
   </div>
+  {% elif h.expired %}
+  <div class="panel">
+    <div class="banner" style="margin:0;border-left-color:var(--bad);background:linear-gradient(90deg,var(--bad-soft),transparent 60%),var(--panel)">
+      <strong>This handoff has expired.</strong> The challenge deadline passed before a value was
+      submitted, so the runtime will refuse it. The intelligence must raise a fresh authority
+      request — nothing needs to be (or can be) entered here.
+    </div>
+    <p class="hint" style="margin-top:12px">
+      Status on record: <span class="mono">{{ h.status }}</span> — flipped to
+      <span class="mono">expired</span> by the broker on its next look at this record.
+    </p>
+  </div>
   {% elif h.status == "completed" %}
   <div class="panel">
     <div class="ok-note">This handoff is complete. The submitted value was encrypted at submission
     time and is only reachable through its opaque authority grant — it cannot be displayed again.</div>
-    <dl class="meta" style="margin-top:16px">
-      <dt>Material type</dt><dd class="mono">{{ h.evidence.get("material_type", "—") }}</dd>
-      <dt>Material ID</dt><dd class="mono muted">{{ h.evidence.get("material_id", "—") }}</dd>
-      <dt>Grant ID</dt><dd class="mono muted">{{ h.evidence.get("grant_id", "—") }}</dd>
+    <dl class="meta" style="margin-top:18px">
+      <dt>Material type</dt><dd><span class="evidence-chip">{{ h.evidence.get("material_type", "—") }}</span></dd>
+      <dt>Material ID</dt><dd><span class="evidence-chip">{{ h.evidence.get("material_id", "—") }}</span></dd>
+      <dt>Grant ID</dt><dd><span class="evidence-chip">{{ h.evidence.get("grant_id", "—") }}</span></dd>
     </dl>
   </div>
   {% else %}
@@ -89,4 +111,28 @@
     </div>
   </div>
   {% endif %}
+
+  <script>
+    // Progressive enhancement only: copy the full handoff ID. Works
+    // clipboard-first with a fallback for non-secure contexts; the page
+    // remains fully functional without JavaScript.
+    document.querySelectorAll(".copy-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var value = btn.getAttribute("data-copy");
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(value).then(function () { flash(btn); });
+        } else {
+          var ta = document.createElement("textarea");
+          ta.value = value; document.body.appendChild(ta); ta.select();
+          try { document.execCommand("copy"); flash(btn); } catch (e) {}
+          document.body.removeChild(ta);
+        }
+      });
+    });
+    function flash(btn) {
+      var old = btn.textContent;
+      btn.textContent = "copied ✓";
+      setTimeout(function () { btn.textContent = old; }, 1200);
+    }
+  </script>
 {% endblock %}

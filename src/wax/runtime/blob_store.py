@@ -19,12 +19,12 @@ local content-addressed store:
 - Reads verify the digest after copy: a corrupted/tampered blob is never
   restored silently.
 
-Blob GC is deliberately NOT implemented here: snapshots may reference a
-blob for an unbounded time (restore-after-expiry is the entire point), so
-deletion requires a reference-counted sweep over live snapshots. Until
-that sweep exists, blobs accumulate — bounded storage is traded for
-correct persistence, and the trade is documented (the runtime refuses
-quiet data loss).
+Garbage collection IS provided, but it is explicit and reference-driven,
+never automatic: `collect_garbage(live_digests)` deletes only blobs the
+caller proves unreachable (the set of digests referenced by live
+workspace snapshots). Without a caller-computed reference set nothing is
+ever deleted — correctness is never traded for bounded storage, and the
+runtime refuses quiet data loss by construction.
 
 This is runtime infrastructure (filesystem I/O): it lives in wax.runtime,
 NOT wax.core (INV-09).
@@ -206,6 +206,84 @@ class ContentAddressedBlobStore:
             if shard.is_dir():
                 count += sum(1 for p in shard.iterdir() if p.is_file())
         return count
+
+    # ------------------------------------------------------------------
+    # Observability + garbage collection
+    # ------------------------------------------------------------------
+
+    def stats(self) -> dict[str, int]:
+        """Aggregate storage facts for dashboards/monitoring.
+
+        Returns {"objects": N, "bytes": B}. Only regular files inside the
+        sharded blob layout are counted — temp files and foreign paths are
+        ignored, so the number is honest even mid-write.
+        """
+        objects = 0
+        total = 0
+        for shard in self._blobs_dir.iterdir():
+            if not shard.is_dir():
+                continue
+            for p in shard.iterdir():
+                if p.is_file() and _is_sha256(p.name):
+                    objects += 1
+                    total += p.stat().st_size
+        return {"objects": objects, "bytes": total}
+
+    def all_digests(self) -> set[str]:
+        """Every digest currently stored (GC reference computation)."""
+        return {
+            p.name
+            for shard in self._blobs_dir.iterdir()
+            if shard.is_dir()
+            for p in shard.iterdir()
+            if p.is_file() and _is_sha256(p.name)
+        }
+
+    def collect_garbage(self, live_digests: set[str]) -> dict[str, int]:
+        """Delete blobs no longer referenced by any live snapshot.
+
+        The caller supplies the set of digests reachable from CURRENT
+        state (live workspace snapshots). Any stored blob outside that
+        set is unreachable — restoring it is impossible by construction —
+        so its disk space is reclaimed.
+
+        Safety properties:
+        - A malformed/unparseable digest is never deleted (only exact
+          sha256-named files inside shard dirs are candidates).
+        - Digests present in `live_digests` are never deleted, even if
+          their file is missing (missing live blobs are a separate,
+          loud integrity problem, not GC's business).
+        - Empty shard directories are pruned afterwards.
+
+        Returns {"removed": N, "reclaimed_bytes": B}.
+        """
+        removed = 0
+        reclaimed = 0
+        for shard in self._blobs_dir.iterdir():
+            if not shard.is_dir():
+                continue
+            for p in shard.iterdir():
+                if not (p.is_file() and _is_sha256(p.name)):
+                    continue
+                if p.name in live_digests:
+                    continue
+                size = p.stat().st_size
+                p.unlink()
+                removed += 1
+                reclaimed += size
+            # Prune shard dirs that became empty (keeps the layout tidy).
+            try:
+                next(shard.iterdir())
+            except StopIteration:
+                shard.rmdir()
+        if removed:
+            log.info(
+                "blob_store.gc",
+                removed=removed,
+                reclaimed_bytes=reclaimed,
+                live=len(live_digests),
+            )
+        return {"removed": removed, "reclaimed_bytes": reclaimed}
 
 
 # ----------------------------------------------------------------------

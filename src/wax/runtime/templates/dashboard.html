@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — WAX Control Plane{% endblock %}
+{% block nav_dashboard %} aria-current="page"{% endblock %}
+{% block head %}{% if open_count > 0 %}<meta http-equiv="refresh" content="15">{% endif %}{% endblock %}
 {% block content %}
   {% if dev_open %}
   <div class="banner">
@@ -9,26 +11,80 @@
   </div>
   {% endif %}
 
+  {% if gc_result %}
+  <div class="gc-flash">
+    {% if gc_result.kind == "ok" %}
+    <div class="ok-note">Garbage collection finished: removed <strong>{{ gc_result.removed }}</strong>
+    unreferenced blob{{ "s" if gc_result.removed != 1 }}, reclaimed
+    <strong>{{ (gc_result.reclaimed_bytes / 1024) | round(1) }} KB</strong> of disk.</div>
+    {% else %}
+    <div class="error">{{ gc_result.message }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="cards">
-    <div class="card">
+    <div class="card{% if open_count > 0 %} bad{% endif %}">
       <div class="k">Open handoffs</div>
-      <div class="v">{{ open_count }}</div>
+      <div class="v{% if open_count > 0 %} accent{% endif %}">{{ open_count }}</div>
+      <div class="sub">{% if open_count > 0 %}action needed{% else %}nothing waiting{% endif %}</div>
     </div>
-    <div class="card">
+    <div class="card ok">
       <div class="k">Active authority grants</div>
-      <div class="v">{{ active_grants }}</div>
+      <div class="v{% if active_grants == 0 %}{{ "" }}{% else %} ok{% endif %}">{{ active_grants }}</div>
+      <div class="sub">live delegations</div>
+    </div>
+    <div class="card info">
+      <div class="k">Snapshot storage</div>
+      <div class="v small">
+        {% if blob_objects is not none %}
+        {{ blob_objects }} blob{{ "s" if blob_objects != 1 }} · {{ "%.1f" | format(blob_bytes / 1024) }} KB
+        {% else %}
+        n/a
+        {% endif %}
+      </div>
+      <div class="sub">content-addressed store</div>
     </div>
     <div class="card">
-      <div class="k">Environment</div>
-      <div class="v small">{{ env }}</div>
-    </div>
-    <div class="card">
-      <div class="k">Isolation backend</div>
-      <div class="v small">{{ isolation_backend }}</div>
+      <div class="k">Runtime</div>
+      <div class="v small">{{ env }} · isolation: {{ isolation_backend }}</div>
+      <div class="sub">{{ total_count }} handoff{{ "s" if total_count != 1 }} total</div>
     </div>
   </div>
 
-  <h2 style="font-size:16px;margin:0 0 12px">Human handoffs</h2>
+  <div class="section-head">
+    <h2>Human handoffs</h2>
+    <span class="note">
+      {% if open_count > 0 %}auto-refreshes every 15s while handoffs are open{% else %}showing latest 50{% endif %}
+    </span>
+  </div>
+
+  <div class="section-head" style="margin-bottom:16px">
+    <div class="tabs" role="tablist" aria-label="Filter handoffs by status">
+      {% for f in status_filters %}
+      <a href="/control?status={{ f }}" class="{{ "active" if status_filter == f }}" role="tab" aria-selected="{{ "true" if status_filter == f else "false" }}">
+        {{ f }}
+        <span class="count">
+          {%- if f == "all" %}{{ total_count }}
+          {%- elif f == "open" %}{{ open_count }}
+          {%- elif f == "completed" %}{{ completed_count }}
+          {%- else %}{{ failed_count }}
+          {%- endif %}
+        </span>
+      </a>
+      {% endfor %}
+    </div>
+    {% if blob_objects is not none %}
+    <form method="post" action="/control/maintenance/gc" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ gc_csrf }}">
+      <button class="secondary" type="submit" style="margin-top:0;padding:7px 14px;font-size:12.5px"
+              title="Delete snapshot blobs no longer referenced by any live workspace snapshot">
+        Run blob GC
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
   {% if handoffs %}
   <table>
     <thead>
@@ -39,18 +95,25 @@
     <tbody>
       {% for h in handoffs %}
       <tr>
-        <td class="mono"><a class="link" href="/control/handoffs/{{ h.id }}">{{ h.id[:12] }}…</a></td>
+        <td class="mono nowrap"><a class="link" href="/control/handoffs/{{ h.id }}" title="{{ h.id }}">{{ h.id[:12] }}…</a></td>
         <td class="truncate" title="{{ h.purpose }}">{{ h.purpose }}</td>
         <td><span class="kind">{{ h.kind }}</span></td>
-        <td><span class="badge {{ h.status }}">{{ h.status }}</span></td>
-        <td class="mono muted">{{ h.created_at or "—" }}</td>
-        <td class="mono muted">{{ h.expires_at or "—" }}</td>
-        <td><a class="link" href="/control/handoffs/{{ h.id }}">Open</a></td>
+        <td><span class="badge {{ h.display_status }}">{{ h.display_status }}</span></td>
+        <td class="time" title="{{ h.created_at or "" }}">{{ h.created_rel or "—" }}</td>
+        <td class="time{% if h.expired %}" style="color:var(--bad){% endif %}" title="{{ h.expires_at or "" }}">{{ h.expires_at or "—" }}</td>
+        <td class="nowrap"><a class="link" href="/control/handoffs/{{ h.id }}">Open →</a></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <div class="empty">No human handoffs yet. When the intelligence needs external authority, the request appears here.</div>
+  <div class="empty">
+    <span class="big" aria-hidden="true">◻</span>
+    {% if status_filter == "all" %}
+    No human handoffs yet. When the intelligence needs external authority, the request appears here.
+    {% else %}
+    No handoffs match the <strong>{{ status_filter }}</strong> filter.
+    {% endif %}
+  </div>
   {% endif %}
 {% endblock %}

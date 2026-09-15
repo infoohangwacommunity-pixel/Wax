@@ -48,12 +48,15 @@ async def _create_principal(*, display_name: str = "Operator", phone: str = "123
         return principal.id
 
 
-async def _create_handoff(principal_id: str, *, kind: str = "secret") -> str:
-    purpose = (
-        "Deploy service that needs an API credential"
-        if kind == "secret"
-        else "Vendor portal requires a human login before reporting"
-    )
+async def _create_handoff(
+    principal_id: str, *, kind: str = "secret", purpose: str | None = None
+) -> str:
+    if purpose is None:
+        purpose = (
+            "Deploy service that needs an API credential"
+            if kind == "secret"
+            else "Vendor portal requires a human login before reporting"
+        )
     instructions = (
         "Open the vendor console, create a read-only API key, paste it below."
         if kind == "secret"
@@ -289,7 +292,10 @@ class TestHandoffSubmit:
         )
         assert second.status_code == 400
 
-    async def test_expired_handoff_refused(self, client, app):
+    async def test_expired_handoff_shows_expired_panel_not_form(self, client, app):
+        """An expired challenge is NOT submittable: the detail page renders
+        an explicit expired panel (no form, no csrf) so an operator never
+        types a secret the runtime would refuse."""
         principal_id = await _create_principal()
         handoff_id = await _create_handoff(principal_id)
         # Force the challenge to be expired.
@@ -299,13 +305,45 @@ class TestHandoffSubmit:
             await s.commit()
 
         page = await client.get(f"/control/handoffs/{handoff_id}")
-        csrf = _csrf_from(page.text)
+        assert page.status_code == 200
+        assert "has expired" in page.text
+        assert 'name="secret_value"' not in page.text
+        assert 'name="csrf_token"' not in page.text
+
+    async def test_expired_handoff_submit_still_refused_by_broker(self, client, app):
+        """Defense in depth: even a hand-forged valid CSRF token cannot
+        submit an expired handoff — the broker refuses it (400, 'expired')."""
+        from wax.runtime.control_plane import ControlPlaneAuth
+
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            handoff.challenge_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            await s.commit()
+
+        auth = ControlPlaneAuth(app.state.settings)
+        csrf = auth.make_csrf()
         resp = await client.post(
             f"/control/handoffs/{handoff_id}/submit",
             data={"csrf_token": csrf, "secret_value": SECRET_TYPED_BY_HUMAN},
         )
         assert resp.status_code == 400
         assert "expired" in resp.text
+        assert SECRET_TYPED_BY_HUMAN not in resp.text
+
+    async def test_expired_handoff_renders_expired_on_dashboard(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        async with db_session() as s:
+            handoff = await s.get(HumanHandoffRecord, handoff_id)
+            handoff.challenge_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            await s.commit()
+
+        resp = await client.get("/control")
+        assert resp.status_code == 200
+        row = resp.text
+        assert ">expired</span>" in row or "expired" in row
 
 
 class TestDashboardListing:
@@ -319,3 +357,157 @@ class TestDashboardListing:
         assert h1[:12] in resp.text
         assert h2[:12] in resp.text
         assert "browser" in resp.text  # kind badge
+
+
+class TestDashboardFiltersAndRefresh:
+    async def test_filter_tabs_render_with_counts(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert 'href="/control?status=open"' in resp.text
+        assert 'href="/control?status=completed"' in resp.text
+        assert 'href="/control?status=failed"' in resp.text
+        assert 'href="/control?status=all"' in resp.text
+
+    async def test_status_filter_narrows_rows(self, client, app):
+        principal_id = await _create_principal()
+        # Distinct purposes: the broker dedups identical OPEN requests, so
+        # two same-purpose handoffs would collapse into one record.
+        open_id = await _create_handoff(principal_id, purpose="Needs credential A")
+        done_id = await _create_handoff(principal_id, purpose="Needs credential B")
+        page = await client.get(f"/control/handoffs/{done_id}")
+        csrf = _csrf_from(page.text)
+        resp = await client.post(
+            f"/control/handoffs/{done_id}/submit",
+            data={"csrf_token": csrf, "secret_value": "value-1"},
+        )
+        assert resp.status_code == 200
+
+        completed_view = await client.get("/control?status=completed")
+        # Full IDs appear in row hrefs — the filtered view must contain the
+        # completed handoff and not the open one (ULIDs share time prefixes,
+        # so prefix assertions would be flaky).
+        assert done_id in completed_view.text
+        assert open_id not in completed_view.text
+
+        open_view = await client.get("/control?status=open")
+        assert open_id in open_view.text
+        assert done_id not in open_view.text
+
+    async def test_unknown_filter_falls_back_to_all(self, client, app):
+        await _create_principal()
+        resp = await client.get("/control?status=nonsense")
+        assert resp.status_code == 200
+        assert (
+            'class="active" href="/control?status=all"' in resp.text
+            or "No handoffs match" not in resp.text
+        )
+
+    async def test_auto_refresh_only_while_open_handoffs_exist(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert 'http-equiv="refresh"' in resp.text
+
+    async def test_no_auto_refresh_without_open_handoffs(self, client, app):
+        principal_id = await _create_principal()
+        handoff_id = await _create_handoff(principal_id)
+        page = await client.get(f"/control/handoffs/{handoff_id}")
+        csrf = _csrf_from(page.text)
+        await client.post(
+            f"/control/handoffs/{handoff_id}/submit",
+            data={"csrf_token": csrf, "secret_value": "value-1"},
+        )
+        resp = await client.get("/control")
+        assert 'http-equiv="refresh"' not in resp.text
+
+    async def test_relative_timestamps_rendered(self, client, app):
+        principal_id = await _create_principal()
+        await _create_handoff(principal_id)
+        resp = await client.get("/control")
+        assert "just now" in resp.text
+
+
+class TestMaintenanceGC:
+    async def test_gc_route_removes_only_unreferenced_blobs(self, client, app, tmp_path):
+        from pathlib import Path as _Path
+
+        from wax.runtime.blob_store import ContentAddressedBlobStore
+        from wax.state.workspace_models import WorkspaceSnapshotRecord
+
+        # ASGITransport does not run lifespan, so attach the services
+        # container the way the real startup path would.
+        if getattr(app.state, "services", None) is None:
+            from wax.runtime.services import RuntimeServices
+
+            app.state.services = RuntimeServices.build(app.state.settings)
+        store = ContentAddressedBlobStore(_Path(tmp_path) / "blobs")
+        app.state.services.blob_store = store
+
+        live_digest = store.put_bytes(b"live workspace file")
+        stale_digest = store.put_bytes(b"deleted long ago")
+        principal_id = await _create_principal()
+        async with db_session() as s:
+            from ulid import ULID
+
+            s.add(
+                WorkspaceSnapshotRecord(
+                    id=str(ULID()),
+                    principal_id=principal_id,
+                    workspace_resource_id=principal_id,
+                    content_hash="0" * 64,
+                    files_json=[{"path": "a.txt", "sha256": live_digest, "size": 19}],
+                    file_count=1,
+                    total_bytes=19,
+                    captured_at=datetime.now(UTC),
+                )
+            )
+            await s.commit()
+
+        page = await client.get("/control")
+        csrf = _csrf_from(page.text)
+        resp = await client.post("/control/maintenance/gc", data={"csrf_token": csrf})
+        assert resp.status_code == 200
+
+        assert store.has(live_digest)  # referenced → kept
+        assert not store.has(stale_digest)  # unreachable → collected
+        assert "removed <strong>1</strong>" in resp.text
+
+    async def test_gc_route_requires_csrf(self, client, app):
+        resp = await client.post("/control/maintenance/gc", data={"csrf_token": "bogus"})
+        assert resp.status_code == 200  # redirect followed back to dashboard
+        assert "rejected" in resp.text  # error flash rendered
+
+
+class TestLoginRateLimit:
+    async def test_brute_force_is_rate_limited(self, client, app):
+        from wax.runtime.control_plane import _login_limiter
+
+        _login_limiter.reset()
+        app.state.settings.control_plane_token = "op-token-999"
+        try:
+            for _ in range(8):
+                bad = await client.post("/control/login", data={"token": "wrong"})
+                assert bad.status_code == 401
+            limited = await client.post("/control/login", data={"token": "op-token-999"})
+            assert limited.status_code == 429
+            assert "Too many failed attempts" in limited.text
+            # Even the CORRECT token is refused while locked out.
+            assert "wax_control_session" not in client.cookies
+        finally:
+            app.state.settings.control_plane_token = ""
+            _login_limiter.reset()
+
+    async def test_successful_login_clears_failures(self, client, app):
+        from wax.runtime.control_plane import _login_limiter
+
+        _login_limiter.reset()
+        app.state.settings.control_plane_token = "op-token-1000"
+        try:
+            bad = await client.post("/control/login", data={"token": "wrong"})
+            assert bad.status_code == 401
+            good = await client.post("/control/login", data={"token": "op-token-1000"})
+            assert good.status_code == 200
+        finally:
+            app.state.settings.control_plane_token = ""
+            _login_limiter.reset()
