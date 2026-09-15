@@ -1368,6 +1368,95 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
     registry.register(CREDENTIAL_REVOKE_DESCRIPTOR, credential_revoke_impl)
 
     # ========================================================================
+    # ADR-0048: Authority broker capabilities (P0-Authority)
+    # The model NEVER supplies a raw secret. It requests a handoff;
+    # the user completes it through the secure control plane.
+    # ========================================================================
+
+    async def authority_request_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
+        from wax.runtime.authority import AuthorityRequest
+        from wax.state.engine import db_session
+
+        if services.authority_broker is None:
+            raise ValueError("authority broker not configured")
+
+        request = AuthorityRequest(
+            purpose=inputs.get("purpose", ""),
+            origin_reference=inputs.get("origin_reference"),
+            requested_actions=inputs.get("requested_actions", []),
+            human_required=inputs.get("human_required", True),
+        )
+        if not request.purpose:
+            raise ValueError("purpose is required")
+
+        async with db_session() as session:
+            result = await services.authority_broker.request_authority(
+                session,
+                principal_id=ctx.principal_id,
+                request=request,
+                execution_id=ctx.request_id or ctx.execution_id,
+            )
+            await session.commit()
+
+        return {
+            "status": result.status,
+            "handoff_ref": result.handoff_ref,
+            "expires_at": result.expires_at.isoformat() if result.expires_at else None,
+        }
+
+    async def authority_status_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        if services.authority_broker is None:
+            raise ValueError("authority broker not configured")
+
+        handoff_ref = inputs.get("handoff_ref")
+        if not isinstance(handoff_ref, str) or not handoff_ref:
+            raise ValueError("handoff_ref is required")
+
+        async with db_session() as session:
+            status = await services.authority_broker.get_status(
+                session, handoff_ref=handoff_ref, principal_id=ctx.principal_id
+            )
+            await session.commit()
+
+        return status
+
+    async def authority_revoke_impl(
+        inputs: dict[str, Any], ctx: InvocationContext
+    ) -> dict[str, Any]:
+        from wax.state.engine import db_session
+
+        if services.authority_broker is None:
+            raise ValueError("authority broker not configured")
+
+        authority_ref = inputs.get("authority_ref")
+        if not isinstance(authority_ref, str) or not authority_ref:
+            raise ValueError("authority_ref is required")
+
+        async with db_session() as session:
+            ok = await services.authority_broker.revoke_authority(
+                session, authority_ref=authority_ref, principal_id=ctx.principal_id
+            )
+            await session.commit()
+
+        return {"revoked": ok}
+
+    from wax.capabilities.authority_capabilities import (
+        AUTHORITY_REQUEST_DESCRIPTOR,
+        AUTHORITY_REVOKE_DESCRIPTOR,
+        AUTHORITY_STATUS_DESCRIPTOR,
+    )
+
+    registry.register(AUTHORITY_REQUEST_DESCRIPTOR, authority_request_impl)
+    registry.register(AUTHORITY_STATUS_DESCRIPTOR, authority_status_impl)
+    registry.register(AUTHORITY_REVOKE_DESCRIPTOR, authority_revoke_impl)
+
+    # ========================================================================
     # ADR-0041 (Phase 8): Generic Connector Runtime
     # ========================================================================
 
@@ -1889,7 +1978,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
     registry.register(DELIVERY_STATUS_DESCRIPTOR, delivery_status_impl)
     registry.register(DELIVERY_RETRY_DESCRIPTOR, delivery_retry_impl)
-    log.info("capability.runtime_registered", count=37)
+    log.info("capability.runtime_registered", count=40)
 
 
 # --- memory.* (memory as a mechanism, not an AI chore) --------------------

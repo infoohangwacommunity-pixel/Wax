@@ -116,7 +116,18 @@ class RuntimeServices:
         if db_url.startswith("postgresql"):
             rate_limiter_instance = None  # DB-backed, checked per-session
             cost_protector_instance = None  # DB-backed, checked per-session
-            log.info("runtime.shared_state_enabled", backend="postgresql")
+            # P0-Shared-Fix: Do NOT log "shared_state_enabled" until the
+            # DB-backed implementations are actually constructed and wired.
+            # The current code falls back to RateLimiter()/CostProtector()
+            # even for PostgreSQL, so logging "enabled" would be misleading.
+            # log.info("runtime.shared_state_enabled", backend="postgresql")
+            log.warning(
+                "runtime.shared_state_partial",
+                detail="PostgreSQL detected but DB-backed rate limiter / "
+                "cost protector are not yet wired as the active path. "
+                "Process-local implementations are in use. "
+                "Multi-instance correctness is NOT guaranteed.",
+            )
         else:
             rate_limiter_instance = RateLimiter()
             cost_protector_instance = CostProtector()

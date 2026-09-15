@@ -277,7 +277,13 @@ class AuthorityBroker:
         handoff_ref: str,
         principal_id: str,
     ) -> dict[str, Any]:
-        """Check the status of an authority request."""
+        """Check the status of an authority request.
+
+        P0-Status-Fix: Queries the grant linked to THIS SPECIFIC handoff
+        (via the authority_material's created_by_handoff_id), not the
+        latest grant for the principal. This prevents returning the wrong
+        grant when the principal has multiple handoffs.
+        """
         handoff = await session.get(HumanHandoffRecord, handoff_ref)
         if handoff is None:
             return {"status": "not_found"}
@@ -292,18 +298,32 @@ class AuthorityBroker:
         }
 
         if handoff.status == HandoffStatus.COMPLETED.value:
-            grant = (
+            # P0-Status-Fix: Find the grant linked to THIS handoff via
+            # the authority_material's created_by_handoff_id field.
+            # Previously this queried the latest grant for the principal,
+            # which could return the wrong grant.
+            material = (
                 await session.execute(
-                    select(AuthorityGrantRecord)
-                    .where(AuthorityGrantRecord.principal_id == principal_id)
-                    .order_by(AuthorityGrantRecord.created_at.desc())
+                    select(AuthorityMaterialRecord)
+                    .where(AuthorityMaterialRecord.created_by_handoff_id == handoff.id)
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if grant and grant.status == "active":
-                result["authority_ref"] = grant.handle
-                result["grant_status"] = grant.status
-                result["grant_expires_at"] = grant.expires_at.isoformat()
+
+            if material is not None:
+                grant = (
+                    await session.execute(
+                        select(AuthorityGrantRecord)
+                        .where(AuthorityGrantRecord.authority_material_id == material.id)
+                        .where(AuthorityGrantRecord.principal_id == principal_id)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+
+                if grant and grant.status == "active":
+                    result["authority_ref"] = grant.handle
+                    result["grant_status"] = grant.status
+                    result["grant_expires_at"] = grant.expires_at.isoformat()
 
         return result
 

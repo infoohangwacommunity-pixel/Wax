@@ -127,12 +127,18 @@ class CredentialVault:
                 f"Supported: {conn.supported_scopes}"
             )
 
-        # Encrypt the secret at rest using AES-GCM envelope encryption
+        # Encrypt the secret at rest using AES-GCM envelope encryption.
+        # P0-AAD-FIX: generate the record ID BEFORE encryption so the
+        # associated data (record_id + principal_id) is consistent
+        # between encryption and decryption. Previously record_id was
+        # "" during encryption but the real ID during decryption, which
+        # would cause AES-GCM authentication failure.
         from wax.runtime.vault.crypto import encrypt_secret as aes_encrypt
 
+        record_id = str(ULID())
         envelope = aes_encrypt(
             secret,
-            record_id="",  # will be set after the record is created
+            record_id=record_id,
             principal_id=principal_id,
         )
         encrypted_secret = serialize_envelope(envelope)
@@ -162,7 +168,7 @@ class CredentialVault:
             )
 
         record = PrincipalConnectionRecord(
-            id=str(ULID()),
+            id=record_id,
             principal_id=principal_id,
             connector_name=connector_name,
             status="active",

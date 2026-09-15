@@ -556,3 +556,80 @@ class TestCredentialAuditEvents:
             assert events[0].connector_name == "git_host"
             # The event never contains the secret
             assert "ghp_audit_test" not in str(events)
+
+
+# ----------------------------------------------------------------------------
+# P0-AAD regression: connect → grant → resolve → decrypt round-trip
+# ----------------------------------------------------------------------------
+
+
+class TestVaultRoundTripRegression:
+    """Regression test for the AES-GCM AAD bug (P0-AAD-FIX).
+
+    Previously, encryption used record_id="" but decryption used the
+    real connection ID, causing AES-GCM authentication failure.
+    """
+
+    async def test_connect_grant_resolve_decrypt_round_trip(self, fresh_db, services):
+        """The full path: connect a credential → request a grant →
+        resolve the grant for internal injection → verify the original
+        secret is recovered internally → verify it is never returned
+        to the model."""
+        principal_id = await _create_principal()
+        original_secret = "ghp_roundtrip_test_12345"
+
+        # 1. Connect
+        async with db_session() as s:
+            invoker = services.invoker(s)
+            connect_result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="credential.connect",
+                    principal_id=principal_id,
+                    inputs={
+                        "connector": "git_host",
+                        "secret": original_secret,
+                        "scopes": ["repository.read"],
+                    },
+                )
+            )
+            await s.commit()
+            assert connect_result.outcome == "success", connect_result.error
+            connection_id = connect_result.outputs["connection_id"]
+
+        # 2. Request a grant
+        async with db_session() as s:
+            invoker = services.invoker(s)
+            grant_result = await invoker.invoke(
+                CapabilityInvocationRequest(
+                    capability_name="credential.request",
+                    principal_id=principal_id,
+                    inputs={
+                        "connection_id": connection_id,
+                        "scopes": ["repository.read"],
+                    },
+                )
+            )
+            await s.commit()
+            assert grant_result.outcome == "success", grant_result.error
+            handle = grant_result.outputs["handle"]
+
+        # 3. Resolve for internal injection (the SOLE method that
+        # returns the secret value — called only by the environment
+        # planner, never by the model)
+        async with db_session() as s:
+            vault = services.credential_vault
+            recovered = await vault.resolve_handle_for_injection(
+                s, handle=handle, principal_id=principal_id
+            )
+            await s.commit()
+
+        # The recovered value MUST match the original (proves AAD fix)
+        assert recovered == original_secret, (
+            f"AAD regression: expected '{original_secret}', got '{recovered}'. "
+            "The AES-GCM associated data was mismatched between encrypt and decrypt."
+        )
+
+        # The secret is NEVER in the grant result (model-facing)
+        assert original_secret not in str(grant_result.outputs)
+        # The secret is NEVER in the connect result
+        assert original_secret not in str(connect_result.outputs)
