@@ -1555,23 +1555,44 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 raise ValueError(f"target workspace is {target.status}")
 
             target_path = Path(target.uri)
+            # Resolve the source workspace (where the snapshot was taken)
+            source = await session.get(ProvisionedResourceRecord, snapshot.workspace_resource_id)
+            source_path = (
+                Path(source.uri) if source and source.status == "active" and source.uri else None
+            )
+
             restored_files = 0
+            restored_bytes = 0
+            skipped_files = 0
             for file_entry in snapshot.files_json:
                 rel_path = file_entry["path"]
-                # SECURITY: never write outside the workspace (path traversal)
-                target_file = (target_path / rel_path).resolve()
-                if not str(target_file).startswith(str(target_path.resolve())):
-                    raise ValueError(f"path traversal detected: {rel_path}")
+                # SECURITY: use the central path containment utility
+                from wax.security.path_containment import resolve_workspace_path
+
+                target_file = resolve_workspace_path(target_path, rel_path)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
-                # In a real implementation, we would copy from the snapshot's source workspace.
-                # For now, we just recreate empty files (the snapshot is metadata-only here).
-                # A future cycle will add byte-level restore from a content store.
-                target_file.touch()
+
+                # If the source workspace still exists, copy real bytes
+                if source_path is not None:
+                    source_file = resolve_workspace_path(source_path, rel_path, must_exist=True)
+                    import shutil
+
+                    shutil.copy2(str(source_file), str(target_file))
+                    restored_bytes += file_entry.get("size", 0)
+                else:
+                    # Source workspace is gone — cannot restore real bytes
+                    target_file.touch()
+                    skipped_files += 1
                 restored_files += 1
 
             await session.commit()
 
-        return {"restored_files": restored_files, "total_bytes": snapshot.total_bytes}
+        return {
+            "restored_files": restored_files,
+            "total_bytes": restored_bytes,
+            "skipped_files": skipped_files,
+            "complete": skipped_files == 0,
+        }
 
     async def workspace_promote_impl(
         inputs: dict[str, Any], ctx: InvocationContext
@@ -1664,6 +1685,7 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
 
         from wax.state.artifact_models import ArtifactRecord
         from wax.state.engine import db_session
+        from wax.state.objective_models import ObjectiveExecutionRecord
 
         objective_id = inputs.get("objective_id")
         async with db_session() as session:
@@ -1673,9 +1695,27 @@ def register_runtime_capabilities(registry: CapabilityRegistry, services: Runtim
                 .order_by(ArtifactRecord.created_at.desc())
             )
             if objective_id:
-                # Filter by objective (artifacts don't have objective_id directly,
-                # but they have execution_id; this is a stub for now)
-                pass
+                # P0-Artifact: implement objective filtering properly.
+                # Artifacts have execution_id; objectives have execution history.
+                # Join through ObjectiveExecutionRecord to filter by objective.
+                execution_ids = (
+                    (
+                        await session.execute(
+                            select(ObjectiveExecutionRecord.execution_id).where(
+                                ObjectiveExecutionRecord.objective_id == objective_id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if execution_ids:
+                    stmt = stmt.where(ArtifactRecord.execution_id.in_(execution_ids))
+                else:
+                    # No executions for this objective → no artifacts
+                    records = []
+                    await session.commit()
+                    return {"artifacts": [], "count": 0}
             records = (await session.execute(stmt.limit(50))).scalars().all()
             await session.commit()
 
