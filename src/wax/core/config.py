@@ -180,6 +180,15 @@ class WaxSettings(BaseSettings):
     def _validate_database_url(cls, v: str) -> str:
         if not v:
             raise WaxConfigurationError("WAX_DATABASE_URL must not be empty")
+
+        # Railway (and other providers) hand out plain "postgresql://" or
+        # "postgres://" URLs. Upgrade these to the asyncpg driver
+        # automatically so users don't need to hand-format the URL.
+        if v.startswith("postgresql://"):
+            v = "postgresql+asyncpg://" + v[len("postgresql://") :]
+        elif v.startswith("postgres://"):
+            v = "postgresql+asyncpg://" + v[len("postgres://") :]
+
         allowed_schemes = (
             "sqlite+aiosqlite:",
             "postgresql+asyncpg:",
