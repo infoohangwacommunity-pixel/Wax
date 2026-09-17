@@ -34,16 +34,19 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Drop tables in dependency order: children before parents
-    op.drop_table("objective_executions")
-    op.drop_table("objectives", cascade=True)
-    op.drop_table("workspace_snapshots")
-    op.drop_table("artifacts")
-    op.drop_table("provisioned_resources")
-    op.drop_table("capability_invocations")
-    op.drop_table("pending_approvals")
-    op.drop_table("principal_roles")
-    op.drop_table("roles")
+    # Drop child tables first (FK dependencies), then parent tables.
+    # Use raw SQL with IF EXISTS for PostgreSQL + SQLite compatibility.
+    # The cascade=True kwarg was removed in newer SQLAlchemy — raw SQL
+    # avoids the issue entirely.
+    op.execute("DROP TABLE IF EXISTS objective_executions")
+    op.execute("DROP TABLE IF EXISTS objectives")
+    op.execute("DROP TABLE IF EXISTS workspace_snapshots")
+    op.execute("DROP TABLE IF EXISTS artifacts")
+    op.execute("DROP TABLE IF EXISTS provisioned_resources")
+    op.execute("DROP TABLE IF EXISTS capability_invocations")
+    op.execute("DROP TABLE IF EXISTS pending_approvals")
+    op.execute("DROP TABLE IF EXISTS principal_roles")
+    op.execute("DROP TABLE IF EXISTS roles")
 
 
 def downgrade() -> None:
@@ -170,4 +173,3 @@ def downgrade() -> None:
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("outcome", sa.String(16), nullable=True),
     )
-

@@ -45,18 +45,18 @@ def upgrade() -> None:
     op.drop_table("authority_grants")
     op.drop_table("authority_materials")
     op.drop_table("human_handoffs")
-    
+
     # Environment negotiation subsystem (reverse creation order)
     op.drop_table("environment_capability_bindings")
     op.drop_table("terminal_sessions")
     op.drop_table("environment_leases")
-    
+
     # Credential vault subsystem (reverse creation order)
     op.drop_table("credential_events")
     op.drop_table("credential_grants")
     op.drop_table("principal_connections")
     op.drop_table("connector_definitions")
-    
+
     # Shared state tables (no dependencies)
     op.drop_table("rate_limit_counters")
     op.drop_table("cost_tracking")
@@ -256,4 +256,3 @@ def downgrade() -> None:
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
     )
-
