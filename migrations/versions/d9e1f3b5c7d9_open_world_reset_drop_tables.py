@@ -47,7 +47,9 @@ def upgrade() -> None:
     #    conversations.objective_id -> objectives.id (created by a06446a7edd3)
     #    This was already handled by migration e0f2a4b6c8e1 on fresh installs,
     #    but may still exist on databases that ran the old migration chain.
-    op.execute("ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey")
+    op.execute(
+        "ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey"
+    )
 
     # 2. Now drop tables in dependency order (children before parents).
     #    Use IF EXISTS for safety + CASCADE as a belt-and-suspenders for

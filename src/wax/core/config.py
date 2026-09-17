@@ -116,7 +116,7 @@ class WaxSettings(BaseSettings):
     # Root directory for execution working directories. Each execution gets
     # its own subdirectory; the AI's files persist across terminal rounds
     # within that execution and are cleaned up after.
-    terminal_working_dir_root: str = "./wax-workspaces"
+    terminal_working_dir_root: str = "/app/wax-workspaces"
     # Maximum terminal rounds per message. The AI can call the terminal
     # this many times before the runtime forces a final response.
     terminal_max_rounds: int = 10

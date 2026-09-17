@@ -32,6 +32,7 @@ COPY migrations ./migrations
 
 # Create a non-root user. The runtime will run as this user.
 RUN useradd --create-home --shell /bin/bash wax \
+    && mkdir -p /app/wax-workspaces \
     && chown -R wax:wax /app
 USER wax
 

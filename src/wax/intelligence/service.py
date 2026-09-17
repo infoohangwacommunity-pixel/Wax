@@ -223,15 +223,41 @@ class IntelligenceService:
         parts = [p.strip() for p in raw.split(",") if p.strip()]
 
         for i, part in enumerate(parts, 1):
-            fields = part.split(":", 2)
-            if len(fields) < 2:
+            # Parse: "provider:base_url:model"
+            # The base_url contains "://" so we can't split on every ":".
+            # Split on the first ":" to get the provider, then the rest is
+            # "base_url:model" — split that on the LAST ":" to get url + model.
+            first_colon = part.find(":")
+            if first_colon < 1:
                 raise WaxConfigurationError(
                     f"Invalid fallback config #{i}: {part!r}. "
                     f"Expected format: provider:base_url:model"
                 )
-            kind = fields[0].strip().lower()
-            base_url = fields[1].strip() if len(fields) > 1 else ""
-            model = fields[2].strip() if len(fields) > 2 else ""
+            kind = part[:first_colon].strip().lower()
+            rest = part[first_colon + 1 :]
+
+            # Split rest on the last ":" to separate base_url from model.
+            # If there's no ":", the whole rest is the base_url and model is empty.
+            last_colon = rest.rfind(":")
+            if last_colon > 0 and "://" in rest[:last_colon]:
+                # Make sure we're not splitting inside "://"
+                # Find the "://" and only split AFTER it
+                scheme_end = rest.find("://")
+                if scheme_end >= 0:
+                    scheme_end = rest.find("/", scheme_end + 3)
+                    if scheme_end > 0:
+                        # Look for ":" after the domain part
+                        search_from = scheme_end
+                        last_colon = rest.rfind(":", search_from)
+                    else:
+                        last_colon = -1  # no ":" after the domain — no model specified
+
+            if last_colon > 0:
+                base_url = rest[:last_colon].strip()
+                model = rest[last_colon + 1 :].strip()
+            else:
+                base_url = rest.strip()
+                model = ""
 
             # Look up the API key for this fallback
             api_key = os.environ.get(f"WAX_LLM_FALLBACK_{i}_API_KEY", "")
