@@ -141,7 +141,22 @@ class TerminalExecutor:
         # wax_runtime helper can read them from inside the terminal.
         self.env.update(self.env_overrides)
         self.working_dir = Path(self.working_dir)
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.working_dir.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            # Fallback to /tmp if the configured path isn't writable.
+            # This happens on Railway when the volume mount isn't owned
+            # by the non-root user. /tmp is always writable.
+            import tempfile
+
+            fallback = Path(tempfile.gettempdir()) / "wax-workspaces" / self.working_dir.name
+            log.warning(
+                "terminal.workspace_fallback",
+                configured_path=str(self.working_dir),
+                fallback_path=str(fallback),
+            )
+            self.working_dir = fallback
+            self.working_dir.mkdir(parents=True, exist_ok=True)
         self._detached: list[asyncio.subprocess.Process] = []
 
     async def execute(
@@ -372,9 +387,25 @@ def principal_workspace(root: str | Path, principal_id: str) -> Path:
     The workspace is created if it doesn't exist. Idle cleanup happens
     later (a maintenance sweep can archive workspaces not touched in N
     days, but never mid-conversation).
+
+    If the configured root isn't writable (e.g. Railway volume permissions),
+    falls back to /tmp/wax-workspaces.
     """
-    ws = Path(root) / principal_id
-    ws.mkdir(parents=True, exist_ok=True)
+    root_path = Path(root)
+    ws = root_path / principal_id
+    try:
+        ws.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError):
+        import tempfile
+
+        fallback_root = Path(tempfile.gettempdir()) / "wax-workspaces"
+        ws = fallback_root / principal_id
+        log.warning(
+            "terminal.workspace_root_fallback",
+            configured_root=str(root_path),
+            fallback_root=str(fallback_root),
+        )
+        ws.mkdir(parents=True, exist_ok=True)
     return ws
 
 
