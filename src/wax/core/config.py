@@ -1,15 +1,15 @@
 """WAX configuration schema.
 
-This module defines the *shape* of WAX configuration and a loader that reads
-from environment variables. The loader is the ONLY place in `wax.core` that
-performs I/O (reading `os.environ`), and even that is bounded: no file reads,
-no network, no subprocess.
+Stripped down for the open-world terminal architecture. Removed:
+- capability/approval/resource/provisioning settings
+- isolation backend settings
+- workspace/artifact/blob settings
+- network allowlist settings
+- control plane token
+- acquisition settings
 
-Design principles:
-- Fail fast: missing or invalid config raises `WaxConfigurationError` at
-  startup, not at first use.
-- No defaults for secrets: `WAX_SECRET_KEY` must be set explicitly.
-- Environment-aware: production has stricter requirements than development.
+Kept: runtime, HTTP, database, secrets, LLM providers, terminal executor,
+work runner, delivery, WhatsApp, logging, memory.
 """
 
 from __future__ import annotations
@@ -23,14 +23,6 @@ from wax.core.exceptions import WaxConfigurationError
 
 
 class Environment(StrEnum):
-    """WAX deployment environment.
-
-    The environment affects:
-    - Which validation rules are strict (production is strictest)
-    - Default log level and format
-    - Whether a missing secret is fatal (yes in production, warning in dev)
-    """
-
     DEVELOPMENT = "development"
     STAGING = "staging"
     PRODUCTION = "production"
@@ -45,16 +37,12 @@ class LogLevel(StrEnum):
 
 
 class LogFormat(StrEnum):
-    CONSOLE = "console"  # human-readable, colorized
-    JSON = "json"  # structured, machine-readable
+    CONSOLE = "console"
+    JSON = "json"
 
 
 class WaxSettings(BaseSettings):
-    """WAX configuration, loaded from environment variables.
-
-    All settings are read from the `WAX_`-prefixed environment. A `.env` file
-    is supported in development via `SettingsConfigDict(env_file=".env")`.
-    """
+    """WAX configuration, loaded from environment variables."""
 
     model_config = SettingsConfigDict(
         env_prefix="WAX_",
@@ -79,146 +67,62 @@ class WaxSettings(BaseSettings):
     # --- Secrets ---
     secret_key: str = Field(default="", description="WAX master secret. MUST be set in production.")
 
-    # --- LLM providers (Phase O — Intelligence) ---
+    # --- LLM providers ---
     llm_default_provider: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    # Base URL for OpenAI-compatible endpoints (vLLM, Together, OpenRouter, ...).
-    # Empty string = the provider's official endpoint. Making this configurable
-    # keeps the runtime model-independent by configuration, not by code change.
     llm_base_url: str = ""
-    # Base URL for the Anthropic API. Deliberately SEPARATE from
-    # llm_base_url (constitutional audit fix): a shared default made a
-    # mixed-vendor fallback chain silently point the Anthropic candidate
-    # at an OpenAI-compatible proxy. Empty string = the official endpoint.
     anthropic_base_url: str = ""
-    # Default model override (provider-specific name).
     llm_model: str = ""
-    # Provider resilience (wired via intelligence.resilience.ResilientProvider).
     llm_retry_max_attempts: int = 3
     llm_breaker_failure_threshold: int = 5
     llm_breaker_recovery_seconds: float = 30.0
-    # Tool-calling rounds per message. The AI may request capabilities; the
-    # runtime bounds how many request/result exchanges one message may spawn.
-    max_tool_rounds: int = 5
-
-    # --- Code execution isolation ---
-    # Which sandbox boundary runs code.run: "auto" (namespace sandbox when
-    # the host supports unprivileged user namespaces, else subprocess —
-    # LOUD fallback), "namespace" (require it), "subprocess" (legacy).
-    isolation_backend: str = "auto"
-    # Resource-governance rlimits for sandboxed code (anti-bomb budgets,
-    # NOT the security boundary — that is the namespace itself).
-    isolation_memory_limit_mb: int = 512
-    isolation_max_processes: int = 64
-    isolation_max_file_bytes: int = 16_000_000
-
-    # --- Runtime mechanisms ---
-    # Poll interval for the in-process background work runner (Phase V).
-    work_poll_interval_seconds: float = 2.0
-    # Root directory for dynamically provisioned ephemeral resources (Phase S).
-    provisioning_root: str = "./wax-resources"
-    # Root directory for the content-addressed blob store (P0-Workspace).
-    # workspace.snapshot persists file bytes here (keyed by sha256) so
-    # workspace.restore works even after the source workspace is released.
-    snapshot_blob_root: str = "./wax-blobs"
-    # Shared operator token for the server-rendered control plane
-    # (ADR-0048). When empty: the dashboard is enabled in development (with
-    # a loud warning) and REFUSES to serve in production. When set: routes
-    # require this token (Authorization: Bearer, X-Control-Token, ?token=
-    # or the session cookie issued after login).
-    control_plane_token: str = ""
-    # Scheduled blob-store garbage collection (runtime maintenance pass).
-    # OFF by default: deletion is an explicit operator decision, never a
-    # silent default. When enabled, the maintenance pass sweeps blobs no
-    # longer referenced by any live workspace snapshot.
-    blob_gc_enabled: bool = False
-    # How often the maintenance pass runs; the GC sweep rides on it. The
-    # pass itself has its own cadence; this only gates whether GC participates.
-    blob_gc_interval_seconds: int = 3600
-    # Maximum active provisioned resources per principal (Phase S limit).
-    provisioning_max_active_per_principal: int = 5
-    # Character budget for evidence assembly (~4 chars/token). The runtime
-    # fills objective > conversation > memory evidence up to this budget
-    # and announces truncation honestly (ADR-0012). When the selected
-    # provider advertises a context limit, the budget is derived from it
-    # instead (see ADR-0015).
-    context_char_budget: int = 24000
-    # Reserved output tokens subtracted from a provider-advertised context
-    # limit before the evidence budget is derived.
+    llm_provider_fallbacks: str = ""
     llm_output_reserve_tokens: int = 4096
 
-    # --- Provider failover (ADR-0024, mission §33/§34) ---
-    # Comma-separated provider kinds to try IN ORDER after the default
-    # provider fails (e.g. "anthropic,mock"). Empty = primary only.
-    # Each candidate gets its own retry+breaker; failover happens after a
-    # candidate's own retry budget exhausts. Misconfigured kinds fail at
-    # boot (loud), not at 3am.
-    llm_provider_fallbacks: str = ""
+    # --- Terminal executor (the open-world environment interface) ---
+    # Default foreground process timeout. This is a transport limit, NOT an
+    # authority decision — it prevents a single command from hanging the
+    # execution forever.
+    terminal_timeout_seconds: float = 60.0
+    # Maximum output size per command (stdout and stderr each). Prevents a
+    # single command from dumping megabytes into the model context.
+    terminal_output_max_chars: int = 50_000
+    # Root directory for execution working directories. Each execution gets
+    # its own subdirectory; the AI's files persist across terminal rounds
+    # within that execution and are cleaned up after.
+    terminal_working_dir_root: str = "./wax-workspaces"
+    # Maximum terminal rounds per message. The AI can call the terminal
+    # this many times before the runtime forces a final response.
+    terminal_max_rounds: int = 10
 
-    # --- Human approval primitive (ADR-0013) ---
-    # How long a pending approval stays decidable before it honestly
-    # expires (swept by the maintenance loop).
-    approval_expiry_seconds: float = 86400.0
+    # --- Work runner ---
+    work_poll_interval_seconds: float = 2.0
 
-    # --- Signal ledger retention (ADR-0015) ---
-    # Signals older than this are pruned by the maintenance loop — UNLESS
-    # some pending event-wake work item can still be woken by them.
+    # --- Signal ledger retention ---
     signal_retention_seconds: float = 30 * 86400.0
-    # Bounded-storage bound: when the ledger exceeds this many rows, the
-    # oldest prune-safe rows beyond the bound are removed.
     signal_max_ledger_rows: int = 100_000
 
-    # --- Audit ledger retention (control plane) ---
-    # The audit_events ledger is append-only (INV-06): the application
-    # never updates or silently deletes history. When this is > 0, the
-    # maintenance pass deletes events older than N days as an EXPLICIT
-    # operator retention policy (the same philosophy as blob GC:
-    # deletion is a decision, never a default). 0 keeps history forever —
-    # the audit page then shows a growth warning once the ledger is large.
+    # --- Audit ledger retention ---
     audit_retention_days: int = 0
-    # Size-based sibling of the age window: when the ledger exceeds this
-    # many rows, the OLDEST rows beyond the bound are removed by the same
-    # opt-in sweep (both bounds can be active; each does its own pass).
-    # 0 disables the bound — the audit page's growth warning covers this
-    # case honestly until the operator configures one.
     audit_max_rows: int = 0
 
-    # --- Durable outbound delivery (ADR-0021) ---
-    # A completed result whose interface send fails becomes recoverable
-    # state: the maintenance loop retries with exponential backoff until
-    # delivered, attempts are exhausted, or the deliverability horizon
-    # passes (interface-agnostic; 24h matches the WhatsApp
-    # customer-service window for template-less sends).
+    # --- Durable outbound delivery ---
     delivery_retry_backoff_seconds: float = 60.0
     delivery_max_attempts: int = 5
     delivery_max_age_seconds: float = 86400.0
 
-    # --- Capability idempotency (CV-19) ----------------------------------
-    # Lease for an `executing` idempotency claim. An abandoned claim
-    # (process died between claim and completion) becomes takeable again
-    # after this many seconds — honest at-least-once recovery.
-    capability_idempotency_claim_seconds: float = 900.0
+    # --- Conversation lifecycle ---
+    conversation_idle_timeout_seconds: float = 1800.0  # 30 min
+    conversation_archive_after_seconds: float = 7 * 86400.0  # 7 days
 
-    # --- Artifact acquisition (ADR-0015) ---
-    # Comma-separated hostnames a workspace.acquire may download from.
-    # Empty list = acquisition disabled (honest refusal).
-    acquisition_allowed_hosts: str = "files.pythonhosted.org,github.com,objects.githubusercontent.com,raw.githubusercontent.com,registry.npmjs.org"
-    # Hard cap on artifact size and download time.
-    acquisition_max_bytes: int = 52_428_800  # 50 MiB
-    acquisition_timeout_seconds: float = 60.0
-
-    # --- WhatsApp (Phase Q — Interface) ---
+    # --- WhatsApp ---
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_app_secret: str = ""
-    # CV-17 fix: no guessable default. An empty value fail-fasts at the
-    # adapter wiring point (WhatsAppClient requires a real verify token);
-    # a default literal would silently accept webhook verification with a
-    # publicly-known token.
     whatsapp_verify_token: str = ""
 
-    # --- Convenience predicates -------------------------------------------
+    # --- Convenience predicates ---
 
     @property
     def is_production(self) -> bool:
@@ -228,13 +132,7 @@ class WaxSettings(BaseSettings):
     def is_development(self) -> bool:
         return self.env == Environment.DEVELOPMENT
 
-    # --- Validation ------------------------------------------------------
-
-    @field_validator("secret_key")
-    @classmethod
-    def _validate_secret_key(cls, v: str) -> str:
-        # Allow empty in dev/test; loader will enforce production stricter.
-        return v
+    # --- Validation ---
 
     @field_validator("database_url")
     @classmethod
@@ -253,11 +151,7 @@ class WaxSettings(BaseSettings):
         return v
 
     def enforce_production_hardening(self) -> None:
-        """Raise WaxConfigurationError if production-required settings are missing.
-
-        Called by the runtime at startup when `env == PRODUCTION`. This is a
-        separate method (not a validator) so it only fires for production.
-        """
+        """Raise WaxConfigurationError if production-required settings are missing."""
         if not self.is_production:
             return
 
@@ -281,22 +175,13 @@ class WaxSettings(BaseSettings):
 
 
 def load_settings() -> WaxSettings:
-    """Load WAX settings from environment.
-
-    This is the canonical entrypoint for reading configuration. It enforces:
-    - environment variable parsing (via pydantic-settings)
-    - production hardening (when env == PRODUCTION)
-    - fail-fast on invalid configuration
-    """
+    """Load WAX settings from environment."""
     try:
         settings = WaxSettings()
     except Exception as e:
-        # Pydantic raises ValidationError; we rewrap as WaxConfigurationError.
         raise WaxConfigurationError(f"Failed to load WAX configuration: {e}") from e
 
-    # In production, enforce stricter rules.
     settings.enforce_production_hardening()
-
     return settings
 
 
@@ -306,10 +191,7 @@ def settings_for_testing(
     database_url: str = "sqlite+aiosqlite:///:memory:",
     **overrides: object,
 ) -> WaxSettings:
-    """Build a WaxSettings instance suitable for tests.
-
-    This bypasses environment-variable loading so tests are hermetic.
-    """
+    """Build a WaxSettings instance suitable for tests."""
     fields: dict[str, object] = {
         "env": env,
         "database_url": database_url,
@@ -324,7 +206,3 @@ def settings_for_testing(
     }
     fields.update(overrides)
     return WaxSettings.model_validate(fields)
-
-
-# Silence unused import warnings for StrEnum re-exports used by callers.
-_ = (LogLevel, LogFormat, Environment)

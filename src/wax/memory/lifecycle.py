@@ -23,12 +23,6 @@ from wax.runtime.logging import get_logger
 log = get_logger(__name__)
 
 
-def _metric():  # type: ignore[no-untyped-def]
-    from wax.observability.runtime_metrics import get_runtime_metrics
-
-    return get_runtime_metrics()
-
-
 async def expire_due_memories(session: Any) -> int:
     """One sweep: forget every active memory whose expires_at has passed.
 
@@ -49,7 +43,6 @@ async def expire_due_memories(session: Any) -> int:
             outcome="success",
             payload={"memory_id": memory.id, "kind": memory.kind},
         )
-        _metric().memory_expired(memory.kind)
     if due:
         log.info("memory.expired_batch", count=len(due))
     return len(due)

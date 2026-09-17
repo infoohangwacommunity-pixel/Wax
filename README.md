@@ -1,115 +1,117 @@
-# WAX — An Open-World AI Runtime
+# WAX
 
-WAX is not a chatbot and not a collection of features. It is a **runtime
-environment in which an AI intelligence pursues human objectives** — the
-runtime provides mechanisms (durable work, capability enforcement,
-authority, memory, provisioning, delivery, observability); the AI provides
-the intelligence. Education (today via WhatsApp) is its first mission, not
-its boundary.
+WAX is an AI runtime. It provides intelligence with:
 
-> "The system should provide an environment and mechanisms; the
-> intelligence should determine how those mechanisms are composed to
-> pursue legitimate objectives." — Foundation Notes, §3
+- **memory** — continuity across time
+- **a terminal environment** — the universal interface to the world
+- **persistent execution** — what happened, what's happening
+- **durable reentry** — what should continue later
+- **identity** — whose world it is
+- **communication** — how the result reaches the user
 
-## The mental model
+The intelligence determines how to accomplish work. The runtime provides
+the mechanisms.
 
-WAX is built like an operating system, not like an app:
+## Philosophy
 
-| An OS provides… | WAX provides… |
-|---|---|
-| processes & scheduling | durable work + wake conditions (`work_items`: time or event wake, leases + fencing, heartbeats, retries, dead-letter, requeue — multi-worker safe) |
-| wait/notify & signals | the `runtime_signals` event ledger (`interface.*`/`work.*`/`approval.*` runtime-owned; gated AI emission; waiter-safe retention) |
-| permissions | Authority & Agency (the AI has agency; the runtime has sovereignty) + the human-approval primitive (pending approvals, `/approve <id>`, replay-proof one-time consumption) |
-| syscalls | Capabilities (the sole effect path — always gated, audited, metered) |
-| filesystem | dynamic provisioning (ephemeral resources with owner/TTL/limits/cleanup) + artifact acquisition (`workspace.acquire`: pinned hashes, allowlisted sources, cache) |
-| package manager | `workspace.acquire` — dependency acquisition as an environment mechanism (verify + isolate, never execute) |
-| memory | memory mechanisms (evidence, revision, consolidation, relevance retrieval, enforced forgetting) |
-| network stack | interface abstraction (WhatsApp first, never the architecture) + egress boundary |
-| device drivers | model adapters (mock / OpenAI-compatible / Anthropic behind one contract) with context-limit negotiation |
+WAX is an **open-world intelligence runtime**. The runtime does not
+maintain a closed model-facing capability catalogue. The runtime does
+not use an authority/approval broker. The runtime does not constrain
+the intelligence through a permission system.
 
-Applications emerge from composition. "Remind me in one hour" is not a
-feature — it is `work.schedule` → wake → `message.send`, composed by the
-AI through gated capabilities. Neither is "ping me when I reply" — that
-is `work.schedule(wake_event="interface.message:<principal>")`.
+Instead, the intelligence operates a **terminal** — a general execution
+environment with full network access, full filesystem access, and
+inherited environment variables. The terminal is the environment
+interface. The intelligence composes actions using whatever the
+environment provides (git, curl, python, node, apt, etc.).
 
-## Architecture map
+This is a **full-trust architecture**: the intelligence is trusted to
+operate the environment. Operational process limits (timeout, output
+truncation) are execution plumbing, not action authorization.
+
+## Architecture
+
+```
+User → Interface (WhatsApp) → Identity + Idempotency → Execution
+     → Memory Retrieval → Context Assembly
+     → Intelligence ↔ Terminal (loop)
+     → Memory Extraction → Execution History
+     → Delivery → Durable Work (when necessary) → Reentry
+```
+
+The loop: **remember → understand → act → observe → learn → continue**.
+
+## What's here
 
 ```
 src/wax/
-  core/           config, exceptions, invariants, logging contracts
-  state/          persistence (SQLAlchemy models, migrations, engine)
-  identity/       interface-independent principals
-  authority/      roles, permissions, enforcement (AI principal: no inherent rights)
-  agency/         policy decisions incl. destructive-action gates
-  capabilities/   registry + invoker (sole effect enforcement point, INV-04)
-                  built-ins: echo, http.get (network-boundaried), code.run
-                  runtime:  work.schedule/cancel/list/requeue, signal.emit,
-                            message.send, scratch.workspace,
-                            memory.store/search/forget/consolidate
-  execution/      durable executions with checkpoints + steps
-  runtime/        app wiring, RuntimeServices container, RuntimeBridge,
-                  durable-work runner, provisioning service
-  intelligence/   LLM contracts + adapters (mock, OpenAI-compatible with
-                  tiktoken-exact counters, Anthropic) + ResilientProvider
-                  (retry + circuit breaker) + context-budget negotiation
-  memory/         evidence storage, two-stage retrieval (lexical recall +
-                  BM25 ranking; PG tsvector+GIN), lifecycle worker
-  continuity/     conversation lifecycle + context assembly
-  security/       rate limiting, abuse, input sanitization, cost caps,
-                  network egress boundary (SSRF)
-  reliability/    retries, circuit breakers, dead letters
-  resources/      per-execution budgets and accounting
-  observability/  metrics, structured logging, append-only audit events
-  interfaces/     WhatsApp Cloud API adapter (interface owns wire limits)
-  isolation/      code.run boundaries: namespace sandbox (kernel-enforced:
-                  no network, read-only FS, masked /proc+/sys, rlimits)
-                  with loud subprocess fallback — runtime-selected, never AI-selected
-  media/          extraction pipeline (runtime extracts, AI interprets):
-                  real tesseract OCR + pypdf text layer (self-gating),
-                  honest audio stub
-  runtime/leadership  per-pass maintenance leader election (advisory lock)
+  core/           config, exceptions, invariants
+  identity/       principals + credentials
+  intelligence/   LLM providers (OpenAI, Anthropic, mock) + resilience
+  interfaces/     WhatsApp adapter
+  memory/         memory records + retrieval + lifecycle
+  execution/      execution history + steps + recovery
+  continuity/     conversation threading + context assembly
+  runtime/
+    app.py         FastAPI factory
+    asgi.py        ASGI entrypoint
+    services.py    process-wide service container
+    executor.py    the terminal executor (core of the open-world architecture)
+    bridge/        the intelligence ↔ terminal loop
+    work/          durable work + reentry
+    delivery.py    outbound delivery router
+    delivery_queue.py  retry-able delivery records
+    maintenance.py lifecycle hygiene (signals, delivery, conversations, audit)
+    lifecycle.py   signal handlers + shutdown
+    logging.py     structured logging
+  state/          SQLAlchemy models + engine
+  observability/  audit events (structured logs are in runtime.logging)
+  reliability/    retries + circuit breakers
 ```
 
-Documentation that matters:
+## What's NOT here (intentionally removed)
 
-- `docs/architecture/runtime-boundary.md` — the layer model + invariants
-- `docs/decisions/ADR-0001…0019` — every consequential decision and why
-- `docs/engineering/audit-response.md` — forensic-audit disposition with proofs
-- `docs/engineering/handoff.md`, `docs/engineering/worklog.md` — engineering history
+- No `capabilities/` — the capability registry is gone
+- No `authority/` — no roles, permissions, approvals, or gates
+- No `resources/` — no resource accountant or budgets
+- No `isolation/` — no sandbox, namespace, or subprocess boundary
+- No `objective/` — no objective state machine
+- No `security/` — no network allowlist, path containment, or SSRF guard
+- No `runtime/control_plane.py` — no dashboard
+- No `runtime/leadership.py` — no multi-instance leader election
+- No `runtime/provisioning.py` — no provisioning service
+- No `runtime/blob_store.py` — no workspace snapshots
+- No `observability/metrics.py` — no Prometheus-style metrics subsystem
 
-## Running it
+## Running
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-uv pip install -e ".[dev]"        # or pip install -e ".[dev]"
-alembic upgrade head              # apply migrations
-pytest                            # full test suite
-python scripts/live_probe.py      # boots the real app; exercises the
-                                  # webhook + live path over real HTTP
+# Install
+pip install -e ".[dev]"
+
+# Run migrations
+alembic upgrade head
+
+# Start the runtime
+uvicorn wax.runtime.asgi:app --host 0.0.0.0 --port 8000
 ```
 
-Configure via environment (all prefixed `WAX_`): `WAX_DATABASE_URL`,
-`WAX_WHATSAPP_*` (access token, phone number id, app secret, verify
-token), `WAX_LLM_DEFAULT_PROVIDER` (`mock` | `openai` | `anthropic`),
-`WAX_OPENAI_API_KEY` / `WAX_ANTHROPIC_API_KEY`, `WAX_LLM_MODEL`,
-`WAX_LLM_BASE_URL` (any OpenAI-compatible endpoint works). See
-`docs/operations/production-deployment.md` for deployment.
+## Configuration
 
-## Constitutional invariants (enforced by tests)
+All settings are `WAX_`-prefixed environment variables. See
+`src/wax/core/config.py` for the full schema. Key settings:
 
-- **INV-01** No domain concepts in `wax.core` — education is the mission,
-  never the ontology.
-- **INV-03** No provider SDK outside its adapter file.
-- **INV-04** The AI principal has no inherent permissions; every effect
-  crosses Authority via the CapabilityInvoker.
-- **INV-06/09** No I/O in core; the boundary is tested, not aspirational.
-- Never fake success: failures surface as real failures (retries,
-  dead-letters, truthful constraint messages).
+- `WAX_DATABASE_URL` — PostgreSQL (prod) or SQLite (dev)
+- `WAX_SECRET_KEY` — master secret (required in production)
+- `WAX_LLM_DEFAULT_PROVIDER` — `openai`, `anthropic`, or empty (mock)
+- `WAX_OPENAI_API_KEY` / `WAX_ANTHROPIC_API_KEY` — provider keys
+- `WAX_WHATSAPP_*` — WhatsApp Cloud API credentials
+- `WAX_TERMINAL_TIMEOUT_SECONDS` — foreground process timeout (default 60)
+- `WAX_TERMINAL_MAX_ROUNDS` — max terminal calls per message (default 10)
+- `WAX_TERMINAL_WORKING_DIR_ROOT` — where execution workspaces live
 
-## Verifying claims
+## Testing
 
-Every architectural claim in this repository is backed by a named test,
-a live probe (`scripts/live_probe.py`), or an ADR with its evidence. The
-audit-response document maps each audit finding to its disposition and
-proof. Start there if you want to trust nothing and verify everything —
-that stance is the intended one.
+```bash
+pytest tests/
+```

@@ -18,7 +18,6 @@ from wax.continuity.contracts import (
 from wax.continuity.repository import ConversationRepository
 from wax.execution.repository import ExecutionRepository
 from wax.memory.repository import MemoryRepository
-from wax.objective.repository import ObjectiveRepository
 from wax.runtime.logging import get_logger
 
 log = get_logger(__name__)
@@ -88,7 +87,7 @@ class ContinuityService:
         self._session = session
         self._conv_repo = ConversationRepository(session)
         self._memory_repo = MemoryRepository(session)
-        self._objective_repo = ObjectiveRepository(session)
+
         self._exec_repo = ExecutionRepository(session)
 
     async def build_context(
@@ -345,21 +344,7 @@ class ContinuityService:
         # Available capabilities — try to fetch from the runtime services
         # container attached to the session. Tolerant: a session without
         # the container (e.g. unit tests) contributes nothing.
-        try:
-            services = getattr(self._session, "wax_services", None)
-            if services is not None and hasattr(services, "capability_registry"):
-                capabilities = []
-                for descriptor in services.capability_registry.list_capabilities():
-                    capabilities.append(
-                        {
-                            "name": descriptor.name,
-                            "description": descriptor.description[:200],
-                            "is_destructive": descriptor.is_destructive,
-                        }
-                    )
-                env["available_capabilities"] = capabilities
-        except Exception:
-            pass
+        # capability registry removed — open-world terminal architecture
 
         # Recent signals — the last few runtime signals emitted for this
         # principal's work (so the AI sees what woke up).

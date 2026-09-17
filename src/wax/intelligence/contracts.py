@@ -37,11 +37,11 @@ class MessageRole(StrEnum):
 
 @dataclass
 class ToolSpec:
-    """A capability offered to the model as a callable tool.
+    """A tool offered to the model as a callable.
 
-    Built from a CapabilityDescriptor by the runtime (capability
-    discovery). The model sees name + description + JSON-schema
-    parameters; it NEVER sees implementations.
+    In the open-world architecture, the only tool is `terminal` — the
+    universal environment interface. The model sees name + description +
+    JSON-schema parameters; it NEVER sees the implementation.
     """
 
     name: str

@@ -1,12 +1,20 @@
 """RuntimeServices — the process-wide service container.
 
-This container is the construction point for process singletons. It builds
-them ONCE at startup and hands them to the bridge, the webhook layer, and
-the background worker. Per-session collaborators (AuthorizationService,
-CapabilityInvoker) are constructed on demand with a session.
+This is the construction point for process singletons. It builds them
+ONCE at startup and hands them to the bridge and the work runner.
 
-Nothing here knows about domains, education, WhatsApp, or any use case —
-these are operating-system-style mechanisms.
+The new architecture is dramatically smaller than the old one. There is:
+- No capability registry
+- No authority broker
+- No resource accountant
+- No isolation runtime
+- No environment planner
+- No connector runtime
+- No credential vault
+- No blob store
+- No provisioning service
+
+Just: intelligence, delivery, work runner, terminal config.
 """
 
 from __future__ import annotations
@@ -14,30 +22,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from wax.authority.service import AuthorizationService
-from wax.capabilities.built_ins import register_builtins
-from wax.capabilities.invoker import CapabilityInvoker
-from wax.capabilities.registry import CapabilityRegistry
-from wax.capabilities.runtime_capabilities import register_runtime_capabilities
 from wax.core.config import WaxSettings
-from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
-from wax.resources.accountant import ResourceAccountant
-from wax.runtime.blob_store import ContentAddressedBlobStore
 from wax.runtime.delivery import DeliveryRouter
-from wax.runtime.isolation_runtime import RuntimeIsolation
 from wax.runtime.logging import get_logger
-from wax.security.abuse import AbuseDetector
-from wax.security.cost_protection import CostProtector
-from wax.security.input_sanitizer import InputSanitizer
-from wax.security.rate_limiter import RateLimiter
 
 if TYPE_CHECKING:
-    # Avoid a circular import at runtime: the work package's __init__
-    # imports handlers, which import services. Importing the type only
-    # under TYPE_CHECKING keeps the type hint without triggering the
-    # package init at module load time.
     from wax.runtime.work.reentry import ReentryCallback
 
 log = get_logger(__name__)
@@ -48,91 +37,40 @@ class RuntimeServices:
     """Process-wide singletons shared by every runtime subsystem."""
 
     settings: WaxSettings
-    metrics: RuntimeMetrics
-    rate_limiter: RateLimiter
-    cost_protector: CostProtector
-    abuse_detector: AbuseDetector
-    input_sanitizer: InputSanitizer
-    resource_accountant: ResourceAccountant
-    capability_registry: CapabilityRegistry
     delivery: DeliveryRouter
-    # Mutable slot for the background work runner, set by the lifespan
-    # (Phase V). Typed loosely to avoid an import cycle; tests may inspect.
+    # Mutable slot for the background work runner, set by the lifespan.
     work_runner: Any | None = field(default=None)
     # Durable intelligence re-entry callback. Set ONCE by the composition
-    # root (create_app) so the work handler can wake the intelligence
-    # WITHOUT importing the bridge. None means the runtime was built
-    # without re-entry wiring (e.g. a stripped-down test container) —
-    # the intelligence_handler fails honestly in that case.
+    # root so the work handler can wake the intelligence WITHOUT importing
+    # the bridge.
     reentry_callback: ReentryCallback | None = field(default=None)
-    # Content-addressed blob store. workspace.snapshot persists file
-    # bytes here so workspace.restore works even after the source
-    # workspace has been released and deleted.
-    blob_store: ContentAddressedBlobStore | None = field(default=None)
-    # Shared isolation decision. code.run routes through this — the
-    # isolation grade is a runtime decision from configuration, never
-    # the caller's, never the model's.
-    isolation_runtime: RuntimeIsolation | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
-        """Construct all singletons. Pure in-memory — safe to call in tests.
-
-        `settings=None` builds a container with development defaults; it is
-        used when a legacy caller (or a bare unit test) constructs a bridge
-        without an application lifespan.
-        """
+        """Construct all singletons. Pure in-memory — safe to call in tests."""
         if settings is None:
             settings = WaxSettings.model_validate({})
 
-        registry = CapabilityRegistry()
-        register_builtins(registry)
-
-        # Process-local rate limiter + cost protector. WAX is currently
-        # deployed as a single instance, so process-local enforcement is
-        # correct. If multi-instance deployment becomes a real future
-        # requirement, a shared-state backend can be introduced then.
-        rate_limiter_instance = RateLimiter()
-        cost_protector_instance = CostProtector()
-
         services = cls(
             settings=settings,
-            metrics=get_runtime_metrics(),
-            rate_limiter=rate_limiter_instance,
-            cost_protector=cost_protector_instance,
-            abuse_detector=AbuseDetector(),
-            input_sanitizer=InputSanitizer(),
-            resource_accountant=ResourceAccountant(),
-            capability_registry=registry,
             delivery=DeliveryRouter(),
-            blob_store=ContentAddressedBlobStore(settings.snapshot_blob_root),
-            isolation_runtime=RuntimeIsolation(settings),
         )
-        # Runtime mechanisms exposed to the AI as capabilities
-        # (work.schedule / work.cancel / work.list / message.send) —
-        # registered after construction so they close over this container.
-        register_runtime_capabilities(registry, services)
         log.info(
             "runtime.services.built",
-            capabilities=len(registry),
             delivery_interfaces=services.delivery.registered_interfaces(),
         )
         return services
 
-    # --- Per-session collaborators ---------------------------------------
-    # These need an AsyncSession, so they are built at use time.
+    def register_delivery(
+        self,
+        interface_name: str,
+        sender: Any,
+        policy: Any | None = None,
+    ) -> None:
+        """Register an interface sender with the delivery router."""
+        from wax.runtime.delivery import DeliveryPolicy
 
-    def authority(self, session: AsyncSession) -> AuthorizationService:
-        return AuthorizationService(session)
-
-    def invoker(self, session: AsyncSession) -> CapabilityInvoker:
-        """The SOLE enforcement point for AI-requested effects (INV-04).
-        CV-19: the idempotency claim lease is operator-tunable."""
-        return CapabilityInvoker(
-            self.capability_registry,
-            AuthorizationService(session),
-            idempotency_claim_seconds=self.settings.capability_idempotency_claim_seconds,
-        )
+        self.delivery.register(interface_name, sender, policy=policy or DeliveryPolicy())
 
 
 def services_from_app(app: Any) -> RuntimeServices | None:

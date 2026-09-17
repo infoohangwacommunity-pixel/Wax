@@ -1,20 +1,15 @@
 """wax.observability — runtime observability.
 
-Implements Directive §54, §97, §146:
-- structured logs (already done in wax.runtime.logging)
-- metrics (Prometheus-compatible via prometheus_client)
-- tracing (OpenTelemetry-compatible, future)
-- execution replay (via audit log + execution steps)
+The dedicated metrics subsystem was removed in the open-world architecture
+reset (per directive §87). What remains:
+- structured logs (wax.runtime.logging)
+- audit events (wax.observability.audit) — append-only operational ledger
 
-Key invariants:
-- NEVER log secrets (enforced in wax.runtime.logging._redact_sensitive)
-- NEVER log model chain-of-thought (Directive §97)
-- Metrics are per-instance aggregates with NO principal dimension today —
-  a deliberate, documented limitation, not an enforced privacy control.
-  Any principal-dimensioned observability requires an explicit privacy
-  design first (founder policy boundary).
+No Prometheus-style metrics, no /metrics endpoint, no per-instance
+aggregates. Structured logs + audit events are sufficient for the
+open-world runtime.
 """
 
-from wax.observability.metrics import MetricsRegistry, get_metrics
+from wax.observability.audit import AuditEvent, record_audit_event
 
-__all__ = ["MetricsRegistry", "get_metrics"]
+__all__ = ["AuditEvent", "record_audit_event"]

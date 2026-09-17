@@ -1,14 +1,16 @@
-"""Durable work runtime (Phase R / Phase V; ADR-0034 re-entry).
+"""Durable work runtime.
 
-Exports the WorkRunner (background worker), WorkRepository, the generic
-capability handler, and the durable intelligence re-entry handler
-(ADR-0034). The runner is started by the app lifespan; work survives
-restarts via the work_items table + leases.
+Exports the WorkRunner (background worker), WorkRepository, and the
+durable intelligence re-entry handler. The runner is started by the app
+lifespan; work survives restarts via the work_items table + leases.
+
+The capability handler is GONE — the capability architecture was removed.
+Only the intelligence handler remains.
 """
 
 from __future__ import annotations
 
-from wax.runtime.work.handlers import capability_handler, intelligence_handler
+from wax.runtime.work.handlers import intelligence_handler
 from wax.runtime.work.reentry import (
     ReentryCallback,
     ReentryRequest,
@@ -27,7 +29,6 @@ __all__ = [
     "WorkExecutionError",
     "WorkRepository",
     "WorkRunner",
-    "capability_handler",
     "intelligence_handler",
     "validate_reentry_payload",
 ]

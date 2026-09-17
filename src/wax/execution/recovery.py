@@ -220,11 +220,14 @@ async def classify_crash(
 
 
 async def _resolve_objective_id(session: AsyncSession, execution_id: str) -> str | None:
-    """Resolve the objective an execution is working on (best-effort)."""
-    from wax.objective.evidence import objective_for_execution
+    """Resolve the objective an execution is working on (best-effort).
 
-    objective = await objective_for_execution(session, execution_id)
-    return objective.id if objective else None
+    The objective subsystem was removed in the open-world architecture
+    reset. This function now always returns None — there is no objective
+    to resolve. Kept as a stub for compatibility with recovery callers
+    that may still reference it.
+    """
+    return None
 
 
 async def lookup_idempotent_outcome(

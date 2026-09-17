@@ -48,7 +48,6 @@ from typing import Any
 
 from ulid import ULID
 
-from wax.objective.evidence import sync_failure_for_work
 from wax.runtime.logging import get_logger
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work.repository import WorkRepository
@@ -174,7 +173,6 @@ class WorkRunner:
                 )
                 # Evidence sync (ADR-0020): an expired wait is honest
                 # failure for the objective if nothing else is pending.
-                await sync_failure_for_work(session, item)
             for item in batch.reclaim_dead:
                 await SignalRepository(session).emit(
                     f"work.dead:{item.id}",
@@ -185,14 +183,10 @@ class WorkRunner:
                     },
                     emitted_by="work_runner",
                 )
-                await sync_failure_for_work(session, item)
             claimed = list(batch.claimed)
-            if batch.reclaimed:
-                self._services.metrics.work_reclaimed()
             await session.commit()
 
         if not claimed:
-            self._services.metrics.work_inflight(float(await self._inflight()))
             return 0
 
         if self._max_concurrency == 1:
@@ -207,7 +201,6 @@ class WorkRunner:
 
             await asyncio.gather(*(_guarded(item) for item in claimed))
 
-        self._services.metrics.work_inflight(float(await self._inflight()))
         return len(claimed)
 
     def _spawn_heartbeat(self, item_id: str) -> asyncio.Task:
@@ -263,7 +256,6 @@ class WorkRunner:
                 await session.commit()
             if outcome != "running":
                 # Fenced or already terminal: another attempt owns this item.
-                self._services.metrics.work_fenced()
                 return
 
             heartbeat = self._spawn_heartbeat(item.id)
@@ -282,11 +274,9 @@ class WorkRunner:
                         emitted_by="work_runner",
                     )
                 else:
-                    self._services.metrics.work_fenced()
+                    pass  # no terminal announcement for non-succeeded outcomes
                 await session.commit()
-            self._services.metrics.work_woken("succeeded", kind)
         except Exception as e:
-            self._services.metrics.work_woken("failed", kind)
             await self._fail_item(item, e)
         finally:
             if heartbeat is not None:
@@ -307,7 +297,6 @@ class WorkRunner:
                 )
                 if status == "fenced":
                     # A zombie worker's failure report is discarded.
-                    self._services.metrics.work_fenced()
                     await session.commit()
                     return
                 if status == "dead":
@@ -324,8 +313,7 @@ class WorkRunner:
                     )
                     # Evidence sync (ADR-0020): if this was the objective's
                     # last outstanding work, the objective fails honestly.
-                    await sync_failure_for_work(session, item)
-                await session.commit()
+                    await session.commit()
         except Exception as finalize_error:
             log.critical(
                 "work.finalize_failed",

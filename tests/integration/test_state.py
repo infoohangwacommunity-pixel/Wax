@@ -112,8 +112,14 @@ class TestSchemaCreation:
             "principals",
             "principal_credentials",
             "audit_events",
-            "roles",
-            "principal_roles",
+            "memory_records",
+            "executions",
+            "execution_steps",
+            "work_items",
+            "runtime_signals",
+            "processed_messages",
+            "delivery_records",
+            "conversations",
         }
         assert expected.issubset(set(tables)), f"Missing tables: {expected - set(tables)}"
 

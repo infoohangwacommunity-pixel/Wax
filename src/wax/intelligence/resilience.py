@@ -39,7 +39,6 @@ from wax.intelligence.contracts import (
     LLMStreamChunk,
     ProviderKind,
 )
-from wax.observability.metrics import get_metrics
 from wax.reliability.circuit_breaker import CircuitBreaker, CircuitOpenError
 from wax.reliability.retry import RetryConfig, retry_with_backoff
 from wax.runtime.logging import get_logger
@@ -93,9 +92,7 @@ class ResilientProvider:
             failure_threshold=5,
             recovery_timeout=30.0,
         )
-        provider = inner.kind.value
-        self._m_retries = get_metrics().counter("llm_retry_total", provider=provider)
-        self._m_open = get_metrics().counter("llm_breaker_open_total", provider=provider)
+
         self._was_open = False
 
     @property
@@ -121,7 +118,7 @@ class ResilientProvider:
                 raise classify_llm_error(e) from e
 
         def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
-            self._m_retries.inc()
+
             log.warning(
                 "intelligence.retry",
                 provider=self._inner.kind.value,
@@ -135,7 +132,6 @@ class ResilientProvider:
                 lambda: retry_with_backoff(_attempt, self._retry, on_retry=_on_retry)
             )
         except CircuitOpenError:
-            self._m_open.inc()
             raise
         finally:
             self._observe_breaker()
@@ -149,7 +145,6 @@ class ResilientProvider:
         try:
             iterator = await self._breaker.call(_attempt)
         except CircuitOpenError:
-            self._m_open.inc()
             raise
         finally:
             self._observe_breaker()

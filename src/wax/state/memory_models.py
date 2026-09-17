@@ -47,7 +47,6 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
         Index("ix_memory_principal_kind", "principal_id", "kind"),
         Index("ix_memory_principal_status", "principal_id", "status"),
         Index("ix_memory_superseded_by", "superseded_by"),
-        Index("ix_memory_objective", "objective_id"),
     )
 
     # Whose memory this is
@@ -77,14 +76,11 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Optional reference to the execution / capability invocation that produced this
     source_execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
-    # ADR-0036 (Phase 3): the objective this memory supports/evidences.
-    # Optional — many memories are objective-independent (the user's
-    # name, preferences, etc.). When present, retrieval can ask
-    # "what do I know that bears on THIS objective?" — the directive's
-    # "what objective I support" answer.
+    # Optional reference to the execution that produced this memory.
+    # (The objective subsystem was removed in the open-world reset; the
+    # objective_id column and its FK are gone.)
     objective_id: Mapped[str | None] = mapped_column(
         String(26),
-        ForeignKey("objectives.id", ondelete="SET NULL"),
         nullable=True,
     )
 

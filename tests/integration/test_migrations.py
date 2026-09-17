@@ -1,13 +1,8 @@
-"""Migration discipline tests: from zero, and from the current production
-schema. A migration that only works on a green field is a liability —
-these tests run the real Alembic chain over real SQLite files.
+"""Migration discipline tests: from zero, and round-trip.
 
-- fresh: `alembic upgrade head` on an empty database creates the full
-  schema; the ORM can then use it (smoke: insert + query a work item).
-- upgrade: a database at the PREVIOUS revision (e5c2a9f47b61 — the schema
-  real deployments run today) upgrades to head, the new table appears,
-  and pre-existing rows survive untouched.
-- rollback: head → back down one step → forward again, without error.
+Verifies the Alembic migration chain works end-to-end on real SQLite files.
+The open-world reset dropped many tables; these tests verify the surviving
+schema is created correctly and the round-trip works.
 """
 
 from __future__ import annotations
@@ -22,7 +17,6 @@ from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.work_models import WorkItemRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PREV_REVISION = "e5c2a9f47b61"  # what production ran before the approval primitive
 
 
 def _alembic(database_url: str, *args: str) -> subprocess.CompletedProcess:
@@ -51,11 +45,11 @@ def _sqlite_file_url(path: Path) -> str:
 
 class TestFreshDatabase:
     async def test_upgrade_head_from_zero_creates_full_schema(self, tmp_path) -> None:
+        """Fresh install: upgrade head creates the surviving schema."""
         db_file = tmp_path / "fresh.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
 
-        # The approval primitive's table exists with its indexes.
         init_engine(
             __import__("wax.core.config", fromlist=["settings_for_testing"]).settings_for_testing(
                 database_url=url
@@ -73,32 +67,32 @@ class TestFreshDatabase:
                     .all()
                 )
                 tables = set(rows)
-                assert "pending_approvals" in tables
-                assert "capability_invocations" in tables
-                assert "runtime_signals" in tables
-                assert "work_items" in tables
+                # Surviving tables (post open-world reset)
                 assert "principals" in tables
+                assert "principal_credentials" in tables
+                assert "memory_records" in tables
+                assert "executions" in tables
+                assert "execution_steps" in tables
+                assert "work_items" in tables
+                assert "runtime_signals" in tables
+                assert "processed_messages" in tables
+                assert "delivery_records" in tables
+                assert "conversations" in tables
+                assert "audit_events" in tables
 
-                # The at-most-one-claim property is a DATABASE property.
-                indexes = (
-                    (
-                        await session.execute(
-                            text(
-                                "SELECT name FROM sqlite_master WHERE type='index' "
-                                "AND tbl_name='capability_invocations'"
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                assert "uq_capability_invocations_principal_capability_key" in set(indexes)
+                # Removed tables must NOT exist
+                assert "pending_approvals" not in tables
+                assert "capability_invocations" not in tables
+                assert "roles" not in tables
+                assert "objectives" not in tables
+                assert "artifacts" not in tables
+                assert "workspace_snapshots" not in tables
+                assert "provisioned_resources" not in tables
         finally:
             await dispose_engine()
 
     async def test_fresh_schema_is_usable_by_the_orm(self, tmp_path) -> None:
-        """Migrations produce a schema the live code actually works against
-        (catches drift between models and migrations)."""
+        """Migrations produce a schema the live code works against."""
         db_file = tmp_path / "usable.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
@@ -113,10 +107,10 @@ class TestFreshDatabase:
             async with db_session() as session:
                 item = WorkItemRecord(
                     id="01TESTWORKITEM0000000000",
-                    kind="capability",
+                    kind="intelligence",
                     status="pending",
                     principal_id="01TESTPRINCIPAL000000000",
-                    payload={"capability_name": "echo", "inputs": {}},
+                    payload={"prompt": "test", "observation": {}},
                     wake_at=datetime.now(UTC),
                     available_at=datetime.now(UTC),
                     wake_kind="time",
@@ -134,102 +128,14 @@ class TestFreshDatabase:
             await dispose_engine()
 
 
-class TestUpgradeFromProductionSchema:
-    async def test_upgrade_from_previous_revision_preserves_rows(self, tmp_path) -> None:
-        """The upgrade path real deployments will take: data written under
-        the previous schema survives, and the new table appears."""
-        db_file = tmp_path / "upgrade.db"
-        url = _sqlite_file_url(db_file)
-        _alembic(url, "upgrade", PREV_REVISION)
-
-        # Write production-shaped rows at the old revision.
-        settings = __import__(
-            "wax.core.config", fromlist=["settings_for_testing"]
-        ).settings_for_testing(database_url=url)
-        init_engine(settings)
-        try:
-            from datetime import UTC, datetime
-
-            async with db_session() as session:
-                await session.execute(
-                    text(
-                        "INSERT INTO work_items (id, kind, status, principal_id, "
-                        "wake_at, available_at, wake_kind, attempts, max_attempts, "
-                        "created_at, updated_at) VALUES "
-                        "(:id, 'capability', 'pending', :pid, :ts, :ts, 'time', 0, 3, :ts, :ts)"
-                    ),
-                    {
-                        "id": "01PRODWORKITEM0000000000000",
-                        "pid": "01PRODPRINCIPAL0000000000",
-                        "ts": datetime.now(UTC).isoformat(),
-                    },
-                )
-                await session.commit()
-        finally:
-            await dispose_engine()
-
-        # Upgrade to head.
-        _alembic(url, "upgrade", "head")
-
-        init_engine(settings)
-        try:
-            async with db_session() as session:
-                # Pre-existing row survived (server_default 'time' applied).
-                row = (
-                    await session.execute(
-                        text("SELECT wake_kind, status FROM work_items WHERE id=:i"),
-                        {"i": "01PRODWORKITEM0000000000000"},
-                    )
-                ).first()
-                assert row is not None
-                assert row.wake_kind == "time"
-                assert row.status == "pending"
-
-                # The new approval table is present and empty-but-real.
-                count = (
-                    await session.execute(text("SELECT COUNT(*) FROM pending_approvals"))
-                ).scalar_one()
-                assert count == 0
-
-                # The idempotency ledger is present and empty-but-real.
-                ledger = (
-                    await session.execute(text("SELECT COUNT(*) FROM capability_invocations"))
-                ).scalar_one()
-                assert ledger == 0
-        finally:
-            await dispose_engine()
-
+class TestRoundTrip:
     async def test_downgrade_then_upgrade_roundtrip(self, tmp_path) -> None:
+        """head → -1 → head should work cleanly."""
         db_file = tmp_path / "roundtrip.db"
         url = _sqlite_file_url(db_file)
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-1")  # drop capability_invocations
-        _alembic(url, "upgrade", "head")  # bring it back
-        settings = __import__(
-            "wax.core.config", fromlist=["settings_for_testing"]
-        ).settings_for_testing(database_url=url)
-        init_engine(settings)
-        try:
-            async with db_session() as session:
-                ledger = (
-                    await session.execute(text("SELECT COUNT(*) FROM capability_invocations"))
-                ).scalar_one()
-                assert ledger == 0
-        finally:
-            await dispose_engine()
-
-    async def test_downgrade_drops_idempotency_ledger(self, tmp_path) -> None:
-        """head → -9 removes Phase 3 + 5 + 6 + 7 + 9 columns/tables AND
-        the idempotency ledger table.
-
-        As more migrations are added after the idempotency ledger
-        migration, this downgrade step count increases. The test's
-        intent is to verify the downgrade boundary matches the upgrade.
-        """
-        db_file = tmp_path / "ledgerdown.db"
-        url = _sqlite_file_url(db_file)
+        _alembic(url, "downgrade", "-1")
         _alembic(url, "upgrade", "head")
-        _alembic(url, "downgrade", "-9")
 
         settings = __import__(
             "wax.core.config", fromlist=["settings_for_testing"]
@@ -237,7 +143,8 @@ class TestUpgradeFromProductionSchema:
         init_engine(settings)
         try:
             async with db_session() as session:
-                tables = (
+                # The surviving tables should all be present after round-trip
+                rows = (
                     (
                         await session.execute(
                             text("SELECT name FROM sqlite_master WHERE type='table'")
@@ -246,9 +153,9 @@ class TestUpgradeFromProductionSchema:
                     .scalars()
                     .all()
                 )
-                assert "capability_invocations" not in set(tables)
-                assert "pending_approvals" in set(tables), (
-                    "only the ledger table is dropped by the -4 step"
-                )
+                tables = set(rows)
+                assert "work_items" in tables
+                assert "memory_records" in tables
+                assert "executions" in tables
         finally:
             await dispose_engine()

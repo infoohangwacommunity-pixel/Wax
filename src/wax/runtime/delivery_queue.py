@@ -38,12 +38,6 @@ from wax.state.delivery_models import DeliveryRecord
 log = get_logger(__name__)
 
 
-def _metric():  # type: ignore[no-untyped-def]
-    from wax.observability.runtime_metrics import get_runtime_metrics
-
-    return get_runtime_metrics()
-
-
 class DeliveryQueue:
     """Enqueue, attempt, and retry outbound deliveries as durable state."""
 
@@ -126,7 +120,6 @@ class DeliveryQueue:
                 f"({int(self._max_age_seconds)}s); not retried further"
             )
             await self._session.flush()
-            _metric().delivery_failed(record.interface_kind)
             log.warning(
                 "delivery.expired",
                 delivery_id=record.id,
@@ -152,7 +145,6 @@ class DeliveryQueue:
                 record.delivered_at = datetime.now(UTC)
                 record.last_error = None
                 await self._session.flush()
-                _metric().delivery_delivered(record.interface_kind)
                 log.info(
                     "delivery.delivered",
                     delivery_id=record.id,
@@ -166,7 +158,6 @@ class DeliveryQueue:
         if record.attempts >= record.max_attempts:
             record.status = "failed"
             await self._session.flush()
-            _metric().delivery_failed(record.interface_kind)
             log.error(
                 "delivery.failed_terminal",
                 delivery_id=record.id,
@@ -179,7 +170,6 @@ class DeliveryQueue:
         backoff = self._retry_backoff_seconds * (self._backoff_factor ** (record.attempts - 1))
         record.next_attempt_at = datetime.now(UTC) + timedelta(seconds=backoff)
         await self._session.flush()
-        _metric().delivery_retrying(record.interface_kind)
         log.warning(
             "delivery.retry_scheduled",
             delivery_id=record.id,
@@ -229,6 +219,5 @@ class DeliveryQueue:
             )
         if stale:
             await self._session.flush()
-            _metric().delivery_failed("multiple")
             log.warning("delivery.expired_stale", count=len(stale))
         return len(stale)
