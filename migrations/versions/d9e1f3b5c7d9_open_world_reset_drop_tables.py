@@ -18,6 +18,7 @@ Revision ID: d9e1f3b5c7d9
 Revises: c8d0e2f4a6b8
 Create Date: 2026-09-17
 
+
 """
 
 from __future__ import annotations
@@ -38,15 +39,15 @@ def upgrade() -> None:
     # Use raw SQL with IF EXISTS for PostgreSQL + SQLite compatibility.
     # The cascade=True kwarg was removed in newer SQLAlchemy — raw SQL
     # avoids the issue entirely.
-    op.execute("DROP TABLE IF EXISTS objective_executions")
-    op.execute("DROP TABLE IF EXISTS objectives")
-    op.execute("DROP TABLE IF EXISTS workspace_snapshots")
-    op.execute("DROP TABLE IF EXISTS artifacts")
-    op.execute("DROP TABLE IF EXISTS provisioned_resources")
-    op.execute("DROP TABLE IF EXISTS capability_invocations")
-    op.execute("DROP TABLE IF EXISTS pending_approvals")
-    op.execute("DROP TABLE IF EXISTS principal_roles")
-    op.execute("DROP TABLE IF EXISTS roles")
+    op.execute("DROP TABLE IF EXISTS objective_executions CASCADE")
+    op.execute("DROP TABLE IF EXISTS objectives CASCADE")
+    op.execute("DROP TABLE IF EXISTS workspace_snapshots CASCADE")
+    op.execute("DROP TABLE IF EXISTS artifacts CASCADE")
+    op.execute("DROP TABLE IF EXISTS provisioned_resources CASCADE")
+    op.execute("DROP TABLE IF EXISTS capability_invocations CASCADE")
+    op.execute("DROP TABLE IF EXISTS pending_approvals CASCADE")
+    op.execute("DROP TABLE IF EXISTS principal_roles CASCADE")
+    op.execute("DROP TABLE IF EXISTS roles CASCADE")
 
 
 def downgrade() -> None:
@@ -173,3 +174,4 @@ def downgrade() -> None:
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("outcome", sa.String(16), nullable=True),
     )
+
