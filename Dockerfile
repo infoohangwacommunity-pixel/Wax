@@ -21,13 +21,14 @@ WORKDIR /app
 
 # Install dependencies first (cache layer).
 # uv reads pyproject.toml and resolves the full dependency tree.
-COPY pyproject.toml alembic.ini ./
+# README.md must be present before the editable install — hatchling
+# validates the readme field in pyproject.toml during build.
+COPY pyproject.toml alembic.ini README.md ./
 COPY src ./src
 RUN uv pip install --system -e .
 
-# Copy migrations and docs last (they change more often).
+# Copy migrations last (they change more often).
 COPY migrations ./migrations
-COPY README.md ./
 
 # Create a non-root user. The runtime will run as this user.
 RUN useradd --create-home --shell /bin/bash wax \
