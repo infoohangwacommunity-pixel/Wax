@@ -148,27 +148,7 @@ async def _run_consolidation(services: Any) -> int:
 
         consolidated = 0
         async with db_session() as session:
-            # Find principals with 20+ active episodic memories
-            await session.execute(
-                select(MemoryRecord.principal_id)
-                .where(
-                    MemoryRecord.kind == "episodic",
-                    MemoryRecord.status == "active",
-                )
-                .group_by(MemoryRecord.principal_id)
-                .having(
-                    # SQLite-compatible count
-                    select(MemoryRecord.id)
-                    .where(
-                        MemoryRecord.principal_id == MemoryRecord.principal_id,
-                        MemoryRecord.kind == "episodic",
-                        MemoryRecord.status == "active",
-                    )
-                    .correlate()
-                )
-                .limit(5)
-            )
-            # Simple approach: just get distinct principals with episodic memories
+            # Simple approach: get distinct principals with episodic memories
             principals = set()
             all_result = await session.execute(
                 select(MemoryRecord.principal_id)
