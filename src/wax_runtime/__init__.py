@@ -260,6 +260,36 @@ def workspace_path() -> str:
     return os.environ.get("WAX_CURRENT_WORKSPACE", "./")
 
 
+def serve_page(html_content: str, *, purpose: str = "", port: int | None = None) -> str:
+    """Serve a temporary web page and return the URL (Parts 16-17).
+
+    The AI creates an HTML page, starts a local HTTP server, and returns
+    the URL. The student opens the URL, submits (OAuth, upload, secret),
+    and the AI continues. The page is cleaned up when the execution ends.
+
+    Example:
+        url = serve_page(
+            "<html><body><h1>Upload your WAEC result</h1>"
+            "<form action='/upload' method='POST' enctype='multipart/form-data'>"
+            "<input type='file' name='file'><button>Upload</button></form></body></html>",
+            purpose="waec_upload",
+        )
+        # Send `url` to the student via WhatsApp
+    """
+    from pathlib import Path
+
+    from wax.runtime.web_pages import WebPageServer
+
+    ws = Path(os.environ.get("WAX_CURRENT_WORKSPACE", "./"))
+    server = WebPageServer(workspace=ws)
+
+    async def _do():
+        return await server.serve_page(html_content, purpose=purpose, port=port)
+
+    page = _async_run(_do())
+    return page.url
+
+
 def current_principal_id() -> str:
     """Return the current principal ID (set by the bridge in env)."""
     return os.environ.get("WAX_CURRENT_PRINCIPAL_ID", "")
@@ -277,5 +307,6 @@ __all__ = [
     "recall",
     "remember",
     "schedule",
+    "serve_page",
     "workspace_path",
 ]

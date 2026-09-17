@@ -137,6 +137,37 @@ class MemoryRepository:
             return True
         return False
 
+    async def strengthen(self, memory_id: str) -> bool:
+        """Strengthen an existing memory (Part 8: memory lifecycle).
+
+        When a new observation corroborates an existing memory, increase
+        its confidence and importance rather than creating a duplicate.
+        This is how humans learn — repetition strengthens recall.
+        """
+        record = await self._session.get(MemoryRecord, memory_id)
+        if record is None or record.status != MemoryStatus.ACTIVE.value:
+            return False
+        new_confidence = min(1.0, float(record.confidence or 0.5) + 0.1)
+        new_importance = min(1.0, float(record.importance or 0.5) + 0.1)
+        result = await self._session.execute(
+            update(MemoryRecord)
+            .where(MemoryRecord.id == memory_id)
+            .values(
+                confidence=new_confidence,
+                importance=new_importance,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        if result.rowcount > 0:
+            log.info(
+                "memory.strengthened",
+                memory_id=memory_id,
+                confidence=new_confidence,
+                importance=new_importance,
+            )
+            return True
+        return False
+
     async def forget(self, memory_id: str) -> bool:
         """Mark a memory as forgotten (soft delete).
 

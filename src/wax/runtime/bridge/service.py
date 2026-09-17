@@ -53,6 +53,7 @@ from wax.runtime.bridge.contracts import (
     RuntimeResponse,
     RuntimeResponseStatus,
 )
+from wax.runtime.cost_protection import CostProtector
 from wax.runtime.executor import (
     TerminalExecutor,
     execution_workspace,
@@ -64,6 +65,7 @@ from wax.runtime.rate_limit import RateLimiter
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work.reentry import ReentryRequest, ReentryResult
 from wax.state.bridge_models import ProcessedMessageRecord
+from wax.state.memory_models import MemoryRecord
 
 log = get_logger(__name__)
 
@@ -168,6 +170,9 @@ class RuntimeBridge:
         self._rate_limiter = RateLimiter(
             max_messages_per_hour=getattr(services.settings, "rate_limit_messages_per_hour", 30),
         )
+        self._cost_protector = CostProtector(
+            daily_budget_cents=getattr(services.settings, "daily_cost_budget_cents", 500),
+        )
 
     async def process(self, session: AsyncSession, request: RuntimeRequest) -> RuntimeResponse:
         """Process one inbound message end-to-end."""
@@ -202,6 +207,16 @@ class RuntimeBridge:
             return RuntimeResponse(
                 status=RuntimeResponseStatus.RATE_LIMITED,
                 text="You're sending messages too quickly. Please wait a moment and try again.",
+                principal_id=principal.id,
+                processed_at=now,
+            )
+
+        # 2b. Cost protection (Part 25) — lightweight global spending cap
+        if not self._cost_protector.can_spend(principal.id):
+            log.warning("bridge.cost_exceeded", principal_id=principal.id)
+            return RuntimeResponse(
+                status=RuntimeResponseStatus.RATE_LIMITED,
+                text="Daily message limit reached. Please try again tomorrow.",
                 principal_id=principal.id,
                 processed_at=now,
             )
@@ -496,6 +511,15 @@ class RuntimeBridge:
                     )
                 )
 
+                # Record cost (Part 25) — lightweight global spending protection
+                from wax.runtime.cost_protection import estimate_llm_cost_cents
+
+                cost_cents = estimate_llm_cost_cents(
+                    prompt_tokens=response.usage.get("tokens_prompt", 0),
+                    completion_tokens=response.usage.get("tokens_completion", 0),
+                )
+                self._cost_protector.record_spend(principal_id, cost_cents)
+
                 await exec_repo.record_step(
                     execution_id=execution_id,
                     kind="model_response",
@@ -582,6 +606,10 @@ class RuntimeBridge:
             limit=10,
         )
 
+        # Parts 11-12: Surface active projects and waiting states
+        active_projects = await self._fetch_active_projects(session, principal_id)
+        waiting_states = await self._fetch_waiting_states(session, principal_id)
+
         # Build the enriched system prompt with operational context
         system_content = self._build_system_prompt(
             principal_id=principal_id,
@@ -589,12 +617,46 @@ class RuntimeBridge:
             exec_ws=str(exec_ws),
             memories=memories,
             reentry_context=reentry_context,
+            active_projects=active_projects,
+            waiting_states=waiting_states,
         )
 
         return [
             LLMMessage(role=MessageRole.SYSTEM, content=system_content),
             LLMMessage(role=MessageRole.USER, content=user_message),
         ]
+
+    async def _fetch_active_projects(
+        self, session: AsyncSession, principal_id: str
+    ) -> list[MemoryRecord]:
+        """Fetch active project memories (Part 11) — living things being worked on."""
+        result = await session.execute(
+            select(MemoryRecord)
+            .where(
+                MemoryRecord.principal_id == principal_id,
+                MemoryRecord.kind == "project",
+                MemoryRecord.status == "active",
+            )
+            .order_by(MemoryRecord.updated_at.desc())
+            .limit(5)
+        )
+        return list(result.scalars().all())
+
+    async def _fetch_waiting_states(
+        self, session: AsyncSession, principal_id: str
+    ) -> list[MemoryRecord]:
+        """Fetch waiting memories (Part 12) — things the AI is waiting for."""
+        result = await session.execute(
+            select(MemoryRecord)
+            .where(
+                MemoryRecord.principal_id == principal_id,
+                MemoryRecord.kind == "waiting",
+                MemoryRecord.status == "active",
+            )
+            .order_by(MemoryRecord.updated_at.desc())
+            .limit(5)
+        )
+        return list(result.scalars().all())
 
     def _build_system_prompt(
         self,
@@ -604,6 +666,8 @@ class RuntimeBridge:
         exec_ws: str,
         memories: list[Any],
         reentry_context: str | None,
+        active_projects: list[Any] | None = None,
+        waiting_states: list[Any] | None = None,
     ) -> str:
         """Build the enriched system prompt with operational context.
 
@@ -652,6 +716,22 @@ class RuntimeBridge:
                 confidence_tag = f" (confidence={m.confidence:.1f})" if m.confidence < 1.0 else ""
                 content_text = m.content if isinstance(m.content, str) else str(m.content)
                 parts.append(f"- [{m.kind}] {content_text}{confidence_tag}")
+
+        # Active projects (Part 11) — living things being worked on
+        if active_projects:
+            parts.append("\n--- ACTIVE PROJECTS ---")
+            for p in active_projects:
+                p_content = p.content if isinstance(p.content, dict) else {"text": str(p.content)}
+                p_text = p_content.get("text", str(p_content))
+                parts.append(f"- [project] {p_text}")
+
+        # Waiting states (Part 12) — things the AI is waiting for
+        if waiting_states:
+            parts.append("\n--- WAITING STATES ---")
+            for w in waiting_states:
+                w_content = w.content if isinstance(w.content, dict) else {"text": str(w.content)}
+                w_text = w_content.get("text", str(w_content))
+                parts.append(f"- [waiting] {w_text}")
 
         # Reentry context
         if reentry_context:

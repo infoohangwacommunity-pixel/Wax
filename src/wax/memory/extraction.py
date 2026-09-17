@@ -136,19 +136,70 @@ async def extract_memories(
             if isinstance(content, str):
                 content = {"text": content}
 
-            record = await repo.create(
-                MemoryCreate(
+            # Part 8: Memory lifecycle — STRENGTHEN existing memories
+            # Before creating a new memory, check if a similar one already
+            # exists for this principal. If it does, strengthen it (increase
+            # confidence + importance) instead of creating a duplicate.
+            content_text = content.get("text", "") if isinstance(content, dict) else str(content)
+            if content_text and kind_enum in (
+                MemoryKind.FACT,
+                MemoryKind.PREFERENCE,
+                MemoryKind.SKILL,
+            ):
+                existing = await repo.search_relevant(
                     principal_id=principal_id,
-                    kind=kind_enum,
-                    content=content,
-                    provenance="model_observation",
-                    source_execution_id=execution_id,
-                    confidence=float(mem.get("confidence", 0.7)),
-                    importance=float(mem.get("importance", 0.5)),
-                    observed_at=datetime.now(UTC),
+                    query=content_text[:200],
+                    limit=3,
                 )
-            )
-            memory_ids.append(record.id)
+                for ex in existing:
+                    if ex.kind == kind_enum.value and ex.status == "active":
+                        ex_content = (
+                            ex.content
+                            if isinstance(ex.content, dict)
+                            else {"text": str(ex.content)}
+                        )
+                        ex_text = ex_content.get("text", "")
+                        # If the existing memory is very similar (same first 50 chars), strengthen it
+                        if ex_text[:50].lower() == content_text[:50].lower():
+                            await repo.strengthen(ex.id)
+                            log.info(
+                                "memory.strengthened",
+                                memory_id=ex.id,
+                                principal_id=principal_id,
+                                kind=kind_enum.value,
+                            )
+                            memory_ids.append(ex.id)
+                            break
+                else:
+                    # No similar memory found — create a new one
+                    record = await repo.create(
+                        MemoryCreate(
+                            principal_id=principal_id,
+                            kind=kind_enum,
+                            content=content,
+                            provenance="model_observation",
+                            source_execution_id=execution_id,
+                            confidence=float(mem.get("confidence", 0.7)),
+                            importance=float(mem.get("importance", 0.5)),
+                            observed_at=datetime.now(UTC),
+                        )
+                    )
+                    memory_ids.append(record.id)
+                    continue
+            else:
+                record = await repo.create(
+                    MemoryCreate(
+                        principal_id=principal_id,
+                        kind=kind_enum,
+                        content=content,
+                        provenance="model_observation",
+                        source_execution_id=execution_id,
+                        confidence=float(mem.get("confidence", 0.7)),
+                        importance=float(mem.get("importance", 0.5)),
+                        observed_at=datetime.now(UTC),
+                    )
+                )
+                memory_ids.append(record.id)
         except Exception as e:
             log.warning("memory.store_failed", error=str(e)[:200])
 
