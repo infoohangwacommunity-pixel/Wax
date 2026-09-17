@@ -67,17 +67,42 @@ class WaxSettings(BaseSettings):
     # --- Secrets ---
     secret_key: str = Field(default="", description="WAX master secret. MUST be set in production.")
 
-    # --- LLM providers ---
+    # --- LLM providers (provider-agnostic) ---
+    # The runtime is NOT hardcoded to any provider. You pick the provider,
+    # the API key, the base URL, and the model — all via env vars.
+    #
+    # Provider type: "openai" (works with any OpenAI-compatible endpoint:
+    #   Groq, Together, OpenRouter, Mistral, vLLM, Ollama, etc.) or
+    #   "anthropic" (native Anthropic API) or "mock" (no API key needed).
     llm_default_provider: str = ""
+    # The API key for the primary provider. One key, one provider.
+    llm_api_key: str = ""
+    # The base URL for the primary provider. If empty, uses the provider's
+    # default (https://api.openai.com/v1 for openai, https://api.anthropic.com/v1
+    # for anthropic). For Groq: https://api.groq.com/openai/v1
+    # For Together: https://api.together.xyz/v1
+    # For OpenRouter: https://openrouter.ai/api/v1
+    llm_base_url: str = ""
+    # The model name to use (e.g. "gpt-4o-mini", "llama-3.1-70b-versatile",
+    # "claude-sonnet-4-20250514", "mixtral-8x7b-32768").
+    llm_model: str = ""
+
+    # --- Fallback providers (optional, comma-separated provider configs) ---
+    # Format: "provider1:base_url1:model1,provider2:base_url2:model2"
+    # Each fallback needs its own API key env var: WAX_LLM_FALLBACK_<N>_API_KEY
+    # Example: WAX_LLM_FALLBACKS="openai:https://api.together.xyz/v1:meta-llama/Llama-3-70b,openai:https://api.groq.com/openai/v1:llama-3.1-8b-instant"
+    # WAX_LLM_FALLBACK_1_API_KEY=together_key_here
+    # WAX_LLM_FALLBACK_2_API_KEY=groq_key_here
+    llm_provider_fallbacks: str = ""
+
+    # --- Legacy provider keys (backward compat — still work) ---
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    llm_base_url: str = ""
     anthropic_base_url: str = ""
-    llm_model: str = ""
+
     llm_retry_max_attempts: int = 3
     llm_breaker_failure_threshold: int = 5
     llm_breaker_recovery_seconds: float = 30.0
-    llm_provider_fallbacks: str = ""
     llm_output_reserve_tokens: int = 4096
 
     # --- Terminal executor (the open-world environment interface) ---

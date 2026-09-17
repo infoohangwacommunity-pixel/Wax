@@ -16,16 +16,14 @@ from typing import Any, Protocol, runtime_checkable
 class ProviderKind(StrEnum):
     """Discriminator for LLM providers.
 
-    Adding a new kind here is a deliberate architectural act — it means
-    a new provider has been integrated.
+    The runtime is provider-agnostic. Any OpenAI-compatible endpoint
+    (Groq, Together, OpenRouter, Mistral, vLLM, Ollama, etc.) works
+    without code changes — just set env vars.
     """
 
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GOOGLE = "google"
-    MISTRAL = "mistral"
-    LOCAL = "local"
-    MOCK = "mock"  # for tests
+    OPENAI = "openai"  # any OpenAI-compatible endpoint
+    ANTHROPIC = "anthropic"  # Anthropic native API
+    MOCK = "mock"  # for tests / dev without API keys
 
 
 class MessageRole(StrEnum):
