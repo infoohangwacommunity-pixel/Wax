@@ -27,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -67,6 +67,25 @@ class WorkItemRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # The originating execution (objective continuity / traceability).
     execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+    # Phase F: Optional context this work belongs to. Work is context-bound
+    # — "wait for the GitHub credential" belongs to the Android project
+    # context, not to the person generically. This prevents "a file arrived!"
+    # from waking every waiting thing across all contexts.
+    context_id: Mapped[str | None] = mapped_column(
+        String(26),
+        ForeignKey("contexts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Phase F: Parent work item (for continuation chains — work that
+    # spawns more work). A recurring check creates a new work item on
+    # each wake; this field links the chain.
+    parent_work_id: Mapped[str | None] = mapped_column(
+        String(26),
+        ForeignKey("work_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Opaque work description for the handler. NEVER secrets.
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

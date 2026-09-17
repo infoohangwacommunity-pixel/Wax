@@ -414,4 +414,86 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
             on_send_failure=_on_send_failure,
         )
 
+    # -------------------------------------------------------------------
+    # Phase G: Interaction sessions — temporary human-in-the-loop pages
+    # -------------------------------------------------------------------
+
+    @app.get("/i/{token}", tags=["interaction"])
+    async def interaction_page(token: str) -> Response:
+        """Serve a temporary interaction session page."""
+        from wax.runtime.web_pages import get_session_by_token
+
+        session = get_session_by_token(token)
+        if session is None:
+            return Response(
+                content="<html><body><h1>Session not found or expired</h1></body></html>",
+                media_type="text/html",
+                status_code=404,
+            )
+        if session.state != "pending":
+            return Response(
+                content="<html><body><h1>Session already used</h1></body></html>",
+                media_type="text/html",
+                status_code=410,
+            )
+        return Response(content=session.html_content, media_type="text/html")
+
+    @app.post("/i/{token}", tags=["interaction"])
+    async def interaction_submit(token: str, request: Request) -> Response:
+        """Process a submission for an interaction session."""
+        from wax.runtime.web_pages import submit_session
+
+        content_type = request.headers.get("content-type", "")
+
+        form_data: dict[str, Any] = {}
+        files: dict[str, bytes] = {}
+
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            for key, value in form.items():
+                if hasattr(value, "read"):
+                    files[key] = await value.read()
+                else:
+                    form_data[key] = str(value)
+        elif "application/x-www-form-urlencoded" in content_type:
+            form = await request.form()
+            for key, value in form.items():
+                form_data[key] = str(value)
+        else:
+            body = await request.body()
+            try:
+                form_data = __import__("json").loads(body)
+            except Exception:
+                form_data = {"raw": body.decode("utf-8", errors="replace")}
+
+        session = submit_session(token, form_data=form_data, files=files)
+        if session is None:
+            return Response(
+                content="<html><body><h1>Session not found</h1></body></html>",
+                media_type="text/html",
+                status_code=404,
+            )
+
+        # Emit the wake event if configured
+        if session.wake_event:
+            from wax.runtime.work.signals import SignalRepository
+            from wax.state.engine import db_session
+
+            async with db_session() as db_session_obj:
+                await SignalRepository(db_session_obj).emit(
+                    session.wake_event,
+                    payload={
+                        "session_id": session.session_id,
+                        "purpose": session.purpose,
+                        "result": session.result,
+                    },
+                    emitted_by="interaction",
+                )
+                await db_session_obj.commit()
+
+        return Response(
+            content="<html><body><h1>Thank you! You can close this page.</h1></body></html>",
+            media_type="text/html",
+        )
+
     return app

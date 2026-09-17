@@ -31,6 +31,7 @@ __all__ = [
 from wax.state import (  # noqa: F401
     audit_models,
     bridge_models,
+    context_models,
     continuity_models,
     delivery_models,
     execution_models,

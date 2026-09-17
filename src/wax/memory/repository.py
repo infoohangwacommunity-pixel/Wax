@@ -172,6 +172,8 @@ class MemoryRepository:
         """Mark a memory as forgotten (soft delete).
 
         The record is retained for audit but excluded from default retrieval.
+        This is "forget from cognition" — the memory is no longer used in
+        reasoning but the row remains for audit.
         """
         result = await self._session.execute(
             update(MemoryRecord)
@@ -186,6 +188,34 @@ class MemoryRepository:
         )
         if result.rowcount > 0:
             log.info("memory.record.forgotten", memory_id=memory_id)
+            return True
+        return False
+
+    async def hard_delete(self, memory_id: str) -> bool:
+        """Permanently delete a memory (Part 93 — privacy).
+
+        Unlike forget (soft delete), this removes the row entirely. Used
+        when the user says "delete that secret" — secrets should not sit
+        forever in an audit database.
+
+        This is irreversible. The memory is gone from both cognition AND
+        audit. Use sparingly — only for genuinely sensitive data that the
+        user explicitly wants destroyed.
+        """
+        from sqlalchemy import delete as sql_delete
+
+        # Delete links first (foreign key constraint)
+        await self._session.execute(
+            sql_delete(MemoryLinkRecord).where(
+                (MemoryLinkRecord.from_memory_id == memory_id)
+                | (MemoryLinkRecord.to_memory_id == memory_id)
+            )
+        )
+        result = await self._session.execute(
+            sql_delete(MemoryRecord).where(MemoryRecord.id == memory_id)
+        )
+        if result.rowcount > 0:
+            log.warning("memory.record.hard_deleted", memory_id=memory_id)
             return True
         return False
 

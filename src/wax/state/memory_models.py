@@ -77,12 +77,39 @@ class MemoryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     source_execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
     # Optional reference to the execution that produced this memory.
-    # (The objective subsystem was removed in the open-world reset; the
-    # objective_id column and its FK are gone.)
     objective_id: Mapped[str | None] = mapped_column(
         String(26),
         nullable=True,
     )
+
+    # Phase B/E: Optional reference to the context this memory belongs to.
+    # Person-level memories (name, preferences) have context_id = NULL.
+    # Context-bound memories ("the Android project uses Firebase") carry
+    # the context_id. This is an association, not an ontology.
+    context_id: Mapped[str | None] = mapped_column(
+        String(26),
+        ForeignKey("contexts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Phase E: Temporal truth — when was this fact TRUE (not just observed).
+    # "I live in Lagos" was true from time A to time B.
+    # "I moved to Abuja" is true from time B onward.
+    # valid_from: when this fact became true (NULL = always/unknown)
+    # valid_until: when this fact stopped being true (NULL = still true)
+    # last_confirmed_at: when this was last confirmed by a user statement
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Phase E: Evidence trail — where did this belief come from?
+    # provenance already exists ("user_statement", "model_observation", etc.)
+    # This field adds structured evidence: source message, source execution,
+    # source span, extraction version. The AI can answer "why do you think
+    # this?" by following the evidence trail.
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # ADR-0036 (Phase 3): consolidation provenance. When this memory
     # was created by memory.consolidate, this is the list of source

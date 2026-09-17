@@ -1,39 +1,36 @@
-"""Checkpoint Recovery (ADR-0035, Phase 2).
+"""Execution recovery — clean rewrite (Phase I, Part 22/48).
 
-Distinguishes three failure semantics:
+No capabilities. No objectives. No old idempotency assumptions.
 
-- **retry**: repeat a failed operation (same execution, same step)
-- **continuation**: create a fresh execution because a wake fired
-  (ADR-0034 — Phase 1)
-- **recovery**: resume a known execution from a safe checkpoint,
-  using idempotency to avoid double-effects
+The recovery model is now built on:
+- Checkpoints: the intelligence loop state (message history) persisted
+  after each terminal round
+- Observations: terminal execution results recorded as steps
+- Effect uncertainty: terminal commands may have had external effects
+  we can't prove (we don't know if the email was sent, if the API call
+  succeeded, etc.)
+- Reconciliation: on restart, classify the crash point and decide
+  whether to resume, retry, or mark unknown
 
-When a worker restarts and finds executions left in `running` state,
-the recovery layer classifies the crash point and decides what to do:
+The terminal is the only effect mechanism. There is no capability
+invocation, no idempotency ledger, no objective resolution. The
+recovery layer reasons about: did the intelligence loop checkpoint
+exist? Was the last terminal observation recorded? Was there a
+terminal command whose effect we can't verify?
 
-1. `crash_before_model_call` — no `llm.complete` step recorded →
-   mark `failed` (retryable by redelivery).
-2. `crash_after_model_response` — `llm.complete` succeeded but no
-   capability.invoke step → the model's response was lost. Mark
-   `failed` with a clear error.
-3. `crash_before_capability_invocation` — `capability.invoke` step
-   is pending/running but no succeeded step after it → use idempotency
-   lookup. If the capability succeeded, mark step succeeded. If not,
-   mark execution failed.
-4. `crash_after_external_effect_before_result_persistence` — the
-   capability's effect was issued but result not recorded. Idempotency
-   lookup; if unknown, mark execution `unknown_effect`.
-5. `crash_after_result_persistence` — step's outputs recorded but
-   execution's terminal write failed. Replay the terminal write
-   (idempotent by construction).
-
-The `unknown_effect` state is honest: the runtime cannot prove the
-outcome. The objective cannot auto-recover; only the human can.
+Recovery outcomes:
+- RESUME_FROM_CHECKPOINT: a terminal-loop checkpoint exists; resume
+  the intelligence loop with the same message history
+- RETRY_FROM_START: no checkpoint or checkpoint is stale; mark failed
+  so redelivery retries
+- UNKNOWN_EFFECT: a terminal command ran but we can't prove its
+  outcome; needs human review
+- ALREADY_TERMINAL: execution already completed
+- NO_RECOVERY_NEEDED: execution is not in a crashed state
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -49,20 +46,14 @@ from wax.state.execution_models import ExecutionRecord, ExecutionStepRecord
 log = get_logger(__name__)
 
 
-# New execution status for the "we don't know" case. String-based so
-# no migration needed; the executions.status column is String(32).
-EXECUTION_STATUS_UNKNOWN_EFFECT = "unknown_effect"
-
-
 class RecoveryOutcome(StrEnum):
     """What the recovery layer decided for a crashed execution."""
 
-    NO_RECOVERY_NEEDED = "no_recovery_needed"  # execution is not in a crashed state
-    RETRY_FROM_START = "retry_from_start"  # mark failed; redelivery will retry
-    REPLAY_FROM_CHECKPOINT = "replay_from_checkpoint"  # use recorded idempotency
-    RETRY_FROM_TERMINAL_CHECKPOINT = "retry_from_terminal_checkpoint"  # resume intelligence loop
-    UNKNOWN_EFFECT = "unknown_effect"  # cannot prove outcome; needs human review
-    ALREADY_TERMINAL = "already_terminal"  # execution already done
+    NO_RECOVERY_NEEDED = "no_recovery_needed"
+    RESUME_FROM_CHECKPOINT = "resume_from_checkpoint"
+    RETRY_FROM_START = "retry_from_start"
+    UNKNOWN_EFFECT = "unknown_effect"
+    ALREADY_TERMINAL = "already_terminal"
 
 
 class CrashPoint(StrEnum):
@@ -70,28 +61,22 @@ class CrashPoint(StrEnum):
 
     BEFORE_MODEL_CALL = "before_model_call"
     AFTER_MODEL_RESPONSE = "after_model_response"
-    BEFORE_CAPABILITY_INVOCATION = "before_capability_invocation"
-    AFTER_EXTERNAL_EFFECT_BEFORE_RESULT = "after_external_effect_before_result"
+    AFTER_TERMINAL_EXECUTION = "after_terminal_execution"
     AFTER_RESULT_PERSISTENCE = "after_result_persistence"
     NO_CRASH = "no_crash"
 
 
 @dataclass(frozen=True)
 class CheckpointEnvelope:
-    """A generic checkpoint envelope persisted at every durable boundary.
+    """A checkpoint envelope persisted at every durable boundary."""
 
-    Forward-compatible: `schema_version` lets future runtimes add
-    fields without breaking old recovery logic.
-    """
-
-    schema_version: int = 1
-    objective_id: str | None = None
-    conversation_id: str | None = None
+    schema_version: int = 2
     last_completed_step: int = 0
     recovery_reason: str = "worker_restart"
-    replay_policy: str = "safe_from_checkpoint"
-    known_effects: list[dict[str, Any]] = field(default_factory=list)
-    unknown_effects: list[dict[str, Any]] = field(default_factory=list)
+    has_terminal_checkpoint: bool = False
+    terminal_round: int = 0
+    message_count: int = 0
+    pending_terminal_effects: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -110,8 +95,7 @@ async def classify_crash(
 ) -> tuple[CrashPoint, CheckpointEnvelope]:
     """Classify where a crashed execution stopped.
 
-    Returns the crash point + a checkpoint envelope with the recorded
-    effects (for idempotency lookup).
+    Walks the execution steps + checkpoint to determine the crash point.
     """
     execution = await session.get(ExecutionRecord, execution_id)
     if execution is None:
@@ -119,6 +103,16 @@ async def classify_crash(
 
     if execution.status not in ("running", "pending"):
         return CrashPoint.NO_CRASH, CheckpointEnvelope()
+
+    # Check for a terminal-loop checkpoint (the intelligence loop state)
+    has_terminal_checkpoint = (
+        isinstance(execution.checkpoint, dict) and "messages" in execution.checkpoint
+    )
+    terminal_round = 0
+    message_count = 0
+    if has_terminal_checkpoint:
+        terminal_round = int(execution.checkpoint.get("round", 0))
+        message_count = len(execution.checkpoint.get("messages", []))
 
     # Read all steps in order
     steps = (
@@ -134,135 +128,57 @@ async def classify_crash(
     )
 
     if not steps:
-        objective_id = await _resolve_objective_id(session, execution_id)
         return CrashPoint.BEFORE_MODEL_CALL, CheckpointEnvelope(
-            objective_id=objective_id,
             last_completed_step=0,
+            has_terminal_checkpoint=has_terminal_checkpoint,
+            terminal_round=terminal_round,
+            message_count=message_count,
         )
 
     # Walk the steps and find the last succeeded step
     last_succeeded_step = 0
-    capability_steps: list[ExecutionStepRecord] = []
+    terminal_steps: list[ExecutionStepRecord] = []
+    pending_effects: list[dict[str, Any]] = []
+
     for step in steps:
         if step.status == "succeeded":
             last_succeeded_step = step.step_number
-        if step.kind == "capability.invoke":
-            capability_steps.append(step)
-
-    # Build the envelope
-    known_effects: list[dict[str, Any]] = []
-    unknown_effects: list[dict[str, Any]] = []
-    for cs in capability_steps:
-        if cs.status == "succeeded":
-            known_effects.append(
-                {
-                    "capability": cs.capability_name,
-                    "step_number": cs.step_number,
-                    "outputs": cs.outputs,
-                }
-            )
-        elif cs.status in ("pending", "running"):
-            # In-flight capability invocation — idempotency lookup needed
-            idempotency_key = (cs.inputs or {}).get("idempotency_key")
-            if idempotency_key:
-                unknown_effects.append(
+        if step.kind == "terminal":
+            terminal_steps.append(step)
+            # Check if this terminal step has an observation recorded
+            if step.status in ("pending", "running"):
+                # Terminal command was issued but no observation —
+                # we don't know if it succeeded
+                pending_effects.append(
                     {
-                        "capability": cs.capability_name,
-                        "step_number": cs.step_number,
-                        "idempotency_key": idempotency_key,
-                    }
-                )
-            else:
-                # No idempotency key recorded — cannot prove outcome
-                unknown_effects.append(
-                    {
-                        "capability": cs.capability_name,
-                        "step_number": cs.step_number,
-                        "idempotency_key": None,
+                        "step_number": step.step_number,
+                        "command": (step.inputs or {}).get("command", "")[:200],
+                        "status": step.status,
                     }
                 )
 
-    objective_id = await _resolve_objective_id(session, execution_id)
     envelope = CheckpointEnvelope(
-        objective_id=objective_id,
         last_completed_step=last_succeeded_step,
-        known_effects=known_effects,
-        unknown_effects=unknown_effects,
+        has_terminal_checkpoint=has_terminal_checkpoint,
+        terminal_round=terminal_round,
+        message_count=message_count,
+        pending_terminal_effects=pending_effects,
     )
 
     # Classify the crash point
-    if last_succeeded_step == 0:
-        return CrashPoint.BEFORE_MODEL_CALL, envelope
+    if pending_effects:
+        # A terminal command ran but we can't prove its outcome
+        return CrashPoint.AFTER_TERMINAL_EXECUTION, envelope
 
-    # Did the model produce a tool call that didn't complete?
+    # Check if the last step was a terminal observation
     last_step = steps[-1]
-    if last_step.kind == "llm.complete" and last_step.status == "succeeded":
-        # The model call succeeded; was there a capability.invoke after?
-        has_capability_after = any(s.kind == "capability.invoke" for s in steps)
-        if not has_capability_after:
-            return CrashPoint.AFTER_MODEL_RESPONSE, envelope
-
-    # Was there a capability.invoke that didn't succeed?
-    pending_capability = any(cs.status in ("pending", "running") for cs in capability_steps)
-    if pending_capability:
-        return CrashPoint.AFTER_EXTERNAL_EFFECT_BEFORE_RESULT, envelope
-
-    # Was the last step a succeeded capability.invoke with no terminal
-    # write on the execution itself?
-    if (
-        last_step.kind == "capability.invoke"
-        and last_step.status == "succeeded"
-        and execution.status == "running"
-    ):
+    if last_step.kind == "terminal_observation" and last_step.status == "succeeded":
         return CrashPoint.AFTER_RESULT_PERSISTENCE, envelope
 
-    # Default: the model call was the last step (no tool calls)
-    return CrashPoint.AFTER_MODEL_RESPONSE, envelope
+    if last_step.kind == "model_response" and last_step.status == "succeeded":
+        return CrashPoint.AFTER_MODEL_RESPONSE, envelope
 
-
-async def _resolve_objective_id(session: AsyncSession, execution_id: str) -> str | None:
-    """Resolve the objective an execution is working on (best-effort).
-
-    The objective subsystem was removed in the open-world architecture
-    reset. This function now always returns None — there is no objective
-    to resolve. Kept as a stub for compatibility with recovery callers
-    that may still reference it.
-    """
-    return None
-
-
-async def lookup_idempotent_outcome(
-    session: AsyncSession,
-    *,
-    principal_id: str,
-    capability_name: str,
-    idempotency_key: str,
-) -> dict[str, Any] | None:
-    """Look up the recorded outcome of an idempotent capability invocation.
-
-    Returns the outputs dict if the invocation succeeded, None otherwise.
-    Used by the recovery layer to answer "did this capability actually
-    run?" without re-executing it.
-    """
-    from wax.state.capability_models import CapabilityInvocationRecord
-
-    record = (
-        await session.execute(
-            select(CapabilityInvocationRecord)
-            .where(CapabilityInvocationRecord.principal_id == principal_id)
-            .where(CapabilityInvocationRecord.capability_name == capability_name[:255])
-            .where(CapabilityInvocationRecord.idempotency_key == idempotency_key[:512])
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if record is None:
-        return None
-    if record.status != "succeeded":
-        return None
-    try:
-        return json.loads(record.response_json) if record.response_json else None
-    except (json.JSONDecodeError, TypeError):
-        return None
+    return CrashPoint.BEFORE_MODEL_CALL, envelope
 
 
 async def recover_execution(
@@ -271,10 +187,17 @@ async def recover_execution(
     *,
     principal_id: str | None = None,
 ) -> RecoveryResult:
-    """Recover a crashed execution by classifying the crash point and
-    applying the appropriate recovery semantics.
+    """Recover a crashed execution.
 
-    This is the entrypoint called by the work runner's recover_orphans.
+    Classification logic:
+    - If a terminal-loop checkpoint exists → RESUME_FROM_CHECKPOINT
+      (the bridge's resume_execution will be called by the work runner)
+    - If pending terminal effects exist (command ran, no observation) →
+      UNKNOWN_EFFECT (human review needed)
+    - If the last step was a terminal observation → complete the execution
+      (the result was persisted, just the terminal write failed)
+    - If the model call succeeded but no terminal followed → RETRY_FROM_START
+    - If no steps ran → RETRY_FROM_START (no effect produced)
     """
     execution = await session.get(ExecutionRecord, execution_id)
     if execution is None:
@@ -294,50 +217,50 @@ async def recover_execution(
 
     crash_point, envelope = await classify_crash(session, execution_id)
     exec_repo = ExecutionRepository(session)
-    now = datetime.now(UTC)
 
-    if crash_point == CrashPoint.BEFORE_MODEL_CALL:
-        # No effect was produced. Mark failed (retryable).
-        await exec_repo.fail(
-            execution_id,
-            error="crash before model call (recovered; no effect produced)",
-        )
+    # If we have a terminal-loop checkpoint, the work runner will handle
+    # the resume via resume_callback. Mark the recovery outcome but don't
+    # change the execution state — the runner will call resume_execution.
+    if envelope.has_terminal_checkpoint:
         log.info(
-            "execution.recovered",
+            "execution.recovered.checkpoint_exists",
             execution_id=execution_id,
             crash_point=crash_point.value,
-            outcome=RecoveryOutcome.RETRY_FROM_START.value,
+            terminal_round=envelope.terminal_round,
         )
         return RecoveryResult(
-            outcome=RecoveryOutcome.RETRY_FROM_START,
+            outcome=RecoveryOutcome.RESUME_FROM_CHECKPOINT,
             crash_point=crash_point,
             execution_id=execution_id,
             envelope=envelope,
         )
 
-    if crash_point == CrashPoint.AFTER_MODEL_RESPONSE:
-        # The model call succeeded but its response is lost. Cannot replay
-        # the model safely (we don't have the message history). Mark failed.
-        await exec_repo.fail(
-            execution_id,
-            error="crash after model response (recovered; model output lost)",
+    # Pending terminal effects — we can't prove the outcome
+    if envelope.pending_terminal_effects:
+        execution.status = "unknown_effect"
+        execution.ended_at = datetime.now(UTC)
+        execution.error = (
+            "crash with unverified terminal effect — the AI ran a command "
+            "but its outcome could not be confirmed after restart; human "
+            "review required"
         )
-        log.info(
-            "execution.recovered",
+        await session.flush()
+        log.warning(
+            "execution.recovered.unknown_effect",
             execution_id=execution_id,
-            crash_point=crash_point.value,
-            outcome=RecoveryOutcome.RETRY_FROM_START.value,
+            pending_effects=len(envelope.pending_terminal_effects),
         )
         return RecoveryResult(
-            outcome=RecoveryOutcome.RETRY_FROM_START,
+            outcome=RecoveryOutcome.UNKNOWN_EFFECT,
             crash_point=crash_point,
             execution_id=execution_id,
             envelope=envelope,
+            error=execution.error,
         )
 
+    # Last step was a terminal observation — the result was persisted,
+    # just the terminal write (execution.complete) failed. Complete it.
     if crash_point == CrashPoint.AFTER_RESULT_PERSISTENCE:
-        # The last step's outputs are recorded but the execution's
-        # terminal write failed. Replay the terminal write.
         last_step = (
             await session.execute(
                 select(ExecutionStepRecord)
@@ -349,120 +272,29 @@ async def recover_execution(
         if last_step and last_step.outputs:
             await exec_repo.complete(
                 execution_id,
-                checkpoint=last_step.outputs,
+                checkpoint={"recovered": True, "crash_point": crash_point.value},
             )
             log.info(
-                "execution.recovered",
-                execution_id=execution_id,
-                crash_point=crash_point.value,
-                outcome=RecoveryOutcome.REPLAY_FROM_CHECKPOINT.value,
-            )
-            return RecoveryResult(
-                outcome=RecoveryOutcome.REPLAY_FROM_CHECKPOINT,
-                crash_point=crash_point,
-                execution_id=execution_id,
-                envelope=envelope,
-            )
-
-    if crash_point == CrashPoint.AFTER_EXTERNAL_EFFECT_BEFORE_RESULT:
-        # In-flight capability invocation — use idempotency lookup.
-        if not envelope.unknown_effects:
-            # No in-flight capability to recover — fall through to failed
-            await exec_repo.fail(
-                execution_id,
-                error="crash with no recoverable effects (recovered)",
-            )
-            return RecoveryResult(
-                outcome=RecoveryOutcome.RETRY_FROM_START,
-                crash_point=crash_point,
-                execution_id=execution_id,
-                envelope=envelope,
-            )
-
-        # Try idempotency lookup for each unknown effect
-        any_unknown = False
-        for unknown in envelope.unknown_effects:
-            capability_name = unknown.get("capability")
-            idempotency_key = unknown.get("idempotency_key")
-            if not capability_name or not idempotency_key:
-                # No idempotency key — cannot prove outcome
-                any_unknown = True
-                continue
-
-            # Look up the recorded outcome
-            recorded = await lookup_idempotent_outcome(
-                session,
-                principal_id=principal_id or execution.principal_id,
-                capability_name=capability_name,
-                idempotency_key=idempotency_key,
-            )
-            if recorded is None:
-                # The capability's outcome is unknowable
-                any_unknown = True
-                continue
-
-            # Mark the step as succeeded with the recorded outputs
-            step = (
-                await session.execute(
-                    select(ExecutionStepRecord).where(
-                        ExecutionStepRecord.execution_id == execution_id,
-                        ExecutionStepRecord.step_number == unknown.get("step_number"),
-                    )
-                )
-            ).scalar_one_or_none()
-            if step is not None:
-                step.status = "succeeded"
-                step.outputs = recorded
-                step.error = None
-
-        if any_unknown:
-            # Mark the execution with the new unknown_effect status
-            execution.status = EXECUTION_STATUS_UNKNOWN_EFFECT
-            execution.ended_at = now
-            execution.error = (
-                "crash with unknown external effect (idempotency lookup "
-                "could not prove outcome for one or more in-flight "
-                "capability invocations; human review required)"
-            )
-            await session.flush()
-            log.warning(
-                "execution.recovered.unknown_effect",
+                "execution.recovered.completed",
                 execution_id=execution_id,
                 crash_point=crash_point.value,
             )
             return RecoveryResult(
-                outcome=RecoveryOutcome.UNKNOWN_EFFECT,
+                outcome=RecoveryOutcome.RESUME_FROM_CHECKPOINT,
                 crash_point=crash_point,
                 execution_id=execution_id,
                 envelope=envelope,
-                error=execution.error,
             )
 
-        # All in-flight effects were proven successful — complete the execution
-        await exec_repo.complete(
-            execution_id,
-            checkpoint={
-                "recovered": True,
-                "crash_point": crash_point.value,
-            },
-        )
-        log.info(
-            "execution.recovered",
-            execution_id=execution_id,
-            crash_point=crash_point.value,
-            outcome=RecoveryOutcome.REPLAY_FROM_CHECKPOINT.value,
-        )
-        return RecoveryResult(
-            outcome=RecoveryOutcome.REPLAY_FROM_CHECKPOINT,
-            crash_point=crash_point,
-            execution_id=execution_id,
-            envelope=envelope,
-        )
-
-    # Fallback: mark failed honestly
+    # Model response was lost or no steps ran — retry from start
     await exec_repo.fail(
         execution_id,
-        error=f"unclassified crash (crash_point={crash_point.value})",
+        error=f"crash at {crash_point.value} (recovered; no verifiable effect produced)",
+    )
+    log.info(
+        "execution.recovered.retry",
+        execution_id=execution_id,
+        crash_point=crash_point.value,
     )
     return RecoveryResult(
         outcome=RecoveryOutcome.RETRY_FROM_START,

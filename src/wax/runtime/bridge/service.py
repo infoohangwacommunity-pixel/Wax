@@ -269,6 +269,31 @@ class RuntimeBridge:
             )
         await conv_repo.touch(conversation.id)
 
+        # Part 2/4: Store the user message in the conversation ledger
+        await self._store_conversation_message(
+            session,
+            principal_id=principal.id,
+            role="user",
+            content=request.effective_text,
+            execution_id=execution.id,
+            conversation_id=conversation.id,
+            interface_kind=request.interface_kind.value,
+            interface_message_id=request.interface_message_id,
+        )
+
+        # Part 34: Emit the interface.message signal (for durable waiting)
+        from wax.runtime.work.signals import SignalRepository
+
+        await SignalRepository(session).emit(
+            f"interface.message:{principal.id}",
+            payload={
+                "message_id": request.interface_message_id,
+                "interface": request.interface_kind.value,
+                "text_preview": request.effective_text[:200],
+            },
+            emitted_by="bridge",
+        )
+
         # 6. Run the intelligence ↔ terminal loop
         try:
             response_text = await self._run_intelligence_loop(
@@ -280,6 +305,17 @@ class RuntimeBridge:
                 user_message=request.effective_text,
                 reentry_context=None,
             )
+
+            # Part 2/4: Store the assistant response in the conversation ledger
+            if response_text:
+                await self._store_conversation_message(
+                    session,
+                    principal_id=principal.id,
+                    role="assistant",
+                    content=response_text,
+                    execution_id=execution.id,
+                    conversation_id=conversation.id,
+                )
             await exec_repo.complete(execution.id)
             pm = (
                 await session.execute(
@@ -603,16 +639,33 @@ class RuntimeBridge:
         user_message: str,
         reentry_context: str | None,
     ) -> list[LLMMessage]:
-        """Build the initial message list: enriched system + memory + user."""
-        # Automatic memory retrieval
-        memory_repo = MemoryRepository(session)
-        memories = await memory_repo.search_relevant(
+        """Build the initial message list: enriched system + context + memory + user."""
+        # Phase C/D: Context Intelligence — resolve which context the user means
+        from wax.continuity.context_intelligence import resolve_context
+
+        context_packet = await resolve_context(
+            session=session,
+            intelligence=self._intelligence,
             principal_id=principal_id,
-            query=user_message,
-            limit=10,
+            user_message=user_message,
         )
 
+        # Automatic memory retrieval (if context resolution didn't already gather it)
+        memory_repo = MemoryRepository(session)
+        if not context_packet.relevant_memories:
+            memories = await memory_repo.search_relevant(
+                principal_id=principal_id,
+                query=user_message,
+                limit=10,
+            )
+        else:
+            memories = []  # context intelligence already gathered them
+
+        # Part 2/4: Load recent conversation messages (the missing conversation ledger)
+        recent_conversation = await self._fetch_recent_conversation(session, principal_id, limit=20)
+
         # Parts 11-12: Surface active projects and waiting states
+        # (now handled by context_packet — but keep for backward compat)
         active_projects = await self._fetch_active_projects(session, principal_id)
         waiting_states = await self._fetch_waiting_states(session, principal_id)
 
@@ -621,10 +674,12 @@ class RuntimeBridge:
             principal_id=principal_id,
             principal_ws=str(principal_ws),
             exec_ws=str(exec_ws),
-            memories=memories,
+            memories=memories if not context_packet.relevant_memories else [],
             reentry_context=reentry_context,
             active_projects=active_projects,
             waiting_states=waiting_states,
+            context_packet=context_packet,
+            recent_conversation=recent_conversation,
         )
 
         return [
@@ -664,6 +719,67 @@ class RuntimeBridge:
         )
         return list(result.scalars().all())
 
+    async def _fetch_recent_conversation(
+        self, session: AsyncSession, principal_id: str, limit: int = 20
+    ) -> list[dict[str, str]]:
+        """Fetch recent conversation messages (Part 2/4 — the conversation ledger).
+
+        Memory is NOT conversation. The AI needs the actual recent dialogue
+        to understand references like "the second option" or "continue".
+        """
+        from wax.state.bridge_models import ConversationMessageRecord
+
+        result = await session.execute(
+            select(ConversationMessageRecord)
+            .where(ConversationMessageRecord.principal_id == principal_id)
+            .order_by(ConversationMessageRecord.created_at.desc())
+            .limit(limit)
+        )
+        messages = list(result.scalars().all())
+        messages.reverse()  # chronological order
+        return [
+            {
+                "role": m.role,
+                "content": m.content[:500],  # truncate for context
+                "sent_at": m.sent_at.isoformat() if m.sent_at else None,
+            }
+            for m in messages
+        ]
+
+    async def _store_conversation_message(
+        self,
+        session: AsyncSession,
+        *,
+        principal_id: str,
+        role: str,
+        content: str,
+        execution_id: str | None = None,
+        conversation_id: str | None = None,
+        context_id: str | None = None,
+        interface_kind: str | None = None,
+        interface_message_id: str | None = None,
+    ) -> None:
+        """Store a message in the conversation ledger (Part 2/4)."""
+        from ulid import ULID
+
+        from wax.state.bridge_models import ConversationMessageRecord
+
+        session.add(
+            ConversationMessageRecord(
+                id=str(ULID()),
+                principal_id=principal_id,
+                role=role,
+                content=content[:10000],
+                execution_id=execution_id,
+                conversation_id=conversation_id,
+                context_id=context_id,
+                interface_kind=interface_kind,
+                interface_message_id=interface_message_id,
+                sent_at=datetime.now(UTC),
+            )
+        )
+        await session.flush()
+
     def _build_system_prompt(
         self,
         *,
@@ -674,6 +790,8 @@ class RuntimeBridge:
         reentry_context: str | None,
         active_projects: list[Any] | None = None,
         waiting_states: list[Any] | None = None,
+        context_packet: Any | None = None,
+        recent_conversation: list[dict[str, str]] | None = None,
     ) -> str:
         """Build the enriched system prompt with operational context.
 
@@ -711,12 +829,24 @@ class RuntimeBridge:
 
         # wax_runtime helper reminder
         parts.append(
-            "Helper: import wax_runtime; wax_runtime.schedule/remember/recall "
+            "Helper: import wax_runtime; wax_runtime.schedule/remember/recall/serve_page "
             "(reads WAX_CURRENT_PRINCIPAL_ID + WAX_DATABASE_URL from env)"
         )
 
-        # Loaded memories
-        if memories:
+        # Phase C/D: Context Intelligence packet
+        if context_packet:
+            parts.append(context_packet.to_prompt_section())
+
+        # Part 2/4: Recent conversation (the conversation ledger — NOT memory)
+        if recent_conversation:
+            parts.append("\n--- RECENT CONVERSATION ---")
+            for msg in recent_conversation[-10:]:  # last 10 messages
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                parts.append(f"{role}: {content}")
+
+        # Loaded memories (if context intelligence didn't already provide them)
+        if memories and not (context_packet and context_packet.relevant_memories):
             parts.append("\n--- RELEVANT MEMORIES ---")
             for m in memories:
                 confidence_tag = f" (confidence={m.confidence:.1f})" if m.confidence < 1.0 else ""
@@ -724,7 +854,7 @@ class RuntimeBridge:
                 parts.append(f"- [{m.kind}] {content_text}{confidence_tag}")
 
         # Active projects (Part 11) — living things being worked on
-        if active_projects:
+        if active_projects and not (context_packet and context_packet.context_id):
             parts.append("\n--- ACTIVE PROJECTS ---")
             for p in active_projects:
                 p_content = p.content if isinstance(p.content, dict) else {"text": str(p.content)}
@@ -732,7 +862,7 @@ class RuntimeBridge:
                 parts.append(f"- [project] {p_text}")
 
         # Waiting states (Part 12) — things the AI is waiting for
-        if waiting_states:
+        if waiting_states and not (context_packet and context_packet.waiting_states):
             parts.append("\n--- WAITING STATES ---")
             for w in waiting_states:
                 w_content = w.content if isinstance(w.content, dict) else {"text": str(w.content)}
