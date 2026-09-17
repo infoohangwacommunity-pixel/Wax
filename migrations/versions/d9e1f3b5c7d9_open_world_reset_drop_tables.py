@@ -17,6 +17,7 @@ chain stays reproducible.
 Revision ID: d9e1f3b5c7d9
 Revises: c8d0e2f4a6b8
 Create Date: 2026-09-17
+
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Drop tables in dependency order: children before parents
     op.drop_table("objective_executions")
     op.drop_table("objectives")
     op.drop_table("workspace_snapshots")
@@ -168,3 +170,4 @@ def downgrade() -> None:
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("outcome", sa.String(16), nullable=True),
     )
+

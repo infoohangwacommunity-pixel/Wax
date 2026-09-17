@@ -14,9 +14,16 @@ Historical migrations that created them remain in place — fresh installs
 still run them and then this migration drops the tables, so the migration
 chain stays reproducible. Existing deployments get the drop applied here.
 
+IMPORTANT: Drop order matters due to foreign key constraints:
+- authority_grants depends on authority_materials
+- authority_materials depends on human_handoffs
+- credential_events and credential_grants depend on principal_connections
+- environment_capability_bindings and terminal_sessions depend on environment_leases
+
 Revision ID: c8d0e2f4a6b8
 Revises: b7c9d1e3f5a7
 Create Date: 2026-09-17
+
 """
 
 from __future__ import annotations
@@ -33,19 +40,24 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Drop FKs first if any reference these tables from elsewhere.
-    # (Verified: no surviving table references any of these — all FK
-    # consumers were also removed during cleanup.)
-    op.drop_table("human_handoffs")
-    op.drop_table("authority_materials")
+    # Drop tables in dependency order: children before parents
+    # Authority subsystem (reverse creation order)
     op.drop_table("authority_grants")
-    op.drop_table("environment_leases")
+    op.drop_table("authority_materials")
+    op.drop_table("human_handoffs")
+    
+    # Environment negotiation subsystem (reverse creation order)
     op.drop_table("environment_capability_bindings")
     op.drop_table("terminal_sessions")
-    op.drop_table("connector_definitions")
-    op.drop_table("principal_connections")
-    op.drop_table("credential_grants")
+    op.drop_table("environment_leases")
+    
+    # Credential vault subsystem (reverse creation order)
     op.drop_table("credential_events")
+    op.drop_table("credential_grants")
+    op.drop_table("principal_connections")
+    op.drop_table("connector_definitions")
+    
+    # Shared state tables (no dependencies)
     op.drop_table("rate_limit_counters")
     op.drop_table("cost_tracking")
     op.drop_table("dead_letter_entries")
@@ -244,3 +256,4 @@ def downgrade() -> None:
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
     )
+
