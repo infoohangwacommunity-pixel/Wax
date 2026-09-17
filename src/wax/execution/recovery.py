@@ -60,6 +60,7 @@ class RecoveryOutcome(StrEnum):
     NO_RECOVERY_NEEDED = "no_recovery_needed"  # execution is not in a crashed state
     RETRY_FROM_START = "retry_from_start"  # mark failed; redelivery will retry
     REPLAY_FROM_CHECKPOINT = "replay_from_checkpoint"  # use recorded idempotency
+    RETRY_FROM_TERMINAL_CHECKPOINT = "retry_from_terminal_checkpoint"  # resume intelligence loop
     UNKNOWN_EFFECT = "unknown_effect"  # cannot prove outcome; needs human review
     ALREADY_TERMINAL = "already_terminal"  # execution already done
 

@@ -566,6 +566,12 @@ class RuntimeBridge:
                                 name=tool_call.name,
                             )
                         )
+
+                # Part 22: Checkpoint the intelligence loop state after each
+                # terminal round. If the server crashes mid-execution, the
+                # work runner can resume from this checkpoint — the AI wakes
+                # up with the same message history and continues.
+                await self._checkpoint_messages(exec_repo, execution_id, messages, round_num)
             else:
                 # Max rounds exhausted — force a final response
                 log.warning("bridge.max_rounds_exhausted", execution_id=execution_id)
@@ -738,6 +744,281 @@ class RuntimeBridge:
             parts.append(f"\n--- REENTRY CONTEXT ---\n{reentry_context}")
 
         return "\n".join(parts)
+
+    # ===================================================================
+    # Part 22: Execution recovery — checkpoint + resume
+    # ===================================================================
+
+    async def _checkpoint_messages(
+        self,
+        exec_repo: ExecutionRepository,
+        execution_id: str,
+        messages: list[LLMMessage],
+        round_num: int,
+    ) -> None:
+        """Checkpoint the intelligence loop state after each terminal round.
+
+        Serializes the full message history to the execution's checkpoint
+        column. If the server crashes, the work runner can load this
+        checkpoint and resume the loop — the AI wakes up with the same
+        context and continues from where it stopped.
+        """
+        try:
+            checkpoint = {
+                "schema_version": 1,
+                "round": round_num,
+                "messages": self._serialize_messages(messages),
+                "checkpointed_at": datetime.now(UTC).isoformat(),
+            }
+            await exec_repo.update_checkpoint(execution_id, checkpoint)
+        except Exception as e:
+            # Checkpoint failure must never break the execution — it's
+            # a recovery optimization, not a correctness requirement.
+            log.warning(
+                "bridge.checkpoint_failed",
+                execution_id=execution_id,
+                error=str(e)[:200],
+            )
+
+    def _serialize_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+        """Serialize LLMMessage list to JSON-safe dicts."""
+        result: list[dict[str, Any]] = []
+        for msg in messages:
+            entry: dict[str, Any] = {
+                "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
+                "content": msg.content,
+            }
+            if msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    }
+                    for tc in msg.tool_calls
+                ]
+            if msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            if msg.name:
+                entry["name"] = msg.name
+            result.append(entry)
+        return result
+
+    def _deserialize_messages(self, raw: list[dict[str, Any]]) -> list[LLMMessage]:
+        """Reconstruct LLMMessage list from JSON dicts."""
+        messages: list[LLMMessage] = []
+        for entry in raw:
+            role_str = entry.get("role", "user")
+            try:
+                role = MessageRole(role_str)
+            except ValueError:
+                role = MessageRole.USER
+
+            tool_calls = None
+            if entry.get("tool_calls"):
+                tool_calls = [
+                    ToolCall(
+                        id=tc.get("id", ""),
+                        name=tc.get("name", ""),
+                        arguments=tc.get("arguments", {}),
+                    )
+                    for tc in entry["tool_calls"]
+                ]
+
+            messages.append(
+                LLMMessage(
+                    role=role,
+                    content=entry.get("content", ""),
+                    name=entry.get("name"),
+                    tool_calls=tool_calls,
+                    tool_call_id=entry.get("tool_call_id"),
+                )
+            )
+        return messages
+
+    async def resume_execution(self, execution_id: str) -> str | None:
+        """Resume an interrupted execution from its checkpoint (Part 22).
+
+        Called by the work runner on startup when it finds an execution
+        in 'running' state with a terminal-loop checkpoint. The bridge:
+
+        1. Loads the checkpoint (message history + round number)
+        2. Reconstructs the workspace (persistent per-principal)
+        3. Re-enters the intelligence loop from where it stopped
+        4. The AI sees the same context and continues naturally
+
+        The AI receives a [SYSTEM RECOVERY] notice so it knows the
+        server restarted and its detached processes were killed.
+
+        Returns the final response text, or None if no checkpoint exists.
+        """
+        from wax.execution.repository import ExecutionRepository
+        from wax.state.engine import db_session
+
+        async with db_session() as session:
+            exec_repo = ExecutionRepository(session)
+            execution = await exec_repo.get(execution_id)
+            if execution is None:
+                log.warning("bridge.resume_not_found", execution_id=execution_id)
+                return None
+
+            if not execution.checkpoint:
+                log.info("bridge.resume_no_checkpoint", execution_id=execution_id)
+                return None
+
+            checkpoint = execution.checkpoint
+            if not isinstance(checkpoint, dict) or "messages" not in checkpoint:
+                log.info("bridge.resume_invalid_checkpoint", execution_id=execution_id)
+                return None
+
+            messages = self._deserialize_messages(checkpoint["messages"])
+            round_num = int(checkpoint.get("round", 0))
+            principal_id = execution.principal_id
+
+            log.info(
+                "bridge.resuming_execution",
+                execution_id=execution_id,
+                principal_id=principal_id,
+                round=round_num,
+                message_count=len(messages),
+            )
+
+            # Inject a recovery notice so the AI knows what happened
+            messages.append(
+                LLMMessage(
+                    role=MessageRole.USER,
+                    content=(
+                        "[SYSTEM RECOVERY] The WAX server restarted while you "
+                        "were working. Your message history and workspace files "
+                        "are preserved. Any detached processes you started were "
+                        "killed when the server stopped — restart them if needed. "
+                        "Continue from where you left off. Round "
+                        f"{round_num + 1}."
+                    ),
+                )
+            )
+
+            # Reconstruct the workspace
+            ws_root = self._services.settings.terminal_working_dir_root
+            principal_ws = principal_workspace(ws_root, principal_id)
+            exec_ws = execution_workspace(ws_root, principal_id, execution_id)
+
+            executor = TerminalExecutor(
+                working_dir=exec_ws,
+                timeout_seconds=self._services.settings.terminal_timeout_seconds,
+                output_max_chars=self._services.settings.terminal_output_max_chars,
+                env_overrides={
+                    "WAX_CURRENT_PRINCIPAL_ID": principal_id,
+                    "WAX_CURRENT_EXECUTION_ID": execution_id,
+                    "WAX_CURRENT_WORKSPACE": str(exec_ws),
+                    "WAX_CURRENT_PRINCIPAL_WORKSPACE": str(principal_ws),
+                },
+            )
+
+            max_rounds = self._services.settings.terminal_max_rounds
+            final_response = ""
+
+            try:
+                # Continue from the next round after the checkpoint
+                for resume_round in range(round_num + 1, max_rounds):
+                    await exec_repo.record_step(
+                        execution_id=execution_id,
+                        kind="model_recovery",
+                        capability_name=None,
+                        inputs={"round": resume_round, "recovered": True},
+                    )
+
+                    response = await self._intelligence.complete(
+                        LLMRequest(
+                            messages=messages,
+                            tools=[TERMINAL_TOOL_SPEC],
+                            request_id=execution_id,
+                        )
+                    )
+
+                    from wax.runtime.cost_protection import estimate_llm_cost_cents
+
+                    cost_cents = estimate_llm_cost_cents(
+                        prompt_tokens=response.usage.get("tokens_prompt", 0),
+                        completion_tokens=response.usage.get("tokens_completion", 0),
+                    )
+                    self._cost_protector.record_spend(principal_id, cost_cents)
+
+                    if not response.tool_calls:
+                        final_response = response.content
+                        break
+
+                    messages.append(
+                        LLMMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=response.content,
+                            tool_calls=response.tool_calls,
+                        )
+                    )
+
+                    for tool_call in response.tool_calls:
+                        if tool_call.name == "terminal":
+                            observation = await self._execute_terminal(
+                                executor, tool_call, execution_id, exec_repo
+                            )
+                            messages.append(
+                                LLMMessage(
+                                    role=MessageRole.TOOL,
+                                    content=observation,
+                                    tool_call_id=tool_call.id,
+                                    name="terminal",
+                                )
+                            )
+                        else:
+                            messages.append(
+                                LLMMessage(
+                                    role=MessageRole.TOOL,
+                                    content=f"[error] unknown tool: {tool_call.name}",
+                                    tool_call_id=tool_call.id,
+                                    name=tool_call.name,
+                                )
+                            )
+
+                    # Checkpoint again after each terminal round
+                    await self._checkpoint_messages(exec_repo, execution_id, messages, resume_round)
+                else:
+                    log.warning("bridge.resume_max_rounds", execution_id=execution_id)
+                    final_response = await self._force_final_response(messages, execution_id)
+
+                # Complete the recovered execution
+                await exec_repo.complete(execution_id)
+
+                # Memory extraction for the recovered execution
+                await extract_memories(
+                    session=session,
+                    intelligence=self._intelligence,
+                    principal_id=principal_id,
+                    execution_id=execution_id,
+                    user_message="[recovered execution]",
+                    ai_response=final_response,
+                )
+
+                await session.commit()
+
+                log.info(
+                    "bridge.resumed_execution_complete",
+                    execution_id=execution_id,
+                    principal_id=principal_id,
+                )
+
+                return final_response
+            except Exception as e:
+                log.error(
+                    "bridge.resume_failed",
+                    execution_id=execution_id,
+                    error=str(e)[:500],
+                    error_type=type(e).__name__,
+                )
+                await exec_repo.fail(execution_id, f"resume failed: {type(e).__name__}: {e}"[:1000])
+                await session.commit()
+                return None
+            finally:
+                await executor.cleanup_detached()
 
     async def _execute_terminal(
         self,

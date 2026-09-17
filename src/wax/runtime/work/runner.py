@@ -366,6 +366,8 @@ class WorkRunner:
         retriable_messages = 0
         unknown_effect_count = 0
         replayed_count = 0
+        resumed_count = 0
+        failed_terminal_checkpoint = 0
 
         async with db_session() as session:
             result = await session.execute(
@@ -376,7 +378,40 @@ class WorkRunner:
                 if started is not None and started.tzinfo is None:
                     started = started.replace(tzinfo=UTC)
                 if started is not None and started < cutoff:
-                    # Use the recovery layer instead of blindly marking failed
+                    # Part 22: Check if this execution has a terminal-loop
+                    # checkpoint. If so, resume the intelligence loop instead
+                    # of marking failed. The AI wakes up with the same message
+                    # history and continues from where it stopped.
+                    checkpoint = execution.checkpoint
+                    if (
+                        isinstance(checkpoint, dict)
+                        and "messages" in checkpoint
+                        and self._services.resume_callback is not None
+                    ):
+                        # Terminal-loop checkpoint exists — resume
+                        await session.commit()
+                        log.info(
+                            "work.resuming_terminal_checkpoint",
+                            execution_id=execution.id,
+                            round=checkpoint.get("round", 0),
+                        )
+                        try:
+                            response_text = await self._services.resume_callback(execution.id)
+                            if response_text:
+                                resumed_count += 1
+                            else:
+                                failed_terminal_checkpoint += 1
+                        except Exception as e:
+                            log.warning(
+                                "work.resume_failed",
+                                execution_id=execution.id,
+                                error=str(e)[:300],
+                            )
+                            failed_terminal_checkpoint += 1
+                        recovered_ids.append(execution.id)
+                        continue
+
+                    # No terminal checkpoint — use the recovery layer
                     recovery_result = await recover_execution(
                         session, execution.id, principal_id=execution.principal_id
                     )
@@ -400,17 +435,21 @@ class WorkRunner:
                 await session.commit()
         failed_executions = len(recovered_ids)
 
-        if failed_executions or retriable_messages:
+        if failed_executions or retriable_messages or resumed_count:
             log.warning(
                 "work.recovered_orphans",
                 failed_executions=failed_executions,
                 retriable_messages=retriable_messages,
                 unknown_effect=unknown_effect_count,
                 replayed=replayed_count,
+                resumed=resumed_count,
+                failed_terminal_checkpoint=failed_terminal_checkpoint,
             )
         return {
             "failed_executions": failed_executions,
             "retriable_messages": retriable_messages,
             "unknown_effect": unknown_effect_count,
             "replayed": replayed_count,
+            "resumed": resumed_count,
+            "failed_terminal_checkpoint": failed_terminal_checkpoint,
         }

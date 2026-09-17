@@ -275,3 +275,118 @@ class TestBridgeReentry:
         assert result.outcome == "succeeded"
         assert result.execution_id is not None
         assert result.response_text is not None
+
+
+class TestBridgeExecutionRecovery:
+    """Part 22: Execution recovery — checkpoint + resume after crash.
+
+    The AI crashes mid-execution. The server restarts. The work runner
+    finds the interrupted execution with a terminal-loop checkpoint and
+    resumes it. The AI wakes up with the same message history and continues.
+    """
+
+    async def test_checkpoint_written_after_terminal_round(self, fresh_db, services) -> None:
+        """After a terminal call, the execution's checkpoint is updated."""
+        from sqlalchemy import select as sel
+
+        from wax.state.execution_models import ExecutionRecord
+
+        mock = MockLLMProvider(
+            scripted_tool_calls=[
+                [ToolCall(id="tc-1", name="terminal", arguments={"command": "echo hello"})],
+            ]
+        )
+        intel = IntelligenceService(mock)
+        bridge = RuntimeBridge(intelligence=intel, services=services)
+
+        async with db_session() as session:
+            response = await bridge.process(session, _request(text="Run echo hello"))
+            await session.commit()
+
+        # Verify a checkpoint was written
+        async with db_session() as session:
+            execution = (
+                await session.execute(
+                    sel(ExecutionRecord).where(ExecutionRecord.id == response.execution_id)
+                )
+            ).scalar_one()
+            assert execution.checkpoint is not None
+            assert "messages" in execution.checkpoint
+            assert execution.checkpoint["round"] == 0
+
+    async def test_resume_execution_from_checkpoint(self, fresh_db, services) -> None:
+        """resume_execution loads the checkpoint and continues the loop."""
+        from sqlalchemy import select as sel
+
+        from wax.state.execution_models import ExecutionRecord
+
+        # First execution: terminal call, then the "crash" happens (we just
+        # don't complete it — we leave it in running state with a checkpoint).
+        mock = MockLLMProvider(
+            scripted_tool_calls=[
+                [ToolCall(id="tc-1", name="terminal", arguments={"command": "echo hello"})],
+                # The second call would produce a final response, but we
+                # simulate a crash before it happens by NOT calling complete.
+            ]
+        )
+        intel = IntelligenceService(mock)
+        bridge = RuntimeBridge(intelligence=intel, services=services)
+
+        async with db_session() as session:
+            response = await bridge.process(session, _request(text="Run echo hello"))
+            await session.commit()
+
+        # The execution should be succeeded (the mock produced a final response
+        # after the terminal call). But let's manually set it back to "running"
+        # to simulate a crash, then test resume_execution.
+        async with db_session() as session:
+            execution = (
+                await session.execute(
+                    sel(ExecutionRecord).where(ExecutionRecord.id == response.execution_id)
+                )
+            ).scalar_one()
+            execution.status = "running"
+            execution.ended_at = None
+            execution.error = None
+            await session.commit()
+
+        # Now resume — the bridge should load the checkpoint and continue
+        # The mock's script is empty now, so it will produce a final response
+        result = await bridge.resume_execution(response.execution_id)
+
+        # The resume should have produced a response
+        assert result is not None
+
+        # The execution should now be completed
+        async with db_session() as session:
+            execution = (
+                await session.execute(
+                    sel(ExecutionRecord).where(ExecutionRecord.id == response.execution_id)
+                )
+            ).scalar_one()
+            assert execution.status == "succeeded"
+
+    async def test_resume_execution_without_checkpoint_returns_none(
+        self, fresh_db, services
+    ) -> None:
+        """If there's no checkpoint, resume_execution returns None."""
+        from wax.execution.repository import ExecutionRepository
+
+        mock = MockLLMProvider()
+        intel = IntelligenceService(mock)
+        bridge = RuntimeBridge(intelligence=intel, services=services)
+
+        # Create an execution with no checkpoint
+        async with db_session() as session:
+            exec_repo = ExecutionRepository(session)
+            execution = await exec_repo.create(
+                principal_id="01TESTPRINCIPAL000000000",
+                kind="single_turn",
+                objective="test",
+            )
+            await exec_repo.start(execution.id)
+            await session.commit()
+            exec_id = execution.id
+
+        result = await bridge.resume_execution(exec_id)
+        assert result is None

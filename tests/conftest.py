@@ -71,7 +71,10 @@ async def app(test_settings: Any) -> Any:
 
     intel = IntelligenceService.from_settings(test_settings)
     app.state.intelligence = intel
-    app.state.runtime_bridge = RuntimeBridge(intelligence=intel, services=services)
+    bridge = RuntimeBridge(intelligence=intel, services=services)
+    app.state.runtime_bridge = bridge
+    services.reentry_callback = bridge.run_reentry
+    services.resume_callback = bridge.resume_execution
     app.state.whatsapp_client = None
 
     yield app

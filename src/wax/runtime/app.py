@@ -73,6 +73,7 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         bridge = RuntimeBridge(intelligence=intel, services=services)
         app.state.runtime_bridge = bridge
         services.reentry_callback = bridge.run_reentry
+        services.resume_callback = bridge.resume_execution
         log.info("runtime.reentry_callback_registered")
 
         # WhatsApp client (optional)

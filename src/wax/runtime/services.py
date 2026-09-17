@@ -44,6 +44,11 @@ class RuntimeServices:
     # root so the work handler can wake the intelligence WITHOUT importing
     # the bridge.
     reentry_callback: ReentryCallback | None = field(default=None)
+    # Execution recovery callback (Part 22). Set ONCE by the composition
+    # root so the work runner can resume interrupted executions WITHOUT
+    # importing the bridge. Called with an execution_id; returns the final
+    # response text or None.
+    resume_callback: Any | None = field(default=None)
 
     @classmethod
     def build(cls, settings: WaxSettings | None) -> RuntimeServices:
