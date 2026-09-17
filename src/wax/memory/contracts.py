@@ -10,18 +10,25 @@ from pydantic import BaseModel, Field
 
 
 class MemoryKind(StrEnum):
-    """Discriminator for memory types.
+    """Discriminator for memory types — modeled on human memory layers.
 
-    Modeled on human memory systems (Tulving, 1972):
-    - EPISODIC: events the system observed or participated in
-    - SEMANTIC: facts and knowledge
-    - PROCEDURAL: how-to knowledge (capability usage patterns)
-    - CONTEXTUAL: current/recent context for active work
-    - EXTERNAL: information retrieved from external sources (APIs, web)
+    FACT: stable knowledge about the user or world (name, exam date, goals)
+    PREFERENCE: how the user likes things (short explanations, diagrams)
+    SKILL: the user's strengths/weaknesses (strong at chemistry, weak at osmosis)
+    EPISODIC: meaningful events (NOT every conversation — only salient ones)
+    PROJECT: living objects the user is actively working on (resume, WAX redesign)
+    WAITING: the AI is waiting for something ("I'll send the PDF tomorrow")
+    PROCEDURAL: how-to knowledge the AI learned
+    CONTEXTUAL: current/recent context for active work
+    EXTERNAL: information retrieved from external sources (APIs, web)
     """
 
+    FACT = "fact"
+    PREFERENCE = "preference"
+    SKILL = "skill"
     EPISODIC = "episodic"
-    SEMANTIC = "semantic"
+    PROJECT = "project"
+    WAITING = "waiting"
     PROCEDURAL = "procedural"
     CONTEXTUAL = "contextual"
     EXTERNAL = "external"

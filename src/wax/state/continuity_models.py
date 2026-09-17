@@ -33,7 +33,6 @@ class ConversationRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     message_count: Mapped[int] = mapped_column(nullable=False, default=0)
 
     interface_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    objective_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
     last_execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)

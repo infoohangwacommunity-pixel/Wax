@@ -15,10 +15,16 @@ Design principles (per the open-world architecture directive):
 - Operational limits (timeout, output size) are transport plumbing, NOT
   authority decisions. A 60-second timeout means "this foreground process
   has a lifecycle boundary", not "you are forbidden from doing this".
-- Persistent working directory: each execution gets a working dir that
-  survives across terminal rounds within the same execution.
+- Persistent per-principal workspace: each principal gets a stable
+  workspace at /<root>/<principal_id>/. Files survive across executions
+  and conversations so the AI can build long projects (resume, assignment,
+  research, coding) without rebuilding every turn.
+- Execution sessions: multiple terminal calls inside one reasoning loop
+  share the same working directory and process group.
 - Detached processes: the AI can start long-running services (a server,
   a worker, a tunnel) that continue after the foreground command returns.
+- Internet observability: network calls are recorded (started/succeeded/
+  failed/duration) — observed, not censored.
 
 The executor does NOT know about:
 - capabilities, permissions, approvals, authority
@@ -47,6 +53,20 @@ log = get_logger(__name__)
 
 
 @dataclass
+class NetworkCall:
+    """Recorded observation of a network call (NOT censored, just observed)."""
+
+    started_at: datetime
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+    protocol: str | None = None  # http, https, git, ssh, etc.
+    host: str | None = None
+    port: int | None = None
+    succeeded: bool | None = None
+    error: str | None = None
+
+
+@dataclass
 class TerminalResult:
     """Observation returned from a terminal execution."""
 
@@ -59,17 +79,12 @@ class TerminalResult:
     working_dir: str
     started_at: datetime
     ended_at: datetime
-    detached: bool = False  # True if this was a background process start
-    detached_pid: int | None = None  # PID of a detached process (if any)
+    detached: bool = False
+    detached_pid: int | None = None
+    network_calls: list[NetworkCall] = field(default_factory=list)
 
     def to_observation(self) -> str:
-        """Render the result as a compact observation string for the model.
-
-        The model sees: exit status, stdout, stderr, duration, and whether
-        the output was truncated or timed out. It does NOT see internal
-        implementation details (PIDs, lease IDs, etc.) unless it started a
-        detached process.
-        """
+        """Render the result as a compact observation string for the model."""
         parts: list[str] = []
         if self.detached:
             parts.append(f"[detached process started, pid={self.detached_pid}]")
@@ -79,6 +94,16 @@ class TerminalResult:
         parts.append(f"[terminal] {status} duration={self.duration_seconds:.2f}s")
         if self.truncated:
             parts.append("[terminal] output was truncated")
+        if self.network_calls:
+            net_summary = ", ".join(
+                f"{nc.protocol}://{nc.host}"
+                + (f":{nc.port}" if nc.port else "")
+                + f"={'ok' if nc.succeeded else 'fail'}"
+                for nc in self.network_calls
+                if nc.host
+            )
+            if net_summary:
+                parts.append(f"[network] {net_summary}")
         if self.stdout:
             parts.append("--- stdout ---")
             parts.append(self.stdout)
@@ -94,33 +119,29 @@ class TerminalResult:
 class TerminalExecutor:
     """The terminal executor.
 
-    Constructed once per execution with a working directory. The working
-    directory persists across all terminal rounds within that execution,
-    so the AI can create files in round 1, run tests in round 2, modify
-    files in round 3, etc.
+    Constructed per-execution with a working directory. The working
+    directory is the principal's persistent workspace — files survive
+    across executions so the AI can build long projects.
 
     The executor inherits the full process environment. The intelligence
-    can read env vars (LLM keys, DB URLs, etc.) and use them in its
-    commands. This is the trust model: the intelligence is trusted to
-    operate the environment.
+    can read env vars (LLM keys, DB URLs, API keys, etc.) and use them.
     """
 
     working_dir: Path
     timeout_seconds: float = 60.0
     output_max_chars: int = 50_000
-    # Inherit the full process environment by default. The intelligence
-    # can read LLM credentials, DB URLs, API keys, etc. This is deliberate:
-    # the trust model is "the intelligence operates the environment".
     env: dict[str, str] = field(default_factory=dict)
+    env_overrides: dict[str, str] = field(default_factory=dict)
+    _network_log: list[NetworkCall] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         if not self.env:
-            # Inherit the full parent environment.
             self.env = dict(os.environ)
+        # Apply env overrides (WAX_CURRENT_PRINCIPAL_ID, etc.) so the
+        # wax_runtime helper can read them from inside the terminal.
+        self.env.update(self.env_overrides)
         self.working_dir = Path(self.working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
-        # Track detached processes started during this execution so we can
-        # report them and (optionally) clean them up when the execution ends.
         self._detached: list[asyncio.subprocess.Process] = []
 
     async def execute(
@@ -131,17 +152,7 @@ class TerminalExecutor:
         cwd: str | None = None,
         env_overrides: dict[str, str] | None = None,
     ) -> TerminalResult:
-        """Execute a foreground command and return the observation.
-
-        The command runs in a shell (bash -c) so the AI can use pipes,
-        redirects, &&, ||, etc. The working directory is the executor's
-        working_dir unless overridden.
-
-        Operational limits (timeout, output truncation) are transport
-        plumbing — they prevent a single command from destroying the
-        execution (e.g. dumping 100MB into context, hanging forever).
-        They are NOT authority decisions.
-        """
+        """Execute a foreground command and return the observation."""
         effective_timeout = timeout if timeout is not None else self.timeout_seconds
         effective_cwd = Path(cwd) if cwd else self.working_dir
         effective_env = dict(self.env)
@@ -160,8 +171,6 @@ class TerminalExecutor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(effective_cwd),
                 env=effective_env,
-                # Start a new process group so we can kill the whole tree
-                # on timeout (avoids orphaned children).
                 start_new_session=True,
             )
         except FileNotFoundError:
@@ -204,6 +213,10 @@ class TerminalExecutor:
             stderr = stderr[: self.output_max_chars] + "\n... [stderr truncated]"
             truncated = True
 
+        # Observe network calls from stdout (best-effort — not censored, just recorded)
+        network_calls = self._extract_network_observations(stdout, stderr, started_at, ended_at)
+        self._network_log.extend(network_calls)
+
         return TerminalResult(
             exit_code=proc.returncode if proc.returncode is not None else (-1 if timed_out else 0),
             stdout=stdout,
@@ -214,6 +227,7 @@ class TerminalExecutor:
             working_dir=str(effective_cwd),
             started_at=started_at,
             ended_at=ended_at,
+            network_calls=network_calls,
         )
 
     async def execute_detached(
@@ -223,17 +237,7 @@ class TerminalExecutor:
         cwd: str | None = None,
         env_overrides: dict[str, str] | None = None,
     ) -> TerminalResult:
-        """Start a detached (background) process and return immediately.
-
-        The AI can use this to start servers, workers, tunnels, long-running
-        services — anything that should continue running after the foreground
-        command returns. The process inherits the full environment and
-        continues in the executor's process group.
-
-        Returns a TerminalResult with detached=True and the PID. The AI can
-        later inspect the process through normal terminal commands (ps, kill,
-        curl localhost, etc.).
-        """
+        """Start a detached (background) process and return immediately."""
         effective_cwd = Path(cwd) if cwd else self.working_dir
         effective_env = dict(self.env)
         if env_overrides:
@@ -250,7 +254,7 @@ class TerminalExecutor:
                 stdin=asyncio.subprocess.DEVNULL,
                 cwd=str(effective_cwd),
                 env=effective_env,
-                start_new_session=True,  # detach from the controlling terminal
+                start_new_session=True,
             )
         except FileNotFoundError:
             return TerminalResult(
@@ -285,30 +289,26 @@ class TerminalExecutor:
         )
 
     async def cleanup_detached(self) -> None:
-        """Signal all detached processes started during this execution to stop.
-
-        Called when the execution ends. Uses SIGTERM (graceful) then SIGKILL
-        after 5 seconds if the process hasn't exited. This is operational
-        hygiene, not an authority decision — a leaked server process would
-        consume resources forever otherwise.
-        """
+        """Signal all detached processes to stop. Operational hygiene only."""
         for proc in self._detached:
             if proc.returncode is not None:
                 continue
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        # Give them 5 seconds to exit gracefully.
         for _ in range(50):
             if all(p.returncode is not None for p in self._detached):
                 break
             await asyncio.sleep(0.1)
-        # Force-kill anything still alive.
         for proc in self._detached:
             if proc.returncode is not None:
                 continue
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         self._detached.clear()
+
+    def network_log(self) -> list[NetworkCall]:
+        """Return the cumulative network observation log for this execution."""
+        return list(self._network_log)
 
     async def _kill_process_tree(self, proc: asyncio.subprocess.Process) -> None:
         """Kill a foreground process and any children it spawned."""
@@ -318,31 +318,113 @@ class TerminalExecutor:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 
+    def _extract_network_observations(
+        self,
+        stdout: str,
+        stderr: str,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> list[NetworkCall]:
+        """Best-effort extraction of network call observations from output.
 
-def create_execution_workspace(root: str | Path, execution_id: str | None = None) -> Path:
-    """Create a fresh working directory for an execution.
+        This is NOT censorship — the AI can call any host. This is
+        observability: the runtime records what happened so the audit
+        ledger can show "the AI connected to github.com at 14:32".
+        """
+        import re
 
-    The directory is created under `root` (configured at startup) and
-    named with a ULID or provided execution_id. The intelligence operates
-    here for the duration of the execution; the directory persists across
-    terminal rounds.
+        calls: list[NetworkCall] = []
+        # Match URLs in output (http://, https://, git@, ssh://)
+        url_pattern = re.compile(
+            r"(?:https?|git|ssh)://([a-zA-Z0-9._-]+)(?::(\d+))?|git@([a-zA-Z0-9._-]+)"
+        )
+        seen_hosts: set[str] = set()
+        for match in url_pattern.finditer(stdout + "\n" + stderr):
+            host = match.group(1) or match.group(3)
+            port = match.group(2)
+            if host and host not in seen_hosts:
+                seen_hosts.add(host)
+                calls.append(
+                    NetworkCall(
+                        started_at=started_at,
+                        ended_at=ended_at,
+                        duration_seconds=(ended_at - started_at).total_seconds(),
+                        protocol="https" if match.group(0).startswith("https") else "http",
+                        host=host,
+                        port=int(port) if port else None,
+                        succeeded=True,  # the URL appeared in output, suggesting it was reached
+                    )
+                )
+        return calls
+
+
+# ---------------------------------------------------------------------------
+# Workspace management — persistent per-principal workspaces
+# ---------------------------------------------------------------------------
+
+
+def principal_workspace(root: str | Path, principal_id: str) -> Path:
+    """Return the persistent workspace path for a principal.
+
+    The workspace is /<root>/<principal_id>/. Files survive across
+    executions and conversations so the AI can build long projects.
+
+    The workspace is created if it doesn't exist. Idle cleanup happens
+    later (a maintenance sweep can archive workspaces not touched in N
+    days, but never mid-conversation).
     """
-    root_path = Path(root)
-    root_path.mkdir(parents=True, exist_ok=True)
+    ws = Path(root) / principal_id
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
+def execution_workspace(root: str | Path, principal_id: str, execution_id: str) -> Path:
+    """Return a per-execution subdirectory inside the principal's workspace.
+
+    The AI operates in this subdirectory during one execution. Files
+    persist across terminal rounds within that execution. The principal's
+    top-level workspace is also accessible (the AI can cd .. to find
+    files from previous executions).
+    """
+    ws = principal_workspace(root, principal_id) / "executions" / execution_id
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
+def list_principal_files(root: str | Path, principal_id: str) -> list[str]:
+    """List all files in a principal's workspace (top-level + executions/).
+
+    Used by the runtime to describe the workspace state in the system
+    prompt — the AI sees what files already exist before it starts.
+    """
+    ws = Path(root) / principal_id
+    if not ws.exists():
+        return []
+    files: list[str] = []
+    for path in sorted(ws.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(ws)
+            files.append(str(rel))
+    return files[:100]  # cap to keep the prompt small
+
+
+# Backwards-compat helpers (older code used these)
+def create_execution_workspace(root: str | Path, execution_id: str | None = None) -> Path:
+    """Legacy helper — use principal_workspace/execution_workspace instead."""
     eid = execution_id or str(uuid.uuid4())
-    workspace = root_path / eid
-    workspace.mkdir(parents=True, exist_ok=True)
-    return workspace
+    ws = Path(root) / eid
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
 
 
 def cleanup_execution_workspace(workspace: str | Path) -> None:
-    """Remove an execution's working directory.
+    """Remove an execution's working directory (NOT the principal's workspace).
 
-    Called after the execution completes (and after detached processes are
-    cleaned up). The intelligence's files are ephemeral unless it explicitly
-    persists them elsewhere (e.g. git push, copy to a persistent path).
+    Per-execution subdirectories under executions/ can be cleaned up
+    after the execution ends. The principal's top-level workspace
+    persists.
     """
     try:
         shutil.rmtree(str(workspace), ignore_errors=True)
-    except Exception as e:  # never let cleanup failure break the execution
+    except Exception as e:
         log.warning("terminal.workspace_cleanup_failed", workspace=str(workspace), error=str(e))

@@ -2,33 +2,14 @@
 
 A user returning after days should continue naturally. This requires:
 1. Conversation threading (group messages by principal + recent time window)
-2. Context stitching (recent memory + active objective + last execution state)
-3. Recovery of interrupted executions
-4. Reply correlation (link responses to original user messages)
+2. Conversation lifecycle (active → idle → archived)
 
-Architecture:
-- ConversationRecord: groups messages within a time window per principal
-- ConversationRepository: persistence
-- ConversationService: opens/closes conversations, stitches context
-- ContinuityService: top-level "what context should the AI see?" API
-
-INVARIANT: Continuity is per-principal. The runtime never mixes contexts
-across principals (privacy + correctness).
+The bridge handles context assembly directly (memory retrieval + enriched
+system prompt). The old ContinuityService is gone — it was dead code with
+crash bugs. ConversationRepository is the surviving piece.
 """
 
-from wax.continuity.contracts import (
-    ContinuityContext,
-    ConversationRecord,
-    ConversationStatus,
-)
+from wax.continuity.contracts import DEFAULT_IDLE_TIMEOUT, ConversationStatus
 from wax.continuity.repository import ConversationRepository
-from wax.continuity.service import ContinuityService, ConversationService
 
-__all__ = [
-    "ContinuityContext",
-    "ContinuityService",
-    "ConversationRecord",
-    "ConversationRepository",
-    "ConversationService",
-    "ConversationStatus",
-]
+__all__ = ["DEFAULT_IDLE_TIMEOUT", "ConversationRepository", "ConversationStatus"]

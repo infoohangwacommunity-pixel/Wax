@@ -96,6 +96,11 @@ class WaxSettings(BaseSettings):
     # this many times before the runtime forces a final response.
     terminal_max_rounds: int = 10
 
+    # --- Rate limiting (infrastructure protection, NOT authority) ---
+    # Simple per-principal, per-hour message cap. Prevents abuse without
+    # a complex subsystem. In-memory only (resets on restart).
+    rate_limit_messages_per_hour: int = 30
+
     # --- Work runner ---
     work_poll_interval_seconds: float = 2.0
 
