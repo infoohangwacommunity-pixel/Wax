@@ -36,7 +36,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # Drop tables in dependency order: children before parents
     op.drop_table("objective_executions")
-    op.drop_table("objectives")
+    op.drop_table("objectives", cascade=True)
     op.drop_table("workspace_snapshots")
     op.drop_table("artifacts")
     op.drop_table("provisioned_resources")
