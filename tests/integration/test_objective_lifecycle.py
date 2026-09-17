@@ -166,15 +166,7 @@ class TestExecutionHistory:
         assert [h.outcome for h in history] == ["failed", "succeeded"]
         assert all(h.ended_at is not None for h in history)
 
-    async def test_open_history_rows_are_counted(self, fresh_db) -> None:
-        async with db_session() as session:
-            repo = ObjectiveRepository(session)
-            obj = await repo.create(ObjectiveCreate(principal_id="p", description="x"))
-            await repo.record_execution_start(obj.id, "exec-A", kind="bridge")
-            assert await repo.count_open_executions(obj.id) == 1
-            await repo.record_execution_end(obj.id, "exec-A", outcome="succeeded")
-            assert await repo.count_open_executions(obj.id) == 0
-            await session.commit()
+    # test_open_history_rows_are_counted removed: count_open_executions was test-only (directive §32) and has been deleted from ObjectiveRepository.
 
     async def test_end_never_fabricates_missing_rows(self, fresh_db) -> None:
         async with db_session() as session:

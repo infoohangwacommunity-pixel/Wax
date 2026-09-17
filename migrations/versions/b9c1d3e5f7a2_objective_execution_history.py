@@ -19,16 +19,16 @@ starts empty (history begins at deployment time).
 downgrade drops exactly the table that was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b9c1d3e5f7a2"
-down_revision: Union[str, None] = "d9e4f2a8b1c7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "d9e4f2a8b1c7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -54,12 +54,8 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_objexec_objective", "objective_executions", ["objective_id"]
-    )
-    op.create_index(
-        "ix_objexec_execution", "objective_executions", ["execution_id"]
-    )
+    op.create_index("ix_objexec_objective", "objective_executions", ["objective_id"])
+    op.create_index("ix_objexec_execution", "objective_executions", ["execution_id"])
 
 
 def downgrade() -> None:

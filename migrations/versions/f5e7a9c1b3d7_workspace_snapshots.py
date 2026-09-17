@@ -33,9 +33,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_wsnap_principal", "workspace_snapshots", ["principal_id"])
-    op.create_index(
-        "ix_wsnap_workspace", "workspace_snapshots", ["workspace_resource_id"]
-    )
+    op.create_index("ix_wsnap_workspace", "workspace_snapshots", ["workspace_resource_id"])
 
 
 def downgrade() -> None:

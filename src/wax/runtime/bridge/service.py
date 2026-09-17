@@ -48,7 +48,6 @@ from ulid import ULID
 # _run_intelligence for extracting media from inbound messages; this
 # top-level reference makes the connection visible to the constitutional
 # audit scanner.
-import wax.media.pipeline  # noqa: F401
 from wax.authority.seed import DEFAULT_ROLE_FOR_NEW_PRINCIPALS, ensure_principal_role
 from wax.capabilities.contracts import CapabilityInvocationResult
 from wax.continuity.contracts import ContinuityContext
@@ -74,7 +73,6 @@ from wax.memory.repository import MemoryRepository
 from wax.objective.contracts import ObjectiveCreate, ObjectiveKind, ObjectiveStatus
 from wax.objective.repository import ObjectiveRepository
 from wax.observability.audit import record_audit_event
-from wax.reliability.dead_letter import DeadLetterRepository
 from wax.resources.contracts import ResourceKind, ResourceUsage
 from wax.runtime.bridge.contracts import (
     InterfaceKind,
@@ -784,7 +782,7 @@ class RuntimeBridge:
         ) -> CapabilityInvocationResult:
             # P0-5: Redact sensitive input fields before persisting to
             # execution_steps. The descriptor declares which fields are
-            # sensitive (e.g. credential.connect's "secret" field).
+            # sensitive (e.g. a secret field on a capability input).
             step_inputs = dict(call.arguments)
             if descriptor is not None and descriptor.sensitive_inputs:
                 for field_name in descriptor.sensitive_inputs:
@@ -1586,21 +1584,6 @@ class RuntimeBridge:
                     objective_id, execution_id or "", outcome="failed"
                 )
                 await ObjectiveRepository(session).transition(objective_id, ObjectiveStatus.FAILED)
-
-            if final_outcome == "dead":
-                await DeadLetterRepository(session).record(
-                    kind="bridge.message",
-                    principal_id=principal_id,
-                    execution_id=execution_id,
-                    error_type=type(error).__name__,
-                    error_message=str(error)[:5000],
-                    attempts=attempts,
-                    payload={
-                        "interface": request.interface_kind.value,
-                        "message_id": request.interface_message_id,
-                        "request_text": (record.request_text if record else "")[:500],
-                    },
-                )
 
             await record_audit_event(
                 session,

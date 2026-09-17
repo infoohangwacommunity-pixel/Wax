@@ -242,35 +242,23 @@ class ProvisioningService:
 async def maintenance_loop(settings: Any, interval_seconds: float = 60.0) -> None:
     """Periodic TTL reaper. Runs as a lifespan task.
 
-    Multi-instance honesty (§61 audit fix): the reaper destroys real
-    filesystem directories, so like every other destructive sweep it
-    runs on the LEADER only (the same advisory-lock election the
-    maintenance loop uses). Followers skip and say so.
+    WAX is currently deployed as a single instance, so this loop runs
+    unconditionally. If multi-instance deployment becomes a real future
+    requirement, a leader-election gate can be introduced then.
     """
     import asyncio
 
-    from wax.runtime.leadership import MaintenanceLeadership
     from wax.state.engine import db_session
 
     service = ProvisioningService(settings)
     log.info("provisioning.maintenance_started", interval_s=interval_seconds)
     while True:
         try:
-            leadership = await MaintenanceLeadership.acquire(settings)
-            try:
-                if leadership.is_leader:
-                    async with db_session() as session:
-                        expired = await service.expire_due(session)
-                        await session.commit()
-                    if expired:
-                        log.info("provisioning.expired_batch", count=expired)
-                else:
-                    log.debug(
-                        "provisioning.maintenance.follower",
-                        mode=leadership.mode,
-                    )
-            finally:
-                await leadership.release()
+            async with db_session() as session:
+                expired = await service.expire_due(session)
+                await session.commit()
+            if expired:
+                log.info("provisioning.expired_batch", count=expired)
         except Exception as e:
             log.error(
                 "provisioning.maintenance_error",

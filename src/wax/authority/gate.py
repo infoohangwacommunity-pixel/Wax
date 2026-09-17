@@ -92,25 +92,18 @@ class ApprovalGate:
         invoker; PENDING or ALREADY_USED otherwise. Never raises for
         expected authority states — those are outcomes, not errors.
         """
-        from wax.agency.contracts import AgencyDecision, AgencyDecisionKind
         from wax.authority.approvals import ApprovalService, fingerprint_request
         from wax.objective.evidence import sync_active_for_execution
         from wax.runtime.work.signals import SignalRepository
 
-        agency = self._services.agency(self._session)
-        decision = AgencyDecision(
-            principal_id=principal_id,
-            kind=(
-                AgencyDecisionKind.DESTRUCTIVE_ACTION
-                if descriptor.is_destructive
-                else AgencyDecisionKind.INVOKE_CAPABILITY
-            ),
-            description=description,
-            capability_name=capability_name,
-            inputs_summary={k: str(v)[:120] for k, v in list((inputs or {}).items())[:5]},
-        )
-        verdict = await agency.evaluate(decision)
-        if verdict.approved and not verdict.requires_human_approval:
+        # Directive §10 simplify: the agency layer was an elaborate
+        # policy engine over what is effectively a binary destructive
+        # flag. The gate only ever used AgencyDecisionKind to distinguish
+        # DESTRUCTIVE_ACTION from INVOKE_CAPABILITY, which is exactly
+        # what descriptor.is_destructive already encodes. Non-destructive
+        # capabilities are auto-authorized; destructive ones still go
+        # through the human-approval primitive below.
+        if not descriptor.is_destructive:
             return ApprovalGateOutcome(state=ApprovalGateState.AUTHORIZED)
 
         approvals = ApprovalService(self._session)
@@ -148,10 +141,15 @@ class ApprovalGate:
             )
 
         # 2. Pending equivalent? (idempotent)  3. Otherwise create + notify.
+        # Directive §10 simplify: the agency layer was removed; the
+        # action_kind for the pending-approval record is now derived
+        # directly from descriptor.is_destructive (the only distinction
+        # the gate ever used).
+        action_kind = "destructive" if descriptor.is_destructive else "invoke_capability"
         record, created = await approvals.create_or_get_pending(
             principal_id=principal_id,
             capability_name=capability_name,
-            action_kind=verdict.level.value,
+            action_kind=action_kind,
             inputs=inputs,
             requested_by_execution_id=execution_id,
             expires_in_seconds=float(self._services.settings.approval_expiry_seconds),

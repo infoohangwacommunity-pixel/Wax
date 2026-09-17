@@ -255,15 +255,6 @@ class ObjectiveRepository:
         )
         return list(result.scalars().all())
 
-    async def count_open_executions(self, objective_id: str) -> int:
-        result = await self._session.execute(
-            select(ObjectiveExecutionRecord.id)
-            .where(ObjectiveExecutionRecord.objective_id == objective_id)
-            .where(ObjectiveExecutionRecord.ended_at.is_(None))
-            .limit(1)
-        )
-        return 1 if result.first() is not None else 0
-
     # --- evidence-state syncs (ADR-0020: runtime-owned, tolerant) ---------
 
     async def sync_waiting(self, objective_id: str) -> bool:

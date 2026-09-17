@@ -9,8 +9,8 @@ Revises: a6f8b0c2d4e8
 Create Date: 2026-09-15
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "b7c9d1e3f5a7"
 down_revision = "a6f8b0c2d4e8"
@@ -66,7 +66,9 @@ def upgrade() -> None:
         sa.Column("wrapped_key_nonce", sa.String(64), nullable=False),
         sa.Column("key_version", sa.Integer, nullable=False, server_default="1"),
         sa.Column("metadata_json", sa.JSON, nullable=True),
-        sa.Column("verification_status", sa.String(32), nullable=False, server_default="unverified"),
+        sa.Column(
+            "verification_status", sa.String(32), nullable=False, server_default="unverified"
+        ),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),

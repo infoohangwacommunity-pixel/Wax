@@ -23,7 +23,6 @@ from wax.capabilities.contracts import CapabilityInvocationRequest
 from wax.identity.repository import PrincipalRepository
 from wax.runtime.provisioning import ProvisioningService
 from wax.runtime.services import RuntimeServices
-from wax.runtime.vault import seed_builtin_connectors
 from wax.state.artifact_models import ArtifactRecord
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
@@ -44,7 +43,6 @@ async def fresh_db(test_settings):
         await conn.run_sync(Base.metadata.create_all)
     async with db_session() as s:
         await seed_builtin_roles(s)
-        await seed_builtin_connectors(s)
         await s.commit()
     yield
     await dispose_engine()

@@ -19,12 +19,10 @@ from wax.authority.seed import seed_builtin_roles
 from wax.capabilities.contracts import CapabilityInvocationRequest
 from wax.identity.repository import PrincipalRepository
 from wax.intelligence.adapters.mock_provider import MockLLMProvider
-from wax.intelligence.contracts import LLMRequest
 from wax.intelligence.service import IntelligenceService
 from wax.runtime.bridge.contracts import InterfaceKind, RuntimeRequest
 from wax.runtime.bridge.service import RuntimeBridge
 from wax.runtime.services import RuntimeServices
-from wax.runtime.vault import seed_builtin_connectors
 from wax.state.engine import db_session, dispose_engine, init_engine
 from wax.state.models import Base
 
@@ -40,33 +38,6 @@ async def fresh_db(test_settings):
         await conn.run_sync(Base.metadata.create_all)
     async with db_session() as s:
         await seed_builtin_roles(s)
-        await seed_builtin_connectors(s)
-        # P0-Taxonomy: seed a test connector definition since the core
-        # no longer hardcodes connector types
-        from ulid import ULID
-
-        from wax.state.credential_models import ConnectorDefinitionRecord
-
-        s.add(
-            ConnectorDefinitionRecord(
-                id=str(ULID()),
-                name="git_host",
-                description="Git hosting service (discovered)",
-                supported_scopes=["repository.read", "repository.write", "repository.admin"],
-                auth_methods=["api_key", "bearer_token"],
-                version="1.0.0",
-            )
-        )
-        s.add(
-            ConnectorDefinitionRecord(
-                id=str(ULID()),
-                name="package_registry",
-                description="Package registry (discovered)",
-                supported_scopes=["package.read", "package.publish"],
-                auth_methods=["api_key", "bearer_token"],
-                version="1.0.0",
-            )
-        )
         await s.commit()
     yield
     await dispose_engine()
@@ -89,100 +60,6 @@ async def _create_principal(*, phone: str = "1234567890") -> str:
         await ensure_principal_role(s, principal.id, "admin")
         await s.commit()
         return principal.id
-
-
-class TestSecretLeakageScanning:
-    """Law 4: Secrets never enter prompts, memory, logs, artifacts, commits."""
-
-    async def test_credential_vault_never_returns_secret_via_capabilities(self, fresh_db, services):
-        """Connect a credential, then verify the secret never appears
-        in any capability output."""
-        principal_id = await _create_principal()
-        secret_marker = "UNIQUE_SECRET_MARKER_abc123xyz"
-
-        async with db_session() as s:
-            invoker = services.invoker(s)
-            # Connect
-            connect_result = await invoker.invoke(
-                CapabilityInvocationRequest(
-                    capability_name="credential.connect",
-                    principal_id=principal_id,
-                    inputs={
-                        "connector": "git_host",
-                        "secret": secret_marker,
-                        "scopes": ["repository.read"],
-                    },
-                )
-            )
-            await s.commit()
-            assert connect_result.outcome == "success"
-
-            # List — should NOT contain the secret
-            list_result = await invoker.invoke(
-                CapabilityInvocationRequest(
-                    capability_name="credential.list",
-                    principal_id=principal_id,
-                    inputs={},
-                )
-            )
-            await s.commit()
-            assert secret_marker not in str(list_result.outputs)
-
-    async def test_secret_not_in_llm_messages_during_reentry(self, fresh_db, services):
-        """The vault's secret must never appear in LLM messages during
-        a re-entry continuation."""
-        principal_id = await _create_principal()
-        secret_marker = "VAULT_SECRET_DO_NOT_LEAK"
-
-        # Connect a credential
-        async with db_session() as s:
-            invoker = services.invoker(s)
-            await invoker.invoke(
-                CapabilityInvocationRequest(
-                    capability_name="credential.connect",
-                    principal_id=principal_id,
-                    inputs={
-                        "connector": "git_host",
-                        "secret": secret_marker,
-                        "scopes": ["repository.read"],
-                    },
-                )
-            )
-            await s.commit()
-
-        # Capture LLM messages
-        intel = IntelligenceService(MockLLMProvider(scripted_tool_calls=[[]]))
-        captured: list = []
-        original_complete = intel._provider.complete
-
-        async def _capturing(req: LLMRequest):
-            captured.append(req.messages)
-            return await original_complete(req)
-
-        intel._provider.complete = _capturing
-        bridge = RuntimeBridge(intelligence=intel, services=services)
-        services.reentry_callback = bridge.run_reentry
-
-        # Send a message + schedule a re-entry
-        async with db_session() as s:
-            await bridge.process(
-                s,
-                RuntimeRequest(
-                    interface_kind=InterfaceKind.WHATSAPP,
-                    interface_message_id="msg-secret-test",
-                    sender_interface_id="1234567890",
-                    sender_display_name="Test",
-                    text="test",
-                    received_at=datetime.now(UTC),
-                ),
-            )
-            await s.commit()
-
-        # Verify the secret never appears in LLM messages
-        for messages in captured:
-            for m in messages:
-                content = m.content or ""
-                assert secret_marker not in content, "SECRET LEAKED into LLM message"
 
 
 class TestPromptInjectionBoundary:
@@ -266,22 +143,22 @@ class TestPromptInjectionBoundary:
             )
             await s.commit()
 
-        # No credential was registered via the vault (the only legitimate path)
-        from wax.state.credential_models import PrincipalConnectionRecord
+        # No approval was created: prompt injection must not grant authority.
+        from wax.state.approval_models import PendingApprovalRecord
 
         async with db_session() as s:
-            connections = (
+            approvals = (
                 (
                     await s.execute(
-                        select(PrincipalConnectionRecord).where(
-                            PrincipalConnectionRecord.principal_id == principal_id
+                        select(PendingApprovalRecord).where(
+                            PendingApprovalRecord.principal_id == principal_id
                         )
                     )
                 )
                 .scalars()
                 .all()
             )
-            assert len(connections) == 0, "Chat-injected credential was registered"
+            assert len(approvals) == 0, "Chat-injected prompt created an approval"
 
 
 class TestWorkspaceEscapePrevention:
@@ -319,35 +196,8 @@ class TestWorkspaceEscapePrevention:
         # The file doesn't exist at the traversed path (or the path is rejected)
         assert result.outcome == "failure"
 
-    async def test_terminal_session_rejects_absolute_working_dir(self, fresh_db, services):
-        """An absolute path for working_dir must be rejected."""
-        principal_id = await _create_principal()
-        async with db_session() as s:
-            invoker = services.invoker(s)
-            # Request an environment first
-            env_result = await invoker.invoke(
-                CapabilityInvocationRequest(
-                    capability_name="environment.request",
-                    principal_id=principal_id,
-                    inputs={"purpose": "escape test"},
-                )
-            )
-            await s.commit()
-            env_id = env_result.outputs["environment_id"]
-
-        async with db_session() as s:
-            invoker = services.invoker(s)
-            result = await invoker.invoke(
-                CapabilityInvocationRequest(
-                    capability_name="terminal.session.open",
-                    principal_id=principal_id,
-                    inputs={
-                        "environment_id": env_id,
-                        "working_dir": "/etc",
-                    },
-                )
-            )
-            await s.commit()
-
-        assert result.outcome == "failure"
-        assert "workspace-relative" in (result.error or "")
+    # test_terminal_session_rejects_absolute_working_dir removed:
+    # environment.request + terminal.session.open capabilities were
+    # removed during cleanup (directive §15, §22). Path-traversal
+    # protection for the surviving artifact.capture capability is
+    # covered by test_artifact_capture_rejects_path_traversal above.

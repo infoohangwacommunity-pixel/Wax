@@ -2,7 +2,7 @@
 
 Production reliability is mandatory (Directive §56, §143, §144):
 - retries with exponential backoff + jitter (no retry storms)
-- dead-letter handling for terminal failures
+- terminal-failure audit recording (via observability.audit)
 - circuit breakers for failing dependencies
 - webhook idempotency (already in Phase R bridge)
 - queue recovery + restart safety
@@ -10,7 +10,7 @@ Production reliability is mandatory (Directive §56, §143, §144):
 INVARIANTS:
 - Retries are bounded (max attempts, max total time)
 - Retry storms are impossible (jitter + circuit breakers)
-- Failed operations are recorded (audit + dead-letter)
+- Failed operations are recorded in the audit ledger
 - The runtime never silently swallows failures (Directive §142)
 """
 
@@ -18,10 +18,6 @@ from wax.reliability.circuit_breaker import (
     CircuitBreaker,
     CircuitOpenError,
     CircuitState,
-)
-from wax.reliability.dead_letter import (
-    DeadLetterEntry,
-    DeadLetterRepository,
 )
 from wax.reliability.retry import (
     RetryConfig,
@@ -33,8 +29,6 @@ __all__ = [
     "CircuitBreaker",
     "CircuitOpenError",
     "CircuitState",
-    "DeadLetterEntry",
-    "DeadLetterRepository",
     "RetryConfig",
     "RetryExhaustedError",
     "retry_with_backoff",

@@ -267,7 +267,6 @@ class TestFailureSemantics:
         from collections.abc import AsyncIterator
 
         from wax.intelligence.contracts import LLMRequest, LLMResponse, ProviderKind
-        from wax.reliability.dead_letter import DeadLetterEntry
 
         class FailingProvider:
             @property
@@ -301,13 +300,10 @@ class TestFailureSemantics:
                     )
                 )
             ).scalar_one()
-            letters = list((await session.execute(select(DeadLetterEntry))).scalars())
+            # Directive §13: dead_letter table removed; audit ledger is the surviving record
 
         assert record.outcome == "dead"
-        assert len(letters) == 1
-        assert letters[0].kind == "bridge.message"
-        assert letters[0].error_type == "RuntimeError"
-        assert letters[0].attempts >= 2
+        # Directive §13: dead_letter table removed; audit ledger is the surviving record of terminal failure.
 
         # Dead is terminal: redelivery returns DUPLICATE (no re-execution).
         async with db_session() as session:

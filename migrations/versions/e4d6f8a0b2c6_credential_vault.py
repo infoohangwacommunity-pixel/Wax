@@ -75,9 +75,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_grants_principal", "credential_grants", ["principal_id"])
     op.create_index("ix_grants_connection", "credential_grants", ["connection_id"])
-    op.create_index(
-        "ix_grants_status_expires", "credential_grants", ["status", "expires_at"]
-    )
+    op.create_index("ix_grants_status_expires", "credential_grants", ["status", "expires_at"])
 
     op.create_table(
         "credential_events",

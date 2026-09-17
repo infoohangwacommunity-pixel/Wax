@@ -102,20 +102,12 @@ class TestToolCallingLoop:
         assert capability_steps[0].status == "succeeded"
         assert capability_steps[0].outputs == {"echo": {"message": "ping"}}
 
-        # The agency gate evaluated and audited the decision.
+        # Directive §10 simplify: the agency layer was removed during
+        # cleanup. The approval gate now uses descriptor.is_destructive
+        # directly. For a non-destructive capability like echo, no
+        # agency.decision audit event is created; the authority check
+        # below is the surviving audit record.
         from wax.state.audit_models import AuditEvent
-
-        async with db_session() as session:
-            decisions = list(
-                (
-                    await session.execute(
-                        select(AuditEvent).where(AuditEvent.event_kind == "agency.decision")
-                    )
-                ).scalars()
-            )
-        assert len(decisions) == 1
-        assert decisions[0].actor_kind == "ai"
-        assert decisions[0].payload["capability"] == "echo"
 
         # Authority checked the principal's permission.
         async with db_session() as session:

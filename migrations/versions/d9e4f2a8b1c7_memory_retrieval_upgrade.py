@@ -22,15 +22,15 @@ the split).
 downgrade removes exactly what was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d9e4f2a8b1c7"
-down_revision: Union[str, None] = "f8d3b7a9c1e4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "f8d3b7a9c1e4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _INDEX_NAME = "ix_memory_records_search_vector"
 _COLUMN_DDL = (

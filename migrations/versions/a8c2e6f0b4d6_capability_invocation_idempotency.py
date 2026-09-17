@@ -22,16 +22,16 @@ over and re-execute. The ledger is append-only evidence.
 downgrade drops exactly the table that was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "a8c2e6f0b4d6"
-down_revision: Union[str, None] = "f2b4d6a8c0e2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "f2b4d6a8c0e2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -65,9 +65,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_capability_invocations_claim_expiry", table_name="capability_invocations"
-    )
+    op.drop_index("ix_capability_invocations_claim_expiry", table_name="capability_invocations")
     op.drop_index(
         "uq_capability_invocations_principal_capability_key",
         table_name="capability_invocations",

@@ -145,7 +145,7 @@ class TestExecutionSteps:
             repo = ExecutionRepository(session)
             execution = await repo.create(
                 principal_id=principal_id,
-                kind=ExecutionKind.AGENT_LOOP,
+                kind=ExecutionKind.SINGLE_TURN,
                 objective="multi-step test",
             )
             await session.commit()
@@ -165,7 +165,7 @@ class TestExecutionSteps:
         async with db_session() as session:
             repo = ExecutionRepository(session)
             execution = await repo.create(
-                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="test"
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="test"
             )
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 1})
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 2})
@@ -184,7 +184,7 @@ class TestExecutionSteps:
         async with db_session() as session:
             repo = ExecutionRepository(session)
             execution = await repo.create(
-                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="resume test"
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="resume test"
             )
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 1})
             await repo.record_step(execution.id, kind="model_call", outputs={"step": 2})
@@ -213,7 +213,7 @@ class TestExecutionResumability:
             repo = ExecutionRepository(session)
             execution = await repo.create(
                 principal_id=principal_id,
-                kind=ExecutionKind.AGENT_LOOP,
+                kind=ExecutionKind.SINGLE_TURN,
                 objective="long-running objective",
             )
             await repo.start(execution.id)
@@ -247,7 +247,7 @@ class TestExecutionResumability:
         async with db_session() as session:
             repo = ExecutionRepository(session)
             execution = await repo.create(
-                principal_id=principal_id, kind=ExecutionKind.AGENT_LOOP, objective="retry test"
+                principal_id=principal_id, kind=ExecutionKind.SINGLE_TURN, objective="retry test"
             )
             await repo.start(execution.id)
             await repo.fail(execution.id, error="temporary outage")

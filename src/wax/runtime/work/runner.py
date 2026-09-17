@@ -154,7 +154,6 @@ class WorkRunner:
 
     async def run_once(self) -> int:
         """Claim and process one batch. Returns the number of items run."""
-        from wax.reliability.dead_letter import DeadLetterRepository
         from wax.runtime.work.signals import SignalRepository
         from wax.state.engine import db_session
 
@@ -177,15 +176,6 @@ class WorkRunner:
                 # failure for the objective if nothing else is pending.
                 await sync_failure_for_work(session, item)
             for item in batch.reclaim_dead:
-                await DeadLetterRepository(session).record(
-                    kind=f"work.{item.kind}",
-                    principal_id=item.principal_id,
-                    execution_id=item.execution_id,
-                    error_type="LeaseExhausted",
-                    error_message=item.last_error or "lease expired; attempts exhausted",
-                    attempts=item.attempts,
-                    payload=item.payload,
-                )
                 await SignalRepository(session).emit(
                     f"work.dead:{item.id}",
                     payload={
@@ -303,7 +293,6 @@ class WorkRunner:
                 heartbeat.cancel()
 
     async def _fail_item(self, item: WorkItemRecord, error: Exception) -> None:
-        from wax.reliability.dead_letter import DeadLetterRepository
         from wax.runtime.work.signals import SignalRepository
         from wax.state.engine import db_session
 
@@ -322,15 +311,6 @@ class WorkRunner:
                     await session.commit()
                     return
                 if status == "dead":
-                    await DeadLetterRepository(session).record(
-                        kind=f"work.{item.kind}",
-                        principal_id=item.principal_id,
-                        execution_id=item.execution_id,
-                        error_type=type(error).__name__,
-                        error_message=str(error)[:5000],
-                        attempts=item.attempts,
-                        payload=item.payload,
-                    )
                     # Dead is terminal too — announce it so dependents can
                     # react honestly (retry, compensate, notify the human).
                     await SignalRepository(session).emit(

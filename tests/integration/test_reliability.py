@@ -9,13 +9,12 @@ from wax.reliability.circuit_breaker import (
     CircuitOpenError,
     CircuitState,
 )
-from wax.reliability.dead_letter import DeadLetterRepository
 from wax.reliability.retry import (
     RetryConfig,
     RetryExhaustedError,
     retry_with_backoff,
 )
-from wax.state.engine import db_session, dispose_engine, init_engine
+from wax.state.engine import dispose_engine, init_engine
 from wax.state.models import Base
 
 
@@ -217,67 +216,3 @@ class TestCircuitBreaker:
 # ===========================================================================
 # Dead-letter
 # ===========================================================================
-
-
-class TestDeadLetterRepository:
-    async def test_record_creates_entry(self, fresh_db) -> None:
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            entry = await repo.record(
-                kind="llm_complete",
-                error_type="RuntimeError",
-                error_message="LLM timed out",
-                attempts=3,
-            )
-            await session.commit()
-
-            assert entry.id is not None
-            assert entry.kind == "llm_complete"
-            assert entry.error_type == "RuntimeError"
-            assert entry.attempts == 3
-            assert entry.reprocessed is False
-
-    async def test_list_recent_returns_unreprocessed(self, fresh_db) -> None:
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            await repo.record(
-                kind="llm_complete",
-                error_type="RuntimeError",
-                error_message="fail 1",
-            )
-            await repo.record(
-                kind="capability_invoke",
-                error_type="TimeoutError",
-                error_message="fail 2",
-            )
-            await session.commit()
-
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            entries = await repo.list_recent(limit=10)
-
-        assert len(entries) == 2
-        # Most recent first
-        assert entries[0].error_message in {"fail 1", "fail 2"}
-
-    async def test_mark_reprocessed_excludes_from_list(self, fresh_db) -> None:
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            entry = await repo.record(
-                kind="llm_complete",
-                error_type="RuntimeError",
-                error_message="fail",
-            )
-            await session.commit()
-            entry_id = entry.id
-
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            ok = await repo.mark_reprocessed(entry_id)
-            await session.commit()
-            assert ok
-
-        async with db_session() as session:
-            repo = DeadLetterRepository(session)
-            entries = await repo.list_recent()
-        assert all(e.id != entry_id for e in entries)

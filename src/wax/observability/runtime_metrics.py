@@ -115,7 +115,7 @@ class RuntimeMetrics:
         self._registry.counter("code_executions_total", isolation=isolation).inc()
 
     def terminal_executed(self, *, isolation: str) -> None:
-        """A terminal.execute ran under the given isolation kind (P0-Terminal)."""
+        """A code-execution capability ran under the given isolation kind."""
         self._registry.counter("terminal_executions_total", isolation=isolation).inc()
 
     # --- Control plane (ADR-0048 dashboard) ----------------------------------

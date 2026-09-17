@@ -281,7 +281,6 @@ class TestWorkRetrySemantics:
     ) -> None:
         """Durable work must not fail silently: bounded retries, then dead
         + dead-letter row — the honest terminal state."""
-        from wax.reliability.dead_letter import DeadLetterEntry
 
         call_count = 0
 
@@ -341,17 +340,8 @@ class TestWorkRetrySemantics:
         assert "transient" in (item.last_error or "")
 
         async with db_session() as session:
-            letters = (
-                (
-                    await session.execute(
-                        select(DeadLetterEntry).where(DeadLetterEntry.kind == "work.capability")
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        assert len(letters) == 1
-        assert letters[0].attempts == 2
+            # Directive §13: dead_letter table removed; audit ledger is the surviving record
+            pass
 
     async def test_expired_lease_is_reclaimed_and_counts_as_attempt(
         self, fresh_db, services
@@ -873,7 +863,6 @@ class TestEventWakeConditions:
         """A condition that never fires and has a deadline dies with an
         honest 'condition not met' — not silently, not fabricated. This is
         a lifecycle outcome, not an execution failure: no dead-letter row."""
-        from wax.reliability.dead_letter import DeadLetterRepository
 
         pid = await self._principal(services)
         work_id = await self._schedule(
@@ -887,11 +876,10 @@ class TestEventWakeConditions:
         assert "condition not met" in (item.last_error or "")
 
         # A lifecycle outcome, not an execution failure: no dead-letter row.
-        async with db_session() as session:
-            rows = await DeadLetterRepository(session).list_recent(limit=10)
-        assert all(
-            letter.payload is None or letter.payload.get("work_id") != work_id for letter in rows
-        )
+        # Directive §13: dead_letter table removed; audit ledger is the
+        # surviving record. This test now only verifies the item reached
+        # terminal "dead" status with the expected error message (above).
+        pass
 
     async def test_dependency_chain_via_work_succeeded_signal(
         self, fresh_db, services, runner

@@ -13,16 +13,16 @@ memory / event state (mission §100).
 downgrade drops exactly the table that was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "e1a3c5e7b9d2"
-down_revision: Union[str, None] = "d6f8a2b4c9e1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "d6f8a2b4c9e1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -41,15 +41,11 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["principal_id"], ["principals.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["principal_id"], ["principals.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_artifacts_principal", "artifacts", ["principal_id"])
-    op.create_index(
-        "ix_artifacts_workspace", "artifacts", ["workspace_resource_id"]
-    )
+    op.create_index("ix_artifacts_workspace", "artifacts", ["workspace_resource_id"])
 
 
 def downgrade() -> None:

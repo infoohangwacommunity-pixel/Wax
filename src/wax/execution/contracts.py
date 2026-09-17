@@ -28,15 +28,12 @@ class StepStatus(StrEnum):
 class ExecutionKind(StrEnum):
     """Universal execution patterns. NOT domain-specific.
 
-    A future 'agent_loop' execution might be used for an education objective
-    OR a research objective OR a software-development objective — the
-    execution kind does not encode the domain.
+    Only ``SINGLE_TURN`` is currently produced by the runtime. Other
+    kinds (agent loops, long-running tasks, background workflows) are
+    future work and intentionally not present in this enum.
     """
 
     SINGLE_TURN = "single_turn"
-    AGENT_LOOP = "agent_loop"
-    LONG_RUNNING_TASK = "long_running_task"
-    BACKGROUND_WORKFLOW = "background_workflow"
 
 
 class Execution(BaseModel):

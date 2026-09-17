@@ -18,16 +18,16 @@ runtime_signals is the runtime's append-only event ledger (interface
 messages processed, work terminal states, gated AI emissions).
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "e5c2a9f47b61"
-down_revision: Union[str, None] = "c3a95f1e8b21"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "c3a95f1e8b21"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -17,16 +17,16 @@ No destructive change; new columns are nullable, the new table starts
 empty. downgrade removes exactly what was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d6f8a2b4c9e1"
-down_revision: Union[str, None] = "c4d6e8f0a2b3"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "c4d6e8f0a2b3"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -40,26 +40,16 @@ def upgrade() -> None:
         sa.Column("created_by_execution_id", sa.String(length=26), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["from_memory_id"], ["memory_records.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["to_memory_id"], ["memory_records.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["principal_id"], ["principals.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["from_memory_id"], ["memory_records.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["to_memory_id"], ["memory_records.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["principal_id"], ["principals.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "from_memory_id", "to_memory_id", "kind", name="uq_memlink_edge"
-        ),
+        sa.UniqueConstraint("from_memory_id", "to_memory_id", "kind", name="uq_memlink_edge"),
     )
     op.create_index("ix_memlinks_from", "memory_links", ["from_memory_id"])
     op.create_index("ix_memlinks_to", "memory_links", ["to_memory_id"])
 
-    op.add_column(
-        "memory_records", sa.Column("importance", sa.Float(), nullable=True)
-    )
+    op.add_column("memory_records", sa.Column("importance", sa.Float(), nullable=True))
     op.add_column(
         "memory_records",
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=True),

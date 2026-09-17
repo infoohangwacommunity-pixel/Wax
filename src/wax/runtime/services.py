@@ -1,15 +1,9 @@
 """RuntimeServices — the process-wide service container.
 
-The forensic audit (Section 33) located the boundary of the wired system at
-a single comment in the lifespan: "TODO Phase G: initialize capability
-registry here". Everything downstream — capabilities, authority, agency,
-resource budgets, security enforcement, metrics — existed as tested code but
-was never constructed by the running application.
-
-This container is that missing construction point. It builds the process
-singletons ONCE at startup and hands them to the bridge, the webhook layer,
-and the background worker. Per-session collaborators (AuthorizationService,
-AgencyService, CapabilityInvoker) are constructed on demand with a session.
+This container is the construction point for process singletons. It builds
+them ONCE at startup and hands them to the bridge, the webhook layer, and
+the background worker. Per-session collaborators (AuthorizationService,
+CapabilityInvoker) are constructed on demand with a session.
 
 Nothing here knows about domains, education, WhatsApp, or any use case —
 these are operating-system-style mechanisms.
@@ -22,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from wax.agency.service import AgencyService
 from wax.authority.service import AuthorizationService
 from wax.capabilities.built_ins import register_builtins
 from wax.capabilities.invoker import CapabilityInvoker
@@ -31,14 +24,10 @@ from wax.capabilities.runtime_capabilities import register_runtime_capabilities
 from wax.core.config import WaxSettings
 from wax.observability.runtime_metrics import RuntimeMetrics, get_runtime_metrics
 from wax.resources.accountant import ResourceAccountant
-from wax.runtime.authority.broker import AuthorityBroker
 from wax.runtime.blob_store import ContentAddressedBlobStore
-from wax.runtime.connectors.service import ConnectorRuntime
 from wax.runtime.delivery import DeliveryRouter
-from wax.runtime.environment.planner import EnvironmentPlanner
 from wax.runtime.isolation_runtime import RuntimeIsolation
 from wax.runtime.logging import get_logger
-from wax.runtime.vault.service import CredentialVault
 from wax.security.abuse import AbuseDetector
 from wax.security.cost_protection import CostProtector
 from wax.security.input_sanitizer import InputSanitizer
@@ -70,38 +59,19 @@ class RuntimeServices:
     # Mutable slot for the background work runner, set by the lifespan
     # (Phase V). Typed loosely to avoid an import cycle; tests may inspect.
     work_runner: Any | None = field(default=None)
-    # ADR-0034: durable intelligence re-entry callback. Set ONCE by the
-    # composition root (create_app) so the work handler can wake the
-    # intelligence WITHOUT importing the bridge. None means the runtime
-    # was built without re-entry wiring (e.g. a stripped-down test
-    # container) — the intelligence_handler fails honestly in that case.
+    # Durable intelligence re-entry callback. Set ONCE by the composition
+    # root (create_app) so the work handler can wake the intelligence
+    # WITHOUT importing the bridge. None means the runtime was built
+    # without re-entry wiring (e.g. a stripped-down test container) —
+    # the intelligence_handler fails honestly in that case.
     reentry_callback: ReentryCallback | None = field(default=None)
-    # ADR-0038 (Phase 5): environment planner. Resolves an
-    # EnvironmentRequirement into a concrete plan + lease. The
-    # intelligence calls the `environment.request` capability, which
-    # delegates to this planner.
-    environment_planner: EnvironmentPlanner | None = field(default=None)
-    # ADR-0040 (Phase 7): credential vault. Provider-neutral secret
-    # storage. The vault NEVER exposes secrets to the model — only
-    # opaque connection_ids and grant handles.
-    credential_vault: CredentialVault | None = field(default=None)
-    # ADR-0041 (Phase 8): connector runtime. Resource-type-based
-    # discovery + resolution. The intelligence discovers services
-    # (GitHub, GitLab, npm, PyPI, Railway, etc.) through the
-    # environment — no architectural change when a new platform appears.
-    connector_runtime: ConnectorRuntime | None = field(default=None)
-    # ADR-0048 (P0-Authority): authority broker. The SOLE path through
-    # which the intelligence requests external authority. The model
-    # NEVER supplies a raw secret — it requests a handoff; the user
-    # completes it through the secure control plane.
-    authority_broker: AuthorityBroker | None = field(default=None)
-    # P0-Workspace: content-addressed blob store. workspace.snapshot
-    # persists file bytes here so workspace.restore works even after the
-    # source workspace has been released and deleted.
+    # Content-addressed blob store. workspace.snapshot persists file
+    # bytes here so workspace.restore works even after the source
+    # workspace has been released and deleted.
     blob_store: ContentAddressedBlobStore | None = field(default=None)
-    # P0-Terminal: shared isolation decision. code.run and terminal.execute
-    # BOTH route through this — the isolation grade is a runtime decision
-    # from configuration, never the caller's, never the model's.
+    # Shared isolation decision. code.run routes through this — the
+    # isolation grade is a runtime decision from configuration, never
+    # the caller's, never the model's.
     isolation_runtime: RuntimeIsolation | None = field(default=None)
 
     @classmethod
@@ -118,44 +88,23 @@ class RuntimeServices:
         registry = CapabilityRegistry()
         register_builtins(registry)
 
-        # P0-10: Use DB-backed rate limiter + cost protector for multi-instance
-        # correctness when the database is PostgreSQL. For SQLite/dev, keep
-        # the in-memory versions (they're process-local but that's fine for
-        # single-process dev mode).
-        db_url = getattr(settings, "database_url", "") or ""
-        if db_url.startswith("postgresql"):
-            rate_limiter_instance = None  # DB-backed, checked per-session
-            cost_protector_instance = None  # DB-backed, checked per-session
-            # P0-Shared-Fix: Do NOT log "shared_state_enabled" until the
-            # DB-backed implementations are actually constructed and wired.
-            # The current code falls back to RateLimiter()/CostProtector()
-            # even for PostgreSQL, so logging "enabled" would be misleading.
-            # log.info("runtime.shared_state_enabled", backend="postgresql")
-            log.warning(
-                "runtime.shared_state_partial",
-                detail="PostgreSQL detected but DB-backed rate limiter / "
-                "cost protector are not yet wired as the active path. "
-                "Process-local implementations are in use. "
-                "Multi-instance correctness is NOT guaranteed.",
-            )
-        else:
-            rate_limiter_instance = RateLimiter()
-            cost_protector_instance = CostProtector()
+        # Process-local rate limiter + cost protector. WAX is currently
+        # deployed as a single instance, so process-local enforcement is
+        # correct. If multi-instance deployment becomes a real future
+        # requirement, a shared-state backend can be introduced then.
+        rate_limiter_instance = RateLimiter()
+        cost_protector_instance = CostProtector()
 
         services = cls(
             settings=settings,
             metrics=get_runtime_metrics(),
-            rate_limiter=rate_limiter_instance or RateLimiter(),
-            cost_protector=cost_protector_instance or CostProtector(),
+            rate_limiter=rate_limiter_instance,
+            cost_protector=cost_protector_instance,
             abuse_detector=AbuseDetector(),
             input_sanitizer=InputSanitizer(),
             resource_accountant=ResourceAccountant(),
             capability_registry=registry,
             delivery=DeliveryRouter(),
-            environment_planner=EnvironmentPlanner(settings),
-            credential_vault=CredentialVault(settings),
-            connector_runtime=ConnectorRuntime(settings),
-            authority_broker=AuthorityBroker(),
             blob_store=ContentAddressedBlobStore(settings.snapshot_blob_root),
             isolation_runtime=RuntimeIsolation(settings),
         )
@@ -163,12 +112,6 @@ class RuntimeServices:
         # (work.schedule / work.cancel / work.list / message.send) —
         # registered after construction so they close over this container.
         register_runtime_capabilities(registry, services)
-        # P0-Browser: browser handoff capability (browser.handoff) —
-        # a human completes a browser step; the runtime stores a
-        # browser_session_reference, never a raw credential in the model.
-        from wax.capabilities.browser_capabilities import register_browser_capabilities
-
-        register_browser_capabilities(registry, services)
         log.info(
             "runtime.services.built",
             capabilities=len(registry),
@@ -181,9 +124,6 @@ class RuntimeServices:
 
     def authority(self, session: AsyncSession) -> AuthorizationService:
         return AuthorizationService(session)
-
-    def agency(self, session: AsyncSession) -> AgencyService:
-        return AgencyService(session, AuthorizationService(session))
 
     def invoker(self, session: AsyncSession) -> CapabilityInvoker:
         """The SOLE enforcement point for AI-requested effects (INV-04).

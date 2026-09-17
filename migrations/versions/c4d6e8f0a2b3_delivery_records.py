@@ -12,16 +12,16 @@ maintenance loop retries (mission §55).
 downgrade drops exactly the table that was added.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c4d6e8f0a2b3"
-down_revision: Union[str, None] = "b9c1d3e5f7a2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b9c1d3e5f7a2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -42,9 +42,7 @@ def upgrade() -> None:
         sa.Column("execution_id", sa.String(length=26), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["principal_id"], ["principals.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["principal_id"], ["principals.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
@@ -52,14 +50,10 @@ def upgrade() -> None:
         "delivery_records",
         ["status", "next_attempt_at"],
     )
-    op.create_index(
-        "ix_delivery_principal", "delivery_records", ["principal_id"]
-    )
+    op.create_index("ix_delivery_principal", "delivery_records", ["principal_id"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_delivery_principal", table_name="delivery_records")
-    op.drop_index(
-        "ix_delivery_status_next_attempt", table_name="delivery_records"
-    )
+    op.drop_index("ix_delivery_status_next_attempt", table_name="delivery_records")
     op.drop_table("delivery_records")

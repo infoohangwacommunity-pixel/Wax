@@ -24,30 +24,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Make wax.* importable when running `alembic` from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import wax.reliability.dead_letter
-import wax.state.approval_models
-import wax.state.artifact_models
-import wax.state.audit_models
-import wax.state.authority_models
-import wax.state.bridge_models
-import wax.state.capability_models
-import wax.state.continuity_models
-import wax.state.credential_models
-import wax.state.delivery_models
-import wax.state.environment_models
-import wax.state.execution_models
 
 # Import all model modules here so they register with Base.metadata.
 # As new models are added in wax.state.* subpackages, import them here too.
-import wax.state.identity_models
-import wax.state.memory_models
-import wax.state.objective_models
-import wax.state.provisioning_models
-import wax.state.terminal_models
-import wax.state.workspace_models
-import wax.state.authority_broker_models  # noqa: F401  (ADR-0048 authority broker)
-import wax.runtime.shared_state  # noqa: F401  (ADR-0044 shared state models)
-import wax.state.work_models  # noqa: F401  (Phase R/V durable work)
 from wax.core.config import WaxSettings
 from wax.state.models import Base
 

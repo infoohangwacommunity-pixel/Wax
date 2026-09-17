@@ -4,11 +4,11 @@ The isolation grade — namespace sandbox vs subprocess, per the
 `isolation_backend` setting — is a RUNTIME decision from configuration.
 It is never the caller's, never the model's.
 
-Historically only `code.run` honoured that rule; `terminal.execute`
+Historically only `code.run` honoured that rule; future code-execution capabilities
 spawned a raw `asyncio.create_subprocess_shell` with no sandbox at all,
 bypassing IsolationService entirely. This module is the shared wiring
 point: `RuntimeServices` holds ONE RuntimeIsolation, and every execution
-path (code.run, terminal.execute) resolves its boundary through it.
+path (code.run, and any future code-execution capability) resolves its boundary through it.
 
 Selection is LAZY and CACHED: `IsolationService.select()` probes the
 host (user-namespace availability) and can raise a configuration error;

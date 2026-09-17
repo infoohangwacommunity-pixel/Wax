@@ -97,17 +97,3 @@ class WaxInvariantViolation(WaxError):
     - A model was found to be making authorization decisions
     - A capability silently redefined its own authority
     """
-
-
-# ---------------------------------------------------------------------------
-# Not-yet-implemented
-# ---------------------------------------------------------------------------
-
-
-class WaxNotImplementedError(WaxError):
-    """Raised when a feature is designed but not yet implemented.
-
-    Use this instead of `NotImplementedError` so we can distinguish WAX-level
-    "not yet built" from Python-level abstract method gaps. Every raise of
-    this error is a recorded architectural debt.
-    """

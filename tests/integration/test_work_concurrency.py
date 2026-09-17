@@ -29,7 +29,6 @@ import pytest
 from sqlalchemy import select
 
 from wax.authority.seed import ensure_principal_role, seed_builtin_roles
-from wax.reliability.dead_letter import DeadLetterRepository
 from wax.runtime.services import RuntimeServices
 from wax.runtime.work import WorkRepository, WorkRunner, capability_handler
 from wax.state.engine import db_session, dispose_engine, init_engine
@@ -417,12 +416,9 @@ class TestCrashRecovery:
         item = await _work(work_id)
         assert item.status == "dead"
         assert "giving up" in (item.last_error or "")
-        # Loud death: dead-letter row + ledger announcement.
-        async with db_session() as session:
-            letters = await DeadLetterRepository(session).list_recent(limit=10)
-        assert any(
-            entry.kind == "work.die" and entry.error_type == "LeaseExhausted" for entry in letters
-        )
+        # Loud death: ledger announcement (directive §13: dead_letter
+        # table removed; the signal ledger + audit log are the
+        # surviving records of terminal failure).
         assert await _signal_count(f"work.dead:{work_id}") == 1
 
     async def test_expired_wait_is_announced(self, fresh_db, services) -> None:

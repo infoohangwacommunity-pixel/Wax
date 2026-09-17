@@ -42,9 +42,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_terminal_principal", "terminal_sessions", ["principal_id"])
     op.create_index("ix_terminal_env", "terminal_sessions", ["environment_id"])
-    op.create_index(
-        "ix_terminal_status_expires", "terminal_sessions", ["status", "expires_at"]
-    )
+    op.create_index("ix_terminal_status_expires", "terminal_sessions", ["status", "expires_at"])
 
 
 def downgrade() -> None:
