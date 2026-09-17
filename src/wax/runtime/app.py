@@ -119,14 +119,37 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         work_runner.register_handler("intelligence", intelligence_handler)
         services.work_runner = work_runner
         recovered = await work_runner.recover_orphans()
-        if recovered.get("failed_executions"):
+        if recovered.get("failed_executions") or recovered.get("resumed"):
             log.warning("work.startup_recovery", **recovered)
         work_runner.start()
         lifecycle.on_shutdown("work_runner", work_runner.stop())
 
-        # Memory maintenance loop
+        # Fix 6: Resume any executions that were interrupted by a server crash.
+        # The work runner's recover_orphans already handles this via
+        # resume_callback, but we also check for any that fell through the
+        # cracks (e.g. executions with checkpoints that weren't picked up).
         import asyncio
 
+        from sqlalchemy import select as sa_select
+
+        from wax.state.engine import db_session as _db_session
+        from wax.state.execution_models import ExecutionRecord as _ExecRec
+
+        async with _db_session() as session:
+            result = await session.execute(
+                sa_select(_ExecRec)
+                .where(_ExecRec.status == "running")
+                .where(_ExecRec.checkpoint.isnot(None))
+                .limit(10)
+            )
+            interrupted = list(result.scalars().all())
+        if interrupted:
+            log.info("runtime.resuming_interrupted_executions", count=len(interrupted))
+            _resume_tasks: list = []
+            for exec_record in interrupted:
+                _resume_tasks.append(asyncio.create_task(bridge.resume_execution(exec_record.id)))
+
+        # Memory maintenance loop
         from wax.memory.lifecycle import memory_maintenance_loop
         from wax.memory.lifecycle import stop_maintenance as stop_memory_maintenance
 

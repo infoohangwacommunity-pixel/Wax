@@ -24,6 +24,7 @@ it composes it from the environment (that's the open-world philosophy).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -260,34 +261,148 @@ def workspace_path() -> str:
     return os.environ.get("WAX_CURRENT_WORKSPACE", "./")
 
 
-def serve_page(html_content: str, *, purpose: str = "", port: int | None = None) -> str:
-    """Serve a temporary web page and return the URL (Parts 16-17).
+def serve_page(
+    html_content: str,
+    *,
+    purpose: str = "",
+    expires_in_minutes: int = 30,
+    auto_wake: bool = True,
+) -> str:
+    """Serve a temporary interaction page and return the full URL.
 
-    The AI creates an HTML page, starts a local HTTP server, and returns
-    the URL. The student opens the URL, submits (OAuth, upload, secret),
-    and the AI continues. The page is cleaned up when the execution ends.
+    The AI creates an HTML page (form, upload, OAuth, secret input).
+    The runtime hosts it via the main FastAPI app at /i/{token}. The
+    student opens the URL, submits, and the AI continues.
+
+    If auto_wake=True (default), a durable work item is scheduled that
+    waits for the submission signal. When the student submits, the work
+    item wakes the AI with the submission result in its context.
+
+    Returns the full public URL the AI should send to the student.
 
     Example:
         url = serve_page(
             "<html><body><h1>Upload your WAEC result</h1>"
-            "<form action='/upload' method='POST' enctype='multipart/form-data'>"
+            "<form method='POST' enctype='multipart/form-data'>"
             "<input type='file' name='file'><button>Upload</button></form></body></html>",
             purpose="waec_upload",
         )
         # Send `url` to the student via WhatsApp
     """
-    from pathlib import Path
+    from wax.runtime.web_pages import create_session
 
-    from wax.runtime.web_pages import WebPageServer
+    public_url = os.environ.get("WAX_PUBLIC_URL", "http://localhost:8000")
+    principal = current_principal_id()
+    execution = current_execution_id()
 
-    ws = Path(os.environ.get("WAX_CURRENT_WORKSPACE", "./"))
-    server = WebPageServer(workspace=ws)
+    session = create_session(
+        purpose=purpose or "form",
+        principal_id=principal,
+        html_content=html_content,
+        execution_id=execution or None,
+        expires_in_minutes=expires_in_minutes,
+        wake_event=f"interaction.submitted:{'{}'}",  # filled with session_id below
+    )
+    # Fix the wake event with the actual session ID
+    session.wake_event = f"interaction.submitted:{session.session_id}"
 
-    async def _do():
-        return await server.serve_page(html_content, purpose=purpose, port=port)
+    # Auto-wake: schedule a work item that waits for the submission signal
+    if auto_wake and principal:
+        with contextlib.suppress(Exception):
+            # Auto-wake failure should not break serve_page — the URL still works
+            schedule(
+                prompt=f"The user submitted the {purpose or 'form'} you sent them. Check the result and continue.",
+                observation={
+                    "source": "runtime",
+                    "event": f"interaction.submitted:{session.session_id}",
+                },
+                wake_in_seconds=expires_in_minutes * 60,  # fallback timeout
+                principal_id=principal,
+                execution_id=execution or None,
+            )
 
-    page = _async_run(_do())
-    return page.url
+    return public_url + session.url_path
+
+
+def create_context(
+    *,
+    label: str,
+    state: dict | None = None,
+    summary: str | None = None,
+    aliases: list[str] | None = None,
+    principal_id: str | None = None,
+) -> str:
+    """Create a new persistent context (project, goal, thread of meaning).
+
+    The AI calls this when a student starts something new: "I want to
+    work on my university application." The context persists across
+    conversations and is surfaced automatically when the student
+    mentions it later.
+
+    Returns the context ID.
+    """
+    if principal_id is None:
+        principal_id = current_principal_id()
+    if not principal_id:
+        raise ValueError("principal_id is required")
+
+    from wax.continuity.context_repository import ContextRepository
+    from wax.core.config import WaxSettings
+    from wax.state.engine import db_session, init_engine
+
+    async def _do() -> str:
+        settings = WaxSettings()
+        init_engine(settings)
+        async with db_session() as session:
+            repo = ContextRepository(session)
+            ctx = await repo.create(
+                principal_id=principal_id,
+                label=label,
+                state=state or {},
+                summary=summary,
+                aliases=aliases or [],
+            )
+            await session.commit()
+            return ctx.id
+
+    return _async_run(_do())
+
+
+def update_context(
+    *,
+    context_id: str,
+    summary: str | None = None,
+    state: dict | None = None,
+    status: str | None = None,
+) -> bool:
+    """Update a context's summary, state, or status.
+
+    The AI calls this after meaningful progress on a context: "The
+    application was submitted, now waiting for interview." The updated
+    state is surfaced in future conversations automatically.
+
+    Returns True if the update succeeded.
+    """
+    from wax.continuity.context_repository import ContextRepository
+    from wax.core.config import WaxSettings
+    from wax.state.engine import db_session, init_engine
+
+    async def _do() -> bool:
+        settings = WaxSettings()
+        init_engine(settings)
+        async with db_session() as session:
+            repo = ContextRepository(session)
+            ok = False
+            if status:
+                ok = await repo.set_status(context_id, status)
+            if summary is not None:
+                ok = await repo.update_summary(context_id, summary)
+            if state is not None:
+                ok = await repo.update_state(context_id, state)
+            await session.commit()
+            return ok
+
+    return _async_run(_do())
 
 
 def current_principal_id() -> str:
@@ -301,6 +416,7 @@ def current_execution_id() -> str:
 
 
 __all__ = [
+    "create_context",
     "current_execution_id",
     "current_principal_id",
     "forget",
@@ -308,5 +424,6 @@ __all__ = [
     "remember",
     "schedule",
     "serve_page",
+    "update_context",
     "workspace_path",
 ]

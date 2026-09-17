@@ -63,6 +63,57 @@ Output ONLY the JSON array, no other text.
 """
 
 
+# Words that are too common to be meaningful for similarity comparison.
+_STOP_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "was",
+        "to",
+        "and",
+        "of",
+        "in",
+        "for",
+        "user",
+        "student",
+        "said",
+        "asked",
+        "has",
+        "have",
+        "with",
+        "that",
+        "this",
+        "from",
+        "are",
+        "be",
+        "been",
+        "will",
+        "would",
+        "could",
+        "should",
+    }
+)
+
+
+def _texts_similar(a: str, b: str, threshold: float = 0.6) -> bool:
+    """Check if two texts are saying the same thing via word overlap.
+
+    "Student's name is David" and "The user's name is David" — same fact,
+    different wording. Word overlap catches this: if 60%+ of the
+    significant words in the shorter text appear in the longer text,
+    they're the same fact.
+    """
+    words_a = {w.lower() for w in a.split() if w.lower() not in _STOP_WORDS and len(w) > 2}
+    words_b = {w.lower() for w in b.split() if w.lower() not in _STOP_WORDS and len(w) > 2}
+    if not words_a or not words_b:
+        return False
+    overlap = len(words_a & words_b)
+    smaller = min(len(words_a), len(words_b))
+    return (overlap / smaller) >= threshold
+
+
 async def extract_memories(
     *,
     session: AsyncSession,
@@ -159,8 +210,11 @@ async def extract_memories(
                             else {"text": str(ex.content)}
                         )
                         ex_text = ex_content.get("text", "")
-                        # If the existing memory is very similar (same first 50 chars), strengthen it
-                        if ex_text[:50].lower() == content_text[:50].lower():
+                        # Fix 9: Use word-overlap similarity instead of exact first-50-chars.
+                        # "Student's name is David" and "The user's name is David" are the
+                        # same fact but have different first 50 chars. Word overlap catches
+                        # this: if 60%+ of significant words match, it's the same fact.
+                        if _texts_similar(ex_text, content_text):
                             await repo.strengthen(ex.id)
                             log.info(
                                 "memory.strengthened",

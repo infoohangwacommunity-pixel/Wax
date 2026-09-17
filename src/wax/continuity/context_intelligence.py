@@ -158,6 +158,20 @@ async def resolve_context(
     """
     ctx_repo = ContextRepository(session)
 
+    # Fix 8: Skip context resolution for trivial messages — no LLM call needed.
+    # Short messages like "ok", "thanks", "yes", "send it" don't need context
+    # resolution. This saves one LLM call for every trivial interaction.
+    if len(user_message.strip()) < 15:
+        packet = ContextPacket(
+            resolution="general",
+            confidence=1.0,
+            evidence="message too short for context resolution",
+        )
+        packet.relevant_memories = await _fetch_relevant_memories(
+            session, principal_id, user_message, context_id=None
+        )
+        return packet
+
     # 1. Retrieve candidate contexts
     candidates = await ctx_repo.resolve_by_keyword(principal_id, user_message, limit=5)
     active_contexts = await ctx_repo.list_active(principal_id, limit=10)
