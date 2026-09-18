@@ -33,30 +33,79 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _is_postgres() -> bool:
+    """Dialect guard. SQLite (test suite / local dev) does not support
+    `ALTER TABLE ... DROP CONSTRAINT IF EXISTS` — SQLite has no named
+    constraints, only inline `REFERENCES` clauses that are advisory by
+    default. The DROP CONSTRAINT statements are PG-only.
+    """
+    return op.get_bind().dialect.name == "postgresql"
+
+
+def _drop_column_if_exists(table_name: str, column_name: str) -> None:
+    """Drop a column if it exists, portable across PostgreSQL and SQLite.
+
+    PostgreSQL supports `ALTER TABLE ... DROP COLUMN IF EXISTS` directly
+    and ENFORCES foreign-key constraints, so dead FK columns must be
+    dropped before the parent table can be dropped.
+
+    SQLite (>= 3.35) supports `ALTER TABLE ... DROP COLUMN` but:
+      - does NOT support the `IF EXISTS` clause (we introspect first)
+      - refuses to drop a column referenced by an inline `REFERENCES`
+        clause in the table's stored schema text, even with
+        `PRAGMA foreign_keys=OFF`
+
+    SQLite's foreign-key constraints are advisory by default (the
+    runtime does not enable `PRAGMA foreign_keys=ON`), so a dead
+    `objective_id` column pointing at a dropped `objectives` table is
+    harmless on SQLite — the runtime never reads or writes it. We
+    therefore skip the column drop entirely on SQLite and only drop
+    columns on PostgreSQL, where FK enforcement makes it mandatory.
+    """
+    if not _is_postgres():
+        # SQLite: dead FK columns are harmless (advisory FKs, never read).
+        # Skipping avoids the "unknown column in foreign key definition"
+        # error that SQLite raises when DROP COLUMN trips on the inline
+        # REFERENCES clause stored in sqlite_schema.
+        return
+
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+    if column_name not in existing_cols:
+        return
+
+    op.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}")
+
+
 def upgrade() -> None:
     # PostgreSQL has FK constraints that prevent dropping parent tables
     # while children still reference them. We must drop ALL FK constraints
     # and columns that reference the tables we're about to drop, THEN drop
     # the tables.
+    #
+    # SQLite does not support `DROP CONSTRAINT IF EXISTS` (and its FK
+    # constraints are advisory only), so we skip the constraint drops
+    # entirely on SQLite and go straight to dropping columns + tables.
+    # PostgreSQL needs the explicit constraint drops first.
 
-    # 1. Drop the FK constraint: memory_records.objective_id -> objectives.id
-    op.execute("ALTER TABLE memory_records DROP CONSTRAINT IF EXISTS fk_memory_objective")
-    op.execute("DROP INDEX IF EXISTS ix_memory_objective")
-    # Also drop the objective_id COLUMN from memory_records — it's dead.
-    # This removes any remaining FK dependency.
-    op.execute("ALTER TABLE memory_records DROP COLUMN IF EXISTS objective_id")
+    if _is_postgres():
+        # 1. Drop the FK constraint: memory_records.objective_id -> objectives.id
+        op.execute("ALTER TABLE memory_records DROP CONSTRAINT IF EXISTS fk_memory_objective")
+        op.execute("DROP INDEX IF EXISTS ix_memory_objective")
+        # 2. Drop the FK constraint: conversations.objective_id -> objectives.id
+        op.execute(
+            "ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey"
+        )
+        # 3. Drop the FK constraint: executions.objective_id -> objectives.id
+        op.execute("ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_objective_id_fkey")
 
-    # 2. Drop the FK constraint: conversations.objective_id -> objectives.id
-    #    (may or may not exist depending on which migrations ran)
-    op.execute(
-        "ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey"
-    )
-    op.execute("ALTER TABLE conversations DROP COLUMN IF EXISTS objective_id")
+    # Drop the dead objective_id columns on both backends. Use introspection
+    # because SQLite doesn't support `DROP COLUMN IF EXISTS` (PG does).
+    _drop_column_if_exists("memory_records", "objective_id")
+    _drop_column_if_exists("conversations", "objective_id")
 
-    # 3. Drop the FK constraint: executions.objective_id -> objectives.id
-    op.execute("ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_objective_id_fkey")
-
-    # 4. Now drop tables — FK constraints are gone, so this will succeed.
+    # 4. Now drop tables — FK constraints (if any) are gone, so this will succeed.
     op.execute("DROP TABLE IF EXISTS objective_executions")
     op.execute("DROP TABLE IF EXISTS objectives")
     op.execute("DROP TABLE IF EXISTS workspace_snapshots")

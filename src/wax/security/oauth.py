@@ -39,6 +39,30 @@ from wax.state.credential_store import CredentialRecord, decrypt_secret, encrypt
 log = get_logger(__name__)
 
 
+def _now_utc() -> datetime:
+    """Timezone-aware UTC now.
+
+    Production (PostgreSQL) preserves tzinfo on ``DateTime(timezone=True)``
+    columns, but SQLite (used by the test suite) strips tzinfo on round-trip.
+    Code that compares a stored ``expires_at`` against the current time
+    must use ``_now_utc()`` and pass the stored value through
+    ``_as_utc()`` to handle both backends.
+    """
+    return datetime.now(UTC)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC.
+
+    - Naive datetimes are *assumed* to be UTC (the only timezone the
+      runtime ever stores in).
+    - Aware datetimes are converted to UTC.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 @dataclass
 class OAuthProvider:
     """Configuration for an OAuth provider — fully generic.
@@ -78,7 +102,7 @@ class OAuthSession:
 
     @property
     def is_expired(self) -> bool:
-        return datetime.now(UTC) > self.expires_at
+        return _now_utc() > _as_utc(self.expires_at)
 
     @property
     def is_consumed(self) -> bool:
@@ -96,7 +120,7 @@ def _generate_pkce() -> tuple[str, str]:
     return code_verifier, code_challenge
 
 
-def create_oauth_session(
+async def create_oauth_session(
     *,
     provider: OAuthProvider,
     principal_id: str,
@@ -176,7 +200,7 @@ a {{ color: #007bff; font-size: 18px; }}</style>
         },
     )
     session.add(record)
-    session.flush()
+    await session.flush()
 
     log.info(
         "oauth.session_created",
@@ -232,7 +256,7 @@ async def handle_oauth_callback(
         return None
 
     # 3. Reject expired state
-    if datetime.now(UTC) > oauth_session.expires_at:
+    if _now_utc() > _as_utc(oauth_session.expires_at):
         log.warning("oauth.expired_state")
         oauth_session.state = "expired"
         await session.flush()
@@ -312,7 +336,7 @@ async def handle_oauth_callback(
         encrypted_data=encrypted_access,
         nonce=nonce_access,
         identifier=identity or f"{provider.name} connected",
-        metadata={
+        credential_metadata={
             "token_type": token_type,
             "expires_in": expires_in,
             "has_refresh_token": bool(refresh_token),
@@ -335,7 +359,7 @@ async def handle_oauth_callback(
             encrypted_data=encrypted_refresh,
             nonce=nonce_refresh,
             identifier=f"{provider.name} refresh token",
-            metadata={"connected_at": datetime.now(UTC).isoformat()},
+            credential_metadata={"connected_at": datetime.now(UTC).isoformat()},
             is_active=True,
         )
         session.add(refresh_credential)

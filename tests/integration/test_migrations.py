@@ -85,9 +85,13 @@ class TestFreshDatabase:
                 assert "capability_invocations" not in tables
                 assert "roles" not in tables
                 assert "objectives" not in tables
-                assert "artifacts" not in tables
                 assert "workspace_snapshots" not in tables
                 assert "provisioned_resources" not in tables
+                # NOTE: `artifacts` IS expected to exist — spec §21
+                # introduced a NEW generic artifacts table (universal
+                # media/file representation) after the open-world reset
+                # dropped the OLD artifacts table. The two are different
+                # concepts sharing a name.
         finally:
             await dispose_engine()
 

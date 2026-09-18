@@ -207,7 +207,7 @@ class TestOAuthSecurity:
     async def test_expired_state_rejected(self, fresh_db, test_provider):
         """Test 6: Expired state is rejected."""
         async with db_session() as session:
-            _auth_url, state = create_oauth_session(
+            _auth_url, state = await create_oauth_session(
                 provider=test_provider,
                 principal_id="01TESTPRINCIPAL000000000",
                 session=session,
@@ -256,7 +256,7 @@ class TestOAuthSecurity:
             mock_exchange.return_value = mock_token_response
 
             async with db_session() as session:
-                _auth_url, state = create_oauth_session(
+                _auth_url, state = await create_oauth_session(
                     provider=test_provider,
                     principal_id="01TESTPRINCIPAL000000000",
                     session=session,
@@ -299,7 +299,7 @@ class TestOAuthSecurity:
         )
 
         async with db_session() as session:
-            _auth_url, state = create_oauth_session(
+            _auth_url, state = await create_oauth_session(
                 provider=test_provider,
                 principal_id="01TESTPRINCIPAL000000000",
                 session=session,
@@ -333,7 +333,7 @@ class TestOAuthSecurity:
             mock_exchange.return_value = mock_token_response
 
             async with db_session() as session:
-                _auth_url, state = create_oauth_session(
+                _auth_url, state = await create_oauth_session(
                     provider=test_provider,
                     principal_id="01TESTPRINCIPAL000000000",
                     session=session,
@@ -372,7 +372,7 @@ class TestOAuthSecurity:
             mock_exchange.return_value = mock_token_response
 
             async with db_session() as session:
-                _auth_url, state = create_oauth_session(
+                _auth_url, state = await create_oauth_session(
                     provider=test_provider,
                     principal_id="01TESTPRINCIPAL000000000",
                     session=session,
@@ -431,7 +431,7 @@ class TestOAuthSecurity:
             mock_exchange.return_value = mock_token_response
 
             async with db_session() as session:
-                _auth_url, state = create_oauth_session(
+                _auth_url, state = await create_oauth_session(
                     provider=test_provider,
                     principal_id="01TESTPRINCIPAL000000000",
                     session=session,
@@ -468,7 +468,7 @@ class TestOAuthSecurity:
                         cred.encrypted_data or "",
                         cred.nonce or "",
                         cred.identifier or "",
-                        str(cred.metadata or ""),
+                        str(cred.credential_metadata or ""),
                         cred.service_name,
                         cred.credential_type,
                     ]
@@ -492,7 +492,7 @@ class TestOAuthSecurity:
             mock_exchange.return_value = mock_token_response
 
             async with db_session() as session:
-                _auth_url, state = create_oauth_session(
+                _auth_url, state = await create_oauth_session(
                     provider=test_provider,
                     principal_id="01TESTPRINCIPAL000000000",
                     session=session,

@@ -63,7 +63,9 @@ class ProcessRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Optional metadata (port, workspace path, etc.)
-    metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # NOTE: Python attribute is `process_metadata` to avoid colliding with
+    # SQLAlchemy's reserved `Base.metadata`. DB column name remains `metadata`.
+    process_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
 
     # How the process ended (if it did)
     termination_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)

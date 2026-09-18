@@ -46,7 +46,11 @@ class CredentialRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     identifier: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Metadata (scopes, expiry, refresh presence — NEVER plaintext secrets)
-    metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # NOTE: Python attribute is `credential_metadata` to avoid colliding with
+    # SQLAlchemy's reserved `Base.metadata`. DB column name remains `metadata`.
+    credential_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata", JSON, nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(default=True)
     expires_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)
 

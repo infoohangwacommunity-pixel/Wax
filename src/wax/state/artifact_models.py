@@ -15,6 +15,8 @@ Artifact
  ├── size_bytes
  ├── storage_ref (local path or remote URL)
  ├── metadata (JSON — dimensions, duration, pages, etc.)
+ │   ↳ Python attribute: `artifact_metadata` (DB column: `metadata`)
+ │      (renamed to avoid colliding with SQLAlchemy's reserved `Base.metadata`)
  ├── derived_representations (JSON — extracted text, thumbnails, etc.)
  ├── processing_status (pending, processed, failed)
  ├── source_message_id (which inbound message produced it)
@@ -61,7 +63,12 @@ class ArtifactRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # Local file path, remote URL, or content-addressed reference
 
     # Flexible metadata (dimensions, duration, pages, hash, etc.)
-    metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # NOTE: The Python attribute is `artifact_metadata` to avoid colliding
+    # with SQLAlchemy's reserved `Base.metadata` (MetaData collection).
+    # The database column name remains `metadata`.
+    artifact_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata", JSON, nullable=True
+    )
 
     # Derived representations (extracted text, thumbnails, transcriptions)
     derived_representations: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

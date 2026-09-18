@@ -36,9 +36,29 @@ class TestNoRemovedSubsystems:
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module("wax.objective")
 
-    def test_no_security_package(self) -> None:
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("wax.security")
+    def test_no_security_authority_subsystem(self) -> None:
+        """The OLD ``wax.security`` package (authority broker, capability
+        security) was removed during the open-world reset.
+
+        The package name was subsequently reused for the NEW security
+        surface — OAuth (``wax.security.oauth``) and terminal secret
+        redaction (``wax.security.secret_redaction``). Those are
+        legitimate open-world components, NOT a regression of the old
+        authority broker.
+
+        What we actually care about: the removed authority-broker
+        submodules must NOT come back. Asserting on the package name
+        itself is wrong — assert on the actual removed submodules.
+        """
+        removed_submodules = [
+            "wax.security.authority",
+            "wax.security.capability_gate",
+            "wax.security.permission",
+            "wax.security.broker",
+        ]
+        for name in removed_submodules:
+            with pytest.raises(ModuleNotFoundError):
+                importlib.import_module(name)
 
     def test_no_control_plane(self) -> None:
         with pytest.raises(ModuleNotFoundError):

@@ -215,7 +215,9 @@ class TestSecretRedaction:
         output = "Authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
         redacted = redact_secrets(output)
         assert "eyJhbGci" not in redacted
-        assert "[REDACTED]" in redacted
+        # The JWT pattern uses `eyJ[REDACTED_JWT]` (more informative than
+        # a generic `[REDACTED]`). Accept any REDACTED marker.
+        assert "REDACTED" in redacted
 
     def test_db_url_redacted(self) -> None:
         output = "DATABASE_URL=postgresql://user:secretpass@localhost:5432/db"
