@@ -202,7 +202,7 @@ async def extract_memories(
                     query=content_text[:200],
                     limit=3,
                 )
-                for ex in existing:
+                for ex, _score in existing:
                     if ex.kind == kind_enum.value and ex.status == "active":
                         ex_content = (
                             ex.content

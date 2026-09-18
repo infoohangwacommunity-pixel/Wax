@@ -593,9 +593,25 @@ class RuntimeBridge:
         # Track the user message and final response for memory extraction
         original_user_message = user_message
         final_response = ""
+        # Bug 4 fix: track recent commands to detect repetition loops
+        recent_commands: list[str] = []
 
         try:
             for round_num in range(max_rounds):
+                # Bug 4 fix: wrap-up nudge when running low on rounds
+                rounds_remaining = max_rounds - round_num
+                if rounds_remaining <= 3:
+                    messages.append(
+                        LLMMessage(
+                            role=MessageRole.USER,
+                            content=(
+                                "[runtime] You have "
+                                + str(rounds_remaining)
+                                + " rounds remaining. Stop exploring and provide your final answer now with what you have."
+                            ),
+                        )
+                    )
+
                 await exec_repo.record_step(
                     execution_id=execution_id,
                     kind="model",
@@ -646,6 +662,29 @@ class RuntimeBridge:
 
                 for tool_call in response.tool_calls:
                     if tool_call.name == "terminal":
+                        # Bug 4 fix: detect repetition loops
+                        cmd = tool_call.arguments.get("command", "")[:100]
+                        recent_commands.append(cmd)
+                        # If the last 3 commands are nearly identical, force a break
+                        if len(recent_commands) >= 3:
+                            last_3 = recent_commands[-3:]
+                            if last_3[0] == last_3[1] == last_3[2]:
+                                log.warning(
+                                    "bridge.repetition_detected",
+                                    execution_id=execution_id,
+                                    command=cmd[:50],
+                                )
+                                messages.append(
+                                    LLMMessage(
+                                        role=MessageRole.USER,
+                                        content=(
+                                            "[runtime] You've run the same command 3 times. "
+                                            "Stop repeating and provide your final answer."
+                                        ),
+                                    )
+                                )
+                                break
+
                         observation = await self._execute_terminal(
                             executor, tool_call, execution_id, exec_repo
                         )

@@ -36,6 +36,7 @@ from wax.state import (  # noqa: F401
     delivery_models,
     execution_models,
     identity_models,
+    interaction_models,
     memory_models,
     work_models,
 )

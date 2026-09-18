@@ -34,6 +34,7 @@ import wax.state.continuity_models
 import wax.state.delivery_models
 import wax.state.execution_models
 import wax.state.identity_models
+import wax.state.interaction_models
 import wax.state.memory_models
 import wax.state.work_models  # noqa: F401
 from wax.core.config import WaxSettings
