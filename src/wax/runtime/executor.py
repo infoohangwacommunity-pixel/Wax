@@ -136,7 +136,20 @@ class TerminalExecutor:
 
     def __post_init__(self) -> None:
         if not self.env:
-            self.env = dict(os.environ)
+            # Build a SANITIZED environment — NOT os.environ directly.
+            # WAX infrastructure secrets (DB URL, API keys, WhatsApp
+            # credentials, OAuth client secrets) are REMOVED from the
+            # terminal subprocess environment. The terminal gets
+            # operational env vars (PATH, HOME, LANG, etc.) plus
+            # WAX_CURRENT_* vars for the runtime helper.
+            #
+            # This is the PRIMARY security boundary — not output redaction.
+            # The terminal can still do anything (open-world), but it
+            # cannot accidentally read WAX's own infrastructure secrets
+            # via `env`, `printenv`, or `/proc/*/environ`.
+            from wax.security.secret_redaction import redact_env_vars
+
+            self.env = redact_env_vars(dict(os.environ))
         # Apply env overrides (WAX_CURRENT_PRINCIPAL_ID, etc.) so the
         # wax_runtime helper can read them from inside the terminal.
         self.env.update(self.env_overrides)
@@ -144,9 +157,6 @@ class TerminalExecutor:
         try:
             self.working_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError):
-            # Fallback to /tmp if the configured path isn't writable.
-            # This happens on Railway when the volume mount isn't owned
-            # by the non-root user. /tmp is always writable.
             import tempfile
 
             fallback = Path(tempfile.gettempdir()) / "wax-workspaces" / self.working_dir.name

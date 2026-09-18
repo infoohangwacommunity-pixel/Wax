@@ -1,19 +1,10 @@
-"""Encrypted secret storage — secure credential handling (spec §24).
+"""Encrypted secret storage — AES-256-GCM ONLY (spec §24).
 
-Secrets submitted through interaction sessions (API keys, OAuth tokens,
-passwords) are encrypted at rest using AES-256-GCM with a key derived
-from the WAX_SECRET_KEY.
+No XOR fallback. If the cryptography package is not available, fail
+closed with a clear operational error.
 
-The plaintext secret NEVER enters:
-- model context
-- conversation history
-- logs
-- URL parameters
-- API responses
-- error messages
-
-The runtime can retrieve and use the secret through the secure path
-(decrypt → use → discard from memory).
+Plaintext secrets NEVER enter model context, conversation history,
+logs, URL parameters, API responses, or error messages.
 """
 
 from __future__ import annotations
@@ -33,13 +24,8 @@ from wax.state.models import Base, TimestampMixin, ULIDPrimaryKeyMixin
 class CredentialRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     """An encrypted credential associated with a principal/service.
 
-    The ciphertext field contains AES-256-GCM encrypted data. The
-    nonce is stored alongside. The key is derived from WAX_SECRET_KEY
-    using PBKDF2.
-
-    The plaintext is NEVER stored. The model NEVER sees the plaintext.
-    The runtime decrypts on-demand when performing authenticated
-    operations on behalf of the intelligence.
+    The ciphertext field contains AES-256-GCM encrypted data.
+    The plaintext is NEVER stored, NEVER in model context, NEVER logged.
     """
 
     __tablename__ = "secure_credentials"
@@ -49,31 +35,19 @@ class CredentialRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     )
 
     principal_id: Mapped[str] = mapped_column(String(26), nullable=False)
-
-    # Which service this credential is for (google, github, openai, custom, etc.)
     service_name: Mapped[str] = mapped_column(String(128), nullable=False)
-
-    # Credential type (api_key, oauth_token, password, bearer_token, etc.)
     credential_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    # Encrypted payload (base64-encoded AES-256-GCM ciphertext + nonce)
+    # Encrypted payload (base64-encoded AES-256-GCM ciphertext)
     encrypted_data: Mapped[str] = mapped_column(Text, nullable=False)
-
-    # Nonce used for encryption (base64-encoded)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    # Non-sensitive identifier (e.g. email, username, key prefix)
-    # This is safe to show to the model: "Google account: user@example.com"
+    # Non-sensitive identifier (safe to show to the model)
     identifier: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
-    # Metadata (scopes, expiry, refresh token presence, etc.)
-    # NEVER contains plaintext secrets
+    # Metadata (scopes, expiry, refresh presence — NEVER plaintext secrets)
     metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-
-    # Whether this credential is active
     is_active: Mapped[bool] = mapped_column(default=True)
-
-    # Optional expiry
     expires_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -87,20 +61,15 @@ def encrypt_secret(plaintext: str, secret_key: str) -> tuple[str, str]:
     """Encrypt a secret using AES-256-GCM.
 
     Returns (encrypted_data_b64, nonce_b64).
-    The plaintext is never stored — only the encrypted form.
+    Fails closed if cryptography package is not available.
     """
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        # Fallback: if cryptography is not installed, use a simple
-        # XOR-based obfuscation. This is NOT secure — it's a last
-        # resort. The cryptography package should be installed.
-        key = _derive_key(secret_key)
-        nonce = os.urandom(12)
-        data = plaintext.encode()
-        key_stream = (key * (len(data) // len(key) + 1))[: len(data)]
-        encrypted = bytes(a ^ b for a, b in zip(data, key_stream, strict=False))
-        return base64.b64encode(encrypted).decode(), base64.b64encode(nonce).decode()
+    except ImportError as e:
+        raise RuntimeError(
+            "The 'cryptography' package is required for secret encryption. "
+            "Install it with: pip install cryptography"
+        ) from e
 
     key = _derive_key(secret_key)
     nonce = os.urandom(12)
@@ -112,18 +81,15 @@ def encrypt_secret(plaintext: str, secret_key: str) -> tuple[str, str]:
 def decrypt_secret(encrypted_data_b64: str, nonce_b64: str, secret_key: str) -> str:
     """Decrypt a secret using AES-256-GCM.
 
-    Returns the plaintext. The caller is responsible for not leaking
-    it into model context, logs, or conversation history.
+    Fails closed if cryptography package is not available.
     """
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        key = _derive_key(secret_key)
-        nonce = base64.b64decode(nonce_b64)
-        encrypted = base64.b64decode(encrypted_data_b64)
-        key_stream = (key * (len(encrypted) // len(key) + 1))[: len(encrypted)]
-        data = bytes(a ^ b for a, b in zip(encrypted, key_stream, strict=False))
-        return data.decode()
+    except ImportError as e:
+        raise RuntimeError(
+            "The 'cryptography' package is required for secret decryption. "
+            "Install it with: pip install cryptography"
+        ) from e
 
     key = _derive_key(secret_key)
     nonce = base64.b64decode(nonce_b64)

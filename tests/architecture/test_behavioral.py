@@ -142,7 +142,7 @@ class TestMemoryPersistence:
                 limit=5,
             )
             assert len(results) > 0
-            record, score = results[0]
+            record, _score = results[0]
             content = (
                 record.content
                 if isinstance(record.content, dict)
