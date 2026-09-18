@@ -72,6 +72,47 @@ class TestAllModelsImport:
         mod = importlib.import_module(module_name)
         assert mod is not None, f"failed to import {module_name}"
 
+    def test_configure_mappers_succeeds(self) -> None:
+        """``configure_mappers()`` must succeed after every model is imported.
+
+        This is SQLAlchemy's explicit mapper-configuration step. It runs
+        automatically the first time a query is executed, but calling it
+        explicitly catches mapping failures (broken relationships,
+        invalid column types, unresolved foreign keys) at test time
+        rather than at the first request in production.
+
+        This is the user's item 2: "Force the COMPLETE ORM registry to
+        load/configure locally before deployment. Use SQLAlchemy's
+        mapper configuration machinery (for example
+        ``configure_mappers()``) after importing every model module.
+        The test must fail if ANY model cannot be mapped."
+        """
+        for m in ORM_MODEL_MODULES:
+            importlib.import_module(m)
+
+        from sqlalchemy.orm import configure_mappers
+
+        # This call raises if any mapper cannot be configured — e.g.
+        # a relationship pointing at a non-existent table, an invalid
+        # column type, or (most relevantly) a reserved-attribute
+        # collision that didn't surface at class-construction time.
+        configure_mappers()
+
+        # After configuration, every mapped class must have a configured
+        # mapper with all its properties resolved.
+        from wax.state.models import Base
+
+        for mapper in Base.registry.mappers:
+            cls = mapper.class_
+            # The mapper must have at least one local column
+            assert list(mapper.columns), (
+                f"{cls.__module__}.{cls.__name__} has no mapped columns after configure_mappers()"
+            )
+            # The mapper must have a primary key
+            assert list(mapper.primary_key), (
+                f"{cls.__module__}.{cls.__name__} has no primary key after configure_mappers()"
+            )
+
     def test_all_expected_tables_registered(self) -> None:
         """After importing every model module, Base.metadata must contain
         the full production table set.
