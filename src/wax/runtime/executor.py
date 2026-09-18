@@ -301,8 +301,8 @@ class TerminalExecutor:
 
             settings_reg = WaxSettings()
             init_engine(settings_reg)
-            principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
-            execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
+            _principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
+            _execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
 
             async def _register():
 
@@ -311,13 +311,13 @@ class TerminalExecutor:
 
                 settings = WaxSettings()
                 init_engine(settings)
-                principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
-                execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
+                _principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
+                _execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
                 async with db_session() as session:
                     record = ProcessRecord(
                         id=str(ULID()),
-                        principal_id=principal_id or "unknown",
-                        execution_id=execution_id or None,
+                        principal_id=_principal_id or "unknown",
+                        execution_id=_execution_id or None,
                         pid=proc.pid,
                         command=command[:10000],
                         status="running",
@@ -328,7 +328,8 @@ class TerminalExecutor:
                     await session.commit()
 
             # We're already in an async context — schedule the registration
-            _register_task = asyncio.ensure_future(_register())
+            _register_tasks: list = []
+            _register_tasks.append(asyncio.ensure_future(_register()))
         except Exception as e:
             log.warning("terminal.process_register_failed", error=str(e)[:200])
 
