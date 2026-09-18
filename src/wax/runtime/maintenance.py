@@ -1,7 +1,7 @@
 """Runtime maintenance loop — lifecycle hygiene.
 
 Simplified for the open-world architecture. Removed:
-- approval expiry (approvals are gone)
+
 - blob-store GC (blob store is gone)
 - leadership / multi-instance election (single-instance)
 

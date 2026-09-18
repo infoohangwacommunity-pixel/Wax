@@ -798,11 +798,13 @@ class RuntimeBridge:
         # Automatic memory retrieval (if context resolution didn't already gather it)
         memory_repo = MemoryRepository(session)
         if not context_packet.relevant_memories:
-            memories = await memory_repo.search_relevant(
+            raw_memories = await memory_repo.search_relevant(
                 principal_id=principal_id,
                 query=user_message,
                 limit=10,
             )
+            # search_relevant returns [(record, score)] — unpack to records
+            memories = [m for m, _s in raw_memories]
         else:
             memories = []  # context intelligence already gathered them
 

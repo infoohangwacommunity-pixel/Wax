@@ -289,39 +289,52 @@ def serve_page(
         )
         # Send `url` to the student via WhatsApp
     """
-    from wax.runtime.web_pages import create_session
 
     public_url = os.environ.get("WAX_PUBLIC_URL", "http://localhost:8000")
     principal = current_principal_id()
     execution = current_execution_id()
 
-    session = create_session(
-        purpose=purpose or "form",
-        principal_id=principal,
-        html_content=html_content,
-        execution_id=execution or None,
-        expires_in_minutes=expires_in_minutes,
-        wake_event=f"interaction.submitted:{'{}'}",  # filled with session_id below
-    )
-    # Fix the wake event with the actual session ID
-    session.wake_event = f"interaction.submitted:{session.session_id}"
+    # DB-backed session creation (Bug 3 fix — sessions must survive
+    # process boundaries because serve_page runs in a terminal subprocess)
+    async def _do():
+        from wax.core.config import WaxSettings
+        from wax.runtime.web_pages import create_session as db_create_session
+        from wax.state.engine import db_session, init_engine
+
+        settings = WaxSettings()
+        init_engine(settings)
+        async with db_session() as db:
+            record = await db_create_session(
+                session=db,
+                purpose=purpose or "form",
+                principal_id=principal,
+                html_content=html_content,
+                execution_id=execution or None,
+                expires_in_minutes=expires_in_minutes,
+                wake_event="interaction.submitted:",  # will append session_id
+            )
+            # Fix wake event with actual session ID
+            record.wake_event = f"interaction.submitted:{record.id}"
+            await db.commit()
+            return record
+
+    record = _async_run(_do())
 
     # Auto-wake: schedule a work item that waits for the submission signal
     if auto_wake and principal:
         with contextlib.suppress(Exception):
-            # Auto-wake failure should not break serve_page — the URL still works
             schedule(
                 prompt=f"The user submitted the {purpose or 'form'} you sent them. Check the result and continue.",
                 observation={
                     "source": "runtime",
-                    "event": f"interaction.submitted:{session.session_id}",
+                    "event": f"interaction.submitted:{record.id}",
                 },
-                wake_in_seconds=expires_in_minutes * 60,  # fallback timeout
+                wake_in_seconds=expires_in_minutes * 60,
                 principal_id=principal,
                 execution_id=execution or None,
             )
 
-    return public_url + session.url_path
+    return public_url + f"/i/{record.secret_token}"
 
 
 def create_context(

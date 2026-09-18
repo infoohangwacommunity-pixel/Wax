@@ -100,7 +100,7 @@ class ConversationRepository:
         await self._session.flush()
         return True
 
-    async def attach_objective(self, conversation_id: str, objective_id: str) -> bool:
+    async def attach_objective(self, conversation_id: str, objective_id: str) -> bool:  # deprecated
         """Point the conversation at the objective its current interaction
         pursues. The OBJECTIVE evidence section is sourced from this link;
         the bridge writes it when both ends of the link exist."""

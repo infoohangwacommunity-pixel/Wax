@@ -1,7 +1,7 @@
 """WAX configuration schema.
 
 Stripped down for the open-world terminal architecture. Removed:
-- capability/approval/resource/provisioning settings
+
 - isolation backend settings
 - workspace/artifact/blob settings
 - network allowlist settings
@@ -158,7 +158,7 @@ class WaxSettings(BaseSettings):
     whatsapp_verify_token: str = ""
 
     # --- Public URL (required in production for interaction sessions) ---
-    # The public URL students use to reach the server. Used by serve_page()
+    # The public URL users use to reach the server. Used by serve_page()
     # to generate full URLs for interaction sessions (credential collection,
     # file uploads, OAuth). In production, set to https://your-domain.com
     public_url: str = "http://localhost:8000"

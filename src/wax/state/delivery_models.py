@@ -30,7 +30,7 @@ from wax.state.models import Base, TimestampMixin, ULIDPrimaryKeyMixin
 VALID_DELIVERY_STATUSES = ("pending", "delivered", "failed")
 
 # Where the delivery came from — provenance, not a domain category.
-DELIVERY_SOURCES = ("bridge_reply", "capability", "approval_notify", "work")
+DELIVERY_SOURCES = ("bridge_reply", "work")
 
 
 class DeliveryRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):

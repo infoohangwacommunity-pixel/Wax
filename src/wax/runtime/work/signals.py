@@ -35,7 +35,7 @@ from wax.state.work_models import RuntimeSignalRecord
 log = get_logger(__name__)
 
 # Namespaces the runtime owns. Intelligence may WAIT on these (waiting on
-# "the user replied", "that work finished", or "my approval was granted" is
+
 # legitimate) but may never EMIT them — forging them would let the model
 # fake facts that belong to the runtime's authority boundaries.
 RESERVED_SIGNAL_PREFIXES = ("interface.", "work.", "approval.")

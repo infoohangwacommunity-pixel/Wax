@@ -35,7 +35,7 @@ REENTRY_PROMPT_MAX_CHARS = 4000
 REENTRY_OBSERVATION_MAX_BYTES = 16_000
 
 # The valid sources for an observation. "runtime" is the only one today;
-# future sources (e.g. "connector", "approval") would extend this set
+
 # deliberately — they change what the observation means.
 REENTRY_OBSERVATION_SOURCES = frozenset({"runtime"})
 

@@ -65,7 +65,7 @@ class WorkItemRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # The human this work belongs to (identity continuity across time).
     principal_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
-    # The originating execution (objective continuity / traceability).
+    # The originating execution (traceability).
     execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
     # Phase F: Optional context this work belongs to. Work is context-bound

@@ -47,8 +47,7 @@ class ProcessedMessageRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
     # The execution we started (or NULL if we rejected before starting)
     execution_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
-    # The objective we created
-    objective_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # objective_id removed — fossil from old architecture
 
     # Outcome: success | duplicate | principal_unauthorized | rate_limited | internal_error
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)

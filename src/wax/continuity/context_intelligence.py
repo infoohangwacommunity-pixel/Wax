@@ -325,7 +325,7 @@ async def _fetch_relevant_memories(
         limit=10,
     )
     result = []
-    for m in memories:
+    for m, _score in memories:
         # If context_id is specified, prioritize memories bound to it
         mem_context = getattr(m, "context_id", None)
         if context_id and mem_context and mem_context != context_id:

@@ -27,7 +27,7 @@ Design principles (per the open-world architecture directive):
   failed/duration) — observed, not censored.
 
 The executor does NOT know about:
-- capabilities, permissions, approvals, authority
+
 - isolation backends, sandboxes, namespaces
 - network restrictions, path containment
 - resource budgets, cost protection

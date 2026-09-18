@@ -1,7 +1,7 @@
 """WAX — AI-native environment/runtime.
 
 WAX is the environment in which intelligence can safely, persistently, and
-autonomously pursue legitimate human objectives using available capabilities
+autonomously pursue legitimate human goals using the available environment
 and resources.
 
 The AI is the intelligence. WAX is the environment.
