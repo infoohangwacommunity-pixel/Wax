@@ -35,34 +35,35 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     # PostgreSQL has FK constraints that prevent dropping parent tables
-    # while children still reference them. We must drop FK constraints
-    # first, then drop the tables.
+    # while children still reference them. We must drop ALL FK constraints
+    # and columns that reference the tables we're about to drop, THEN drop
+    # the tables.
 
-    # 1. Drop FK constraints that point to tables we're about to drop.
-    #    The main one: memory_records.objective_id -> objectives.id
-    #    (created by migration f1b3d5a7c9e2 as "fk_memory_objective")
+    # 1. Drop the FK constraint: memory_records.objective_id -> objectives.id
     op.execute("ALTER TABLE memory_records DROP CONSTRAINT IF EXISTS fk_memory_objective")
     op.execute("DROP INDEX IF EXISTS ix_memory_objective")
+    # Also drop the objective_id COLUMN from memory_records — it's dead.
+    # This removes any remaining FK dependency.
+    op.execute("ALTER TABLE memory_records DROP COLUMN IF EXISTS objective_id")
 
-    #    conversations.objective_id -> objectives.id (created by a06446a7edd3)
-    #    This was already handled by migration e0f2a4b6c8e1 on fresh installs,
-    #    but may still exist on databases that ran the old migration chain.
-    op.execute(
-        "ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey"
-    )
+    # 2. Drop the FK constraint: conversations.objective_id -> objectives.id
+    #    (may or may not exist depending on which migrations ran)
+    op.execute("ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey")
+    op.execute("ALTER TABLE conversations DROP COLUMN IF EXISTS objective_id")
 
-    # 2. Now drop tables in dependency order (children before parents).
-    #    Use IF EXISTS for safety + CASCADE as a belt-and-suspenders for
-    #    any FK we missed.
-    op.execute("DROP TABLE IF EXISTS objective_executions CASCADE")
-    op.execute("DROP TABLE IF EXISTS objectives CASCADE")
-    op.execute("DROP TABLE IF EXISTS workspace_snapshots CASCADE")
-    op.execute("DROP TABLE IF EXISTS artifacts CASCADE")
-    op.execute("DROP TABLE IF EXISTS provisioned_resources CASCADE")
-    op.execute("DROP TABLE IF EXISTS capability_invocations CASCADE")
-    op.execute("DROP TABLE IF EXISTS pending_approvals CASCADE")
-    op.execute("DROP TABLE IF EXISTS principal_roles CASCADE")
-    op.execute("DROP TABLE IF EXISTS roles CASCADE")
+    # 3. Drop the FK constraint: executions.objective_id -> objectives.id
+    op.execute("ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_objective_id_fkey")
+
+    # 4. Now drop tables — FK constraints are gone, so this will succeed.
+    op.execute("DROP TABLE IF EXISTS objective_executions")
+    op.execute("DROP TABLE IF EXISTS objectives")
+    op.execute("DROP TABLE IF EXISTS workspace_snapshots")
+    op.execute("DROP TABLE IF EXISTS artifacts")
+    op.execute("DROP TABLE IF EXISTS provisioned_resources")
+    op.execute("DROP TABLE IF EXISTS capability_invocations")
+    op.execute("DROP TABLE IF EXISTS pending_approvals")
+    op.execute("DROP TABLE IF EXISTS principal_roles")
+    op.execute("DROP TABLE IF EXISTS roles")
 
 
 def downgrade() -> None:
