@@ -728,10 +728,13 @@ class RuntimeBridge:
 
             return final_response
         finally:
-            await executor.cleanup_detached()
-            # NOTE: do NOT clean up the execution workspace — the principal's
-            # workspace persists across conversations. Per-execution
-            # subdirectories can be cleaned by a maintenance sweep later.
+            # Do NOT kill detached processes when an execution completes.
+            # Background processes (servers, workers, tunnels) should survive
+            # across intelligence turns — the terminal is the AI's environment,
+            # not a disposable sandbox per execution.
+            # Process cleanup happens only on server shutdown or when the
+            # maintenance sweep reaps stale processes.
+            pass
 
     async def _build_initial_messages(
         self,
@@ -1251,7 +1254,9 @@ class RuntimeBridge:
                 await session.commit()
                 return None
             finally:
-                await executor.cleanup_detached()
+                # Do NOT kill detached processes on resume either — same
+                # philosophy: the terminal environment is persistent.
+                pass
 
     async def _execute_terminal(
         self,
