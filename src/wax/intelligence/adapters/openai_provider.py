@@ -160,7 +160,17 @@ class OpenAIProvider:
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = self._build_payload(request, stream=False)
         response = await self._client.post("/chat/completions", json=payload)
-        response.raise_for_status()
+        if response.status_code != 200:
+            # Include the actual error body so we can see WHY the provider
+            # rejected the request — not just the status code.
+            try:
+                error_body = response.json()
+                error_text = json.dumps(error_body)[:500]
+            except Exception:
+                error_text = response.text[:500]
+            raise RuntimeError(
+                f"provider rejected request ({response.status_code}): {error_text}"
+            )
         data = response.json()
 
         choice = data["choices"][0]
