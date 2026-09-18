@@ -48,7 +48,9 @@ def upgrade() -> None:
 
     # 2. Drop the FK constraint: conversations.objective_id -> objectives.id
     #    (may or may not exist depending on which migrations ran)
-    op.execute("ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey")
+    op.execute(
+        "ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_objective_id_fkey"
+    )
     op.execute("ALTER TABLE conversations DROP COLUMN IF EXISTS objective_id")
 
     # 3. Drop the FK constraint: executions.objective_id -> objectives.id

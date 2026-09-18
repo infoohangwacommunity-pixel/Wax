@@ -113,7 +113,11 @@ TERMINAL_TOOL_SPEC = ToolSpec(
 # The base system prompt — kept small. Operational context (time, identity,
 # workspace, env vars, helper usage) is appended at runtime per-execution.
 BASE_SYSTEM_PROMPT = """\
-You are the intelligence operating inside WAX, an AI runtime.
+You are WAX — an AI assistant living inside a runtime environment.
+
+Your name is WAX. You are NOT ChatGPT. You are NOT made by OpenAI.
+You are NOT Claude. You are NOT Gemini. You are WAX.
+If asked who you are, say you are WAX. Nothing else.
 
 You have access to a terminal environment. You can:
 - inspect and modify files
@@ -128,6 +132,14 @@ investigate, act, and observe. Your working directory persists across
 terminal calls within this conversation, and your principal's workspace
 persists across conversations.
 
+IMPORTANT — Writing code:
+When writing multi-line Python or scripts, ALWAYS write to a file first,
+then execute it. Do NOT use shell heredoc syntax (<<'PY') for multi-line
+code — it breaks JSON escaping. Instead:
+  1. Use the terminal to create a file: write code to script.py
+  2. Then run: python3 script.py
+For single-line commands, python3 -c "..." is fine.
+
 Relevant memories from past interactions are provided in the context.
 Use them for continuity, but verify current state through the terminal
 when it matters.
@@ -140,6 +152,9 @@ plain text — it will be delivered to the user.
 Be honest about what you observe. Do not claim an action succeeded
 without verifying it. If something fails, report the failure clearly.
 
+Keep responses concise for WhatsApp — aim for under 500 characters
+unless the user specifically needs a longer explanation.
+
 A helper module `wax_runtime` is available inside the terminal. Use it
 for common WAX interactions:
 - import wax_runtime; wax_runtime.schedule(prompt="...", wake_in_seconds=3600)
@@ -148,6 +163,10 @@ for common WAX interactions:
   → store a structured memory explicitly
 - import wax_runtime; wax_runtime.recall(query="...", limit=5)
   → retrieve memories matching a query
+- import wax_runtime; wax_runtime.serve_page(html_content="...", purpose="upload")
+  → create a temporary web page for the user (returns a URL)
+- import wax_runtime; wax_runtime.create_context(label="My Project")
+  → create a persistent context that survives across conversations
 """
 
 
@@ -179,24 +198,31 @@ class RuntimeBridge:
         now = datetime.now(UTC)
 
         # 1. Identity: who is this?
-        principal = await PrincipalRepository(session).resolve_principal_by_credential(
-            kind=f"{request.interface_kind.value}_phone"
+        # CRITICAL: Normalize the phone number before lookup AND storage.
+        # WhatsApp sometimes sends +234... and sometimes 234... — if the
+        # format differs, the DB finds no match and creates a NEW principal
+        # every time. This is why memory didn't work.
+        from wax.identity.normalize import normalize_phone
+
+        normalized_sender_id = normalize_phone(request.sender_interface_id)
+        cred_kind = (
+            f"{request.interface_kind.value}_phone"
             if request.interface_kind == InterfaceKind.WHATSAPP
-            else request.interface_kind.value,
-            value=request.sender_interface_id,
+            else request.interface_kind.value
+        )
+
+        principal = await PrincipalRepository(session).resolve_principal_by_credential(
+            kind=cred_kind,
+            value=normalized_sender_id,
         )
         if principal is None:
-            # Auto-create the principal on first contact. The runtime does
-            # not require pre-registration; the interface identity IS the
-            # identity. This is the open-world trust model.
+            # Auto-create the principal on first contact.
             repo = PrincipalRepository(session)
             principal = await repo.create_principal(display_name=request.sender_display_name)
             await repo.add_credential(
                 principal.id,
-                kind=f"{request.interface_kind.value}_phone"
-                if request.interface_kind == InterfaceKind.WHATSAPP
-                else request.interface_kind.value,
-                value=request.sender_interface_id,
+                kind=cred_kind,
+                value=normalized_sender_id,
                 is_verified=True,
             )
             await session.flush()
@@ -340,9 +366,47 @@ class RuntimeBridge:
                 error_type=type(e).__name__,
             )
             await exec_repo.fail(execution.id, f"{type(e).__name__}: {e}"[:1000])
+
+            # Store a failure notice in the conversation ledger so the AI
+            # knows what happened in the next interaction (not silence).
+            failure_msg = (
+                f"[System: Processing failed — {type(e).__name__}. This turn was not completed.]"
+            )
+            await self._store_conversation_message(
+                session,
+                principal_id=principal.id,
+                role="assistant",
+                content=failure_msg,
+                execution_id=execution.id,
+                conversation_id=conversation.id,
+            )
+
+            # Send a friendly message to the user instead of silence.
+            # This goes through the AI's delivery system — the user knows
+            # their message was received even when the LLM fails.
+            friendly_msg = (
+                "I'm experiencing high demand right now. Your message has been "
+                "received and I'll respond shortly — usually within a minute."
+            )
+            try:
+                if self._services.delivery:
+                    from wax.identity.normalize import normalize_phone
+
+                    await self._services.delivery.send(
+                        "whatsapp",
+                        recipient=normalized_sender_id,
+                        text=friendly_msg,
+                    )
+            except Exception as send_err:
+                log.warning(
+                    "bridge.failure_message_send_failed",
+                    error=str(send_err)[:200],
+                )
+
             return RuntimeResponse(
                 status=RuntimeResponseStatus.INTERNAL_ERROR,
                 error=str(e),
+                text=friendly_msg,
                 execution_id=execution.id,
                 principal_id=principal.id,
                 processed_at=datetime.now(UTC),

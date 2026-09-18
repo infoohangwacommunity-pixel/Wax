@@ -378,46 +378,45 @@ class TerminalExecutor:
 # ---------------------------------------------------------------------------
 
 
-def principal_workspace(root: str | Path, principal_id: str) -> Path:
-    """Return the persistent workspace path for a principal.
+_workspace_fallback_logged = False
 
-    The workspace is /<root>/<principal_id>/. Files survive across
-    executions and conversations so the AI can build long projects.
 
-    The workspace is created if it doesn't exist. Idle cleanup happens
-    later (a maintenance sweep can archive workspaces not touched in N
-    days, but never mid-conversation).
-
-    If the configured root isn't writable (e.g. Railway volume permissions),
-    falls back to /tmp/wax-workspaces.
-    """
+def _get_writable_root(root: str | Path) -> Path:
+    """Get a writable workspace root, with fallback + once-only warning."""
+    global _workspace_fallback_logged
     root_path = Path(root)
-    ws = root_path / principal_id
     try:
-        ws.mkdir(parents=True, exist_ok=True)
+        root_path.mkdir(parents=True, exist_ok=True)
+        # Test if we can actually write to it
+        test_file = root_path / ".wax_write_test"
+        test_file.touch()
+        test_file.unlink()
+        return root_path
     except (PermissionError, OSError):
         import tempfile
 
         fallback_root = Path(tempfile.gettempdir()) / "wax-workspaces"
-        ws = fallback_root / principal_id
-        log.warning(
-            "terminal.workspace_root_fallback",
-            configured_root=str(root_path),
-            fallback_root=str(fallback_root),
-        )
-        ws.mkdir(parents=True, exist_ok=True)
+        fallback_root.mkdir(parents=True, exist_ok=True)
+        if not _workspace_fallback_logged:
+            log.warning(
+                "terminal.workspace_root_fallback",
+                configured_root=str(root_path),
+                fallback_root=str(fallback_root),
+            )
+            _workspace_fallback_logged = True
+        return fallback_root
+
+
+def principal_workspace(root: str | Path, principal_id: str) -> Path:
+    """Return the persistent workspace path for a principal."""
+    ws = _get_writable_root(root) / principal_id
+    ws.mkdir(parents=True, exist_ok=True)
     return ws
 
 
 def execution_workspace(root: str | Path, principal_id: str, execution_id: str) -> Path:
-    """Return a per-execution subdirectory inside the principal's workspace.
-
-    The AI operates in this subdirectory during one execution. Files
-    persist across terminal rounds within that execution. The principal's
-    top-level workspace is also accessible (the AI can cd .. to find
-    files from previous executions).
-    """
-    ws = principal_workspace(root, principal_id) / "executions" / execution_id
+    """Return a per-execution subdirectory inside the principal's workspace."""
+    ws = _get_writable_root(root) / principal_id / "executions" / execution_id
     ws.mkdir(parents=True, exist_ok=True)
     return ws
 

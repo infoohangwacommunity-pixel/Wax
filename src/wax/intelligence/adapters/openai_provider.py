@@ -168,9 +168,7 @@ class OpenAIProvider:
                 error_text = json.dumps(error_body)[:500]
             except Exception:
                 error_text = response.text[:500]
-            raise RuntimeError(
-                f"provider rejected request ({response.status_code}): {error_text}"
-            )
+            raise RuntimeError(f"provider rejected request ({response.status_code}): {error_text}")
         data = response.json()
 
         choice = data["choices"][0]
