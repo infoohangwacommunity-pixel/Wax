@@ -406,7 +406,7 @@ class RuntimeBridge:
             # when providers recover. This implements spec §11-12:
             # "Provider outages must not destroy accepted work."
             try:
-                from datetime import UTC, datetime, timedelta
+                from datetime import timedelta  # UTC, datetime already imported at module level
 
                 from wax.runtime.work.repository import WorkRepository
 
@@ -754,7 +754,7 @@ class RuntimeBridge:
                 # Schedule a continuation execution that wakes in 1 second
                 # (the work runner will pick it up and resume)
                 try:
-                    from datetime import UTC, datetime, timedelta
+                    from datetime import timedelta  # UTC, datetime already imported at module level
 
                     from wax.runtime.work.repository import WorkRepository
 
