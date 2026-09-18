@@ -390,8 +390,6 @@ class RuntimeBridge:
             )
             try:
                 if self._services.delivery:
-                    from wax.identity.normalize import normalize_phone
-
                     await self._services.delivery.send(
                         "whatsapp",
                         recipient=normalized_sender_id,
@@ -402,6 +400,38 @@ class RuntimeBridge:
                     "bridge.failure_message_send_failed",
                     error=str(send_err)[:200],
                 )
+
+            # Phase 2: Schedule a retry as durable work — the message
+            # is NOT lost. The work runner will wake the intelligence
+            # when providers recover. This implements spec §11-12:
+            # "Provider outages must not destroy accepted work."
+            try:
+                from datetime import UTC, datetime, timedelta
+
+                from wax.runtime.work.repository import WorkRepository
+
+                work_repo = WorkRepository(session)
+                await work_repo.schedule(
+                    kind="intelligence",
+                    payload={
+                        "prompt": f"Retry: the user said '{request.effective_text[:500]}'. Your previous attempt failed due to a provider outage. Respond now.",
+                        "observation": {
+                            "source": "runtime",
+                            "event": "provider_outage_retry",
+                            "original_execution_id": execution.id,
+                            "original_error": str(e)[:500],
+                        },
+                    },
+                    wake_at=datetime.now(UTC) + timedelta(seconds=30),
+                    principal_id=principal.id,
+                    execution_id=execution.id,
+                    max_attempts=3,
+                )
+                log.info(
+                    "bridge.retry_scheduled", execution_id=execution.id, principal_id=principal.id
+                )
+            except Exception as retry_err:
+                log.warning("bridge.retry_schedule_failed", error=str(retry_err)[:200])
 
             return RuntimeResponse(
                 status=RuntimeResponseStatus.INTERNAL_ERROR,
