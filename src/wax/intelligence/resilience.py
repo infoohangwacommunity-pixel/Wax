@@ -66,8 +66,9 @@ def classify_llm_error(exc: BaseException) -> Exception:
             return TransientLLMError(f"provider returned {status}")
         return PermanentLLMError(f"provider rejected request ({status})")
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
-        return TransientLLMError(f"provider transport failure: {type(exc).__name__}")
-    return PermanentLLMError(f"provider failure: {type(exc).__name__}")
+        return TransientLLMError(f"provider transport failure: {type(exc).__name__}: {exc}")
+    # Preserve the actual error message — don't swallow it with just the type name
+    return PermanentLLMError(f"provider failure: {type(exc).__name__}: {exc}")
 
 
 class ResilientProvider:
