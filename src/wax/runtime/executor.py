@@ -228,6 +228,14 @@ class TerminalExecutor:
             stderr = stderr[: self.output_max_chars] + "\n... [stderr truncated]"
             truncated = True
 
+        # Spec §51: Redact secrets from terminal output before it enters
+        # model context. Defense-in-depth — the primary boundary is secret
+        # isolation in the environment, but this catches accidental leaks.
+        from wax.security.secret_redaction import redact_secrets
+
+        stdout = redact_secrets(stdout)
+        stderr = redact_secrets(stderr)
+
         # Observe network calls from stdout (best-effort — not censored, just recorded)
         network_calls = self._extract_network_observations(stdout, stderr, started_at, ended_at)
         self._network_log.extend(network_calls)

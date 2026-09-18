@@ -29,10 +29,12 @@ __all__ = [
 # point that imports wax.state (tests create_all, alembic autogenerate,
 # future tooling). Adding a model module here is mandatory.
 from wax.state import (  # noqa: F401
+    artifact_models,
     audit_models,
     bridge_models,
     context_models,
     continuity_models,
+    credential_store,
     delivery_models,
     execution_models,
     identity_models,

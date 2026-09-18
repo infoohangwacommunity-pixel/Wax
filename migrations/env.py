@@ -27,10 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import all model modules here so they register with Base.metadata.
 # As new models are added in wax.state.* subpackages, import them here too.
+import wax.state.artifact_models
 import wax.state.audit_models
 import wax.state.bridge_models
 import wax.state.context_models
 import wax.state.continuity_models
+import wax.state.credential_store
 import wax.state.delivery_models
 import wax.state.execution_models
 import wax.state.identity_models
