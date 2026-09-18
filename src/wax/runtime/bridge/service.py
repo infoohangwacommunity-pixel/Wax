@@ -405,31 +405,64 @@ class RuntimeBridge:
             # is NOT lost. The work runner will wake the intelligence
             # when providers recover. This implements spec §11-12:
             # "Provider outages must not destroy accepted work."
+            #
+            # Spec §12: Do not create chains of synthetic prompts.
+            # The retry carries the ORIGINAL user message + failure
+            # metadata, not a "Retry: the user said..." reconstruction.
+            # The intelligence loads the original conversation context
+            # and continues from where it failed.
+            #
+            # Spec §13: Retry idempotency — check whether a retry is
+            # already scheduled for this execution before creating
+            # another one. This prevents duplicate retry work items
+            # if the bridge crashes between scheduling and committing.
             try:
                 from datetime import timedelta  # UTC, datetime already imported at module level
 
-                from wax.runtime.work.repository import WorkRepository
+                from sqlalchemy import select as sa_select
 
-                work_repo = WorkRepository(session)
-                await work_repo.schedule(
-                    kind="intelligence",
-                    payload={
-                        "prompt": f"Retry: the user said '{request.effective_text[:500]}'. Your previous attempt failed due to a provider outage. Respond now.",
-                        "observation": {
-                            "source": "runtime",
-                            "event": "provider_outage_retry",
-                            "original_execution_id": execution.id,
-                            "original_error": str(e)[:500],
+                from wax.runtime.work.repository import WorkRepository
+                from wax.state.work_models import WorkItemRecord
+
+                # Check if a retry is already scheduled for this execution
+                existing_retry = await session.execute(
+                    sa_select(WorkItemRecord)
+                    .where(
+                        WorkItemRecord.execution_id == execution.id,
+                        WorkItemRecord.status.in_(["pending", "running"]),
+                        WorkItemRecord.kind == "intelligence",
+                    )
+                    .limit(1)
+                )
+                if existing_retry.scalar_one_or_none() is not None:
+                    log.info(
+                        "bridge.retry_already_scheduled",
+                        execution_id=execution.id,
+                    )
+                else:
+                    work_repo = WorkRepository(session)
+                    await work_repo.schedule(
+                        kind="intelligence",
+                        payload={
+                            "prompt": request.effective_text[:4000],
+                            "observation": {
+                                "source": "runtime",
+                                "event": "provider_outage_retry",
+                                "original_execution_id": execution.id,
+                                "original_error": str(e)[:500],
+                                "original_user_message": request.effective_text[:2000],
+                            },
                         },
-                    },
-                    wake_at=datetime.now(UTC) + timedelta(seconds=30),
-                    principal_id=principal.id,
-                    execution_id=execution.id,
-                    max_attempts=3,
-                )
-                log.info(
-                    "bridge.retry_scheduled", execution_id=execution.id, principal_id=principal.id
-                )
+                        wake_at=datetime.now(UTC) + timedelta(seconds=30),
+                        principal_id=principal.id,
+                        execution_id=execution.id,
+                        max_attempts=3,
+                    )
+                    log.info(
+                        "bridge.retry_scheduled",
+                        execution_id=execution.id,
+                        principal_id=principal.id,
+                    )
             except Exception as retry_err:
                 log.warning("bridge.retry_schedule_failed", error=str(retry_err)[:200])
 
