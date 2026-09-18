@@ -35,6 +35,7 @@ it before another Railway deployment crashes on startup.
 from __future__ import annotations
 
 import importlib
+from typing import ClassVar
 
 import pytest
 from sqlalchemy import inspect
@@ -114,48 +115,139 @@ class TestAllModelsImport:
 
 
 class TestNoReservedAttributeNames:
-    """No ORM model may declare a Python attribute named ``metadata``.
+    """No ORM model may declare a Python attribute using a name that
+    SQLAlchemy's declarative API reserves or treats specially.
 
-    ``Base.metadata`` is SQLAlchemy's ``MetaData`` collection of every
-    ``Table`` registered against the declarative base. Re-declaring
-    ``metadata`` as a mapped column attribute causes class construction
-    to crash with::
+    SQLAlchemy 2.0 declarative reserves these names (extracted from
+    ``sqlalchemy.orm.decl_base._ClassScanMapperConfig._extract_mappable_attributes``)::
+
+        metadata, registry, abstract, mixin, default, default_factory,
+        init, repr, dataclass_metadata, _sa_decl_prepare_nocascade
+
+    Of these, the most dangerous (most likely to be used accidentally)
+    is ``metadata`` — which is also the name of the ``MetaData``
+    collection on ``Base``. Re-declaring ``metadata`` as a mapped column
+    attribute causes class construction to crash at import time with::
 
         InvalidRequestError: Attribute name 'metadata' is reserved
         when using the Declarative API.
 
+    That crash happens BEFORE Alembic can inspect the models, BEFORE the
+    FastAPI lifespan opens a DB connection, BEFORE any request handler
+    runs. The container crash-loops on startup.
+
     The fix is to give the Python attribute a different name (e.g.
     ``artifact_metadata``) while keeping the database column name
     ``metadata`` via the first positional argument of ``mapped_column``.
+
+    This test scans EVERY mapped class in the registry (not just the
+    three we already fixed) so that any future model that introduces
+    another reserved-name collision is caught at CI time, not at the
+    next Railway deploy.
     """
 
-    def test_no_model_has_metadata_attribute(self) -> None:
+    # Authoritative reserved-name set per SQLAlchemy 2.0 declarative.
+    # Source: sqlalchemy.orm.decl_base._ClassScanMapperConfig._extract_mappable_attributes
+    # ClassVar so ruff doesn't mistake this for a mutable default.
+    RESERVED_NAMES: ClassVar[set[str]] = {
+        "metadata",
+        "registry",
+        "abstract",
+        "mixin",
+        "default",
+        "default_factory",
+        "init",
+        "repr",
+        "dataclass_metadata",
+        "_sa_decl_prepare_nocascade",
+    }
+
+    def test_no_model_has_reserved_attribute_name(self) -> None:
         for m in ORM_MODEL_MODULES:
             importlib.import_module(m)
 
         from wax.state.models import Base
 
         offenders: list[str] = []
+
         for mapper_cls in Base.registry.mappers:
             cls = mapper_cls.class_
-            # `metadata` is a class-level attribute inherited from
-            # DeclarativeBase (the MetaData collection). A model that
-            # re-declares it would shadow that — but the re-declaration
-            # itself would have crashed at import time, so this check
-            # is mostly a forward-looking guard against someone trying
-            # to use ``column_property`` or ``deferred`` to sneak it in.
-            #
-            # The real assertion is that the class's __dict__ (not its
-            # MRO) does not contain 'metadata' as a key — that would
-            # mean the subclass itself declared it.
-            if "metadata" in cls.__dict__:
-                offenders.append(f"{cls.__module__}.{cls.__name__}")
+            # Walk the class's own __dict__ (not inherited from Base/object)
+            # to find shadowing declarations. We look at all classes in the
+            # MRO up to (but not including) Base, because mixins are commonly
+            # used and could themselves introduce a reserved-name attribute.
+            for klass in cls.__mro__:
+                if klass is object or klass is Base:
+                    continue
+                # Skip DeclarativeBase internals
+                try:
+                    from sqlalchemy.orm import DeclarativeBase
+
+                    if klass is DeclarativeBase:
+                        continue
+                except ImportError:
+                    pass
+
+                for attr_name in klass.__dict__:
+                    if attr_name in self.RESERVED_NAMES:
+                        # Distinguish real mapped attributes (the dangerous
+                        # case) from methods/properties (which SQLAlchemy
+                        # allows). A method named `repr` is fine; a Mapped
+                        # column named `metadata` is not.
+                        import inspect
+
+                        val = klass.__dict__[attr_name]
+                        if inspect.isfunction(val) or inspect.ismethod(val):
+                            kind = "method"
+                        elif isinstance(val, property):
+                            kind = "property"
+                        elif isinstance(val, (classmethod, staticmethod)):
+                            kind = "classmethod/staticmethod"
+                        else:
+                            kind = "MAPPED_ATTRIBUTE"
+
+                        if kind == "MAPPED_ATTRIBUTE":
+                            offenders.append(
+                                f"{cls.__module__}.{cls.__name__}.{attr_name} "
+                                f"(declared on {klass.__module__}.{klass.__name__})"
+                            )
 
         assert not offenders, (
-            "These ORM classes declared a `metadata` attribute, which "
-            "shadows SQLAlchemy's reserved `Base.metadata` (MetaData "
-            f"collection) and crashes declarative mapping: {offenders}"
+            "These ORM classes declared a reserved SQLAlchemy declarative "
+            f"attribute name as a mapped column: {offenders}. "
+            "Rename the Python attribute (e.g. `artifact_metadata`) and "
+            'keep the DB column name via `mapped_column("metadata", ...)`.'
         )
+
+    def test_specifically_no_metadata_attribute(self) -> None:
+        """Pin the specific case that caused the production incident:
+        ``ArtifactRecord.metadata``, ``ProcessRecord.metadata``, and
+        ``CredentialRecord.metadata`` must all be renamed.
+        """
+        from wax.state.artifact_models import ArtifactRecord
+        from wax.state.credential_store import CredentialRecord
+        from wax.state.process_models import ProcessRecord
+
+        # The renamed Python attributes must exist
+        assert hasattr(ArtifactRecord, "artifact_metadata"), (
+            "ArtifactRecord must expose `artifact_metadata` (renamed from `metadata`)"
+        )
+        assert hasattr(ProcessRecord, "process_metadata"), (
+            "ProcessRecord must expose `process_metadata` (renamed from `metadata`)"
+        )
+        assert hasattr(CredentialRecord, "credential_metadata"), (
+            "CredentialRecord must expose `credential_metadata` (renamed from `metadata`)"
+        )
+
+        # The DB column name must still be `metadata` (zero migration impact)
+        assert "metadata" in ArtifactRecord.__table__.c
+        assert "metadata" in ProcessRecord.__table__.c
+        assert "metadata" in CredentialRecord.__table__.c
+
+        # And there must NOT be a column using the Python attribute name
+        assert "artifact_metadata" not in ArtifactRecord.__table__.c
+        assert "process_metadata" not in ProcessRecord.__table__.c
+        assert "credential_metadata" not in CredentialRecord.__table__.c
 
 
 class TestEveryMappedTableHasPrimaryKey:
@@ -218,55 +310,6 @@ class TestBaseMetadataIsAccessible:
             "Base must inherit from sqlalchemy.orm.DeclarativeBase so that "
             "Base.metadata resolves to the MetaData collection."
         )
-
-
-class TestRenamedMetadataAttributes:
-    """Verify the renamed attributes exist and map to the `metadata` DB column.
-
-    This pins the fix: ``ArtifactRecord.artifact_metadata``,
-    ``ProcessRecord.process_metadata``, and
-    ``CredentialRecord.credential_metadata`` must all exist as Python
-    attributes and must map to a database column named ``metadata``
-    (not the Python attribute name).
-    """
-
-    def test_artifact_record_metadata_renamed(self) -> None:
-        from wax.state.artifact_models import ArtifactRecord
-
-        assert hasattr(ArtifactRecord, "artifact_metadata"), (
-            "ArtifactRecord must expose `artifact_metadata` (renamed from `metadata` "
-            "to avoid colliding with SQLAlchemy's reserved Base.metadata)"
-        )
-        # The mapped column must use the DB column name 'metadata'
-        col = ArtifactRecord.__table__.c.get("metadata")
-        assert col is not None, (
-            "ArtifactRecord must map a column named 'metadata' in the DB "
-            "(the Python attribute is renamed but the DB column stays 'metadata')"
-        )
-        # And there must NOT be a column using the Python attribute name
-        assert "artifact_metadata" not in ArtifactRecord.__table__.c, (
-            "artifact_metadata should NOT be a DB column — only a Python attribute"
-        )
-
-    def test_process_record_metadata_renamed(self) -> None:
-        from wax.state.process_models import ProcessRecord
-
-        assert hasattr(ProcessRecord, "process_metadata"), (
-            "ProcessRecord must expose `process_metadata` (renamed from `metadata`)"
-        )
-        col = ProcessRecord.__table__.c.get("metadata")
-        assert col is not None, "ProcessRecord must map a column named 'metadata' in the DB"
-        assert "process_metadata" not in ProcessRecord.__table__.c
-
-    def test_credential_record_metadata_renamed(self) -> None:
-        from wax.state.credential_store import CredentialRecord
-
-        assert hasattr(CredentialRecord, "credential_metadata"), (
-            "CredentialRecord must expose `credential_metadata` (renamed from `metadata`)"
-        )
-        col = CredentialRecord.__table__.c.get("metadata")
-        assert col is not None, "CredentialRecord must map a column named 'metadata' in the DB"
-        assert "credential_metadata" not in CredentialRecord.__table__.c
 
 
 class TestAlembicCanInspectModels:
