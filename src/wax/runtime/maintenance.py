@@ -128,7 +128,49 @@ async def run_maintenance_pass(settings: Any, services: Any = None) -> dict[str,
     # Fix 10: Workspace cleanup — remove per-execution subdirectories older than 7 days
     results["workspaces_cleaned"] = _cleanup_old_workspaces(settings)
 
+    # Spec §5: Stale process detection — mark dead processes
+    results["processes_reaped"] = await _reap_stale_processes()
+
     return results
+
+
+async def _reap_stale_processes() -> int:
+    """Detect processes whose PID no longer exists (container restarted).
+
+    Marks them as 'dead' in the process registry. The associated Work
+    can then decide whether to restart.
+    """
+    try:
+        import os
+
+        from sqlalchemy import select
+
+        from wax.state.engine import db_session
+        from wax.state.process_models import ProcessRecord
+
+        reaped = 0
+        async with db_session() as session:
+            result = await session.execute(
+                select(ProcessRecord).where(ProcessRecord.status == "running")
+            )
+            for proc in result.scalars():
+                if proc.pid is None:
+                    continue
+                try:
+                    os.kill(proc.pid, 0)  # signal 0 = check if process exists
+                except (ProcessLookupError, PermissionError):
+                    # Process is dead — mark it
+                    proc.status = "dead"
+                    proc.termination_reason = "process disappeared (container restart or exit)"
+                    proc.terminated_at = datetime.now(UTC)
+                    reaped += 1
+            if reaped:
+                await session.commit()
+                log.info("maintenance.processes_reaped", count=reaped)
+        return reaped
+    except Exception as e:
+        log.warning("maintenance.process_reap_failed", error=str(e)[:200])
+        return 0
 
 
 async def _run_consolidation(services: Any) -> int:

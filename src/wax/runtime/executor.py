@@ -289,6 +289,49 @@ class TerminalExecutor:
         self._detached.append(proc)
         ended_at = datetime.now(UTC)
 
+        # Register the process in the durable DB-backed registry.
+        # This allows the maintenance sweep to detect dead processes
+        # after container restarts and associate them with their Work.
+        try:
+            from ulid import ULID
+
+            from wax.core.config import WaxSettings
+            from wax.state.engine import db_session, init_engine
+            from wax.state.process_models import ProcessRecord
+
+            settings_reg = WaxSettings()
+            init_engine(settings_reg)
+            principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
+            execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
+
+            async def _register():
+
+                from wax.core.config import WaxSettings
+                from wax.state.engine import init_engine
+
+                settings = WaxSettings()
+                init_engine(settings)
+                principal_id = self.env.get("WAX_CURRENT_PRINCIPAL_ID", "")
+                execution_id = self.env.get("WAX_CURRENT_EXECUTION_ID", "")
+                async with db_session() as session:
+                    record = ProcessRecord(
+                        id=str(ULID()),
+                        principal_id=principal_id or "unknown",
+                        execution_id=execution_id or None,
+                        pid=proc.pid,
+                        command=command[:10000],
+                        status="running",
+                        started_at=started_at,
+                        last_seen_at=ended_at,
+                    )
+                    session.add(record)
+                    await session.commit()
+
+            # We're already in an async context — schedule the registration
+            _register_task = asyncio.ensure_future(_register())
+        except Exception as e:
+            log.warning("terminal.process_register_failed", error=str(e)[:200])
+
         return TerminalResult(
             exit_code=0,
             stdout="",
