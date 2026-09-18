@@ -266,7 +266,7 @@ class RuntimeBridge:
         exec_repo = ExecutionRepository(session)
         execution = await exec_repo.create(
             principal_id=principal.id,
-            kind=ExecutionKind.SINGLE_TURN,
+            kind=ExecutionKind.CONVERSATION,
             objective=request.effective_text[:500] if request.effective_text else "(empty)",
         )
         await exec_repo.start(execution.id)
@@ -444,7 +444,7 @@ class RuntimeBridge:
             exec_repo = ExecutionRepository(session)
             execution = await exec_repo.create(
                 principal_id=request.principal_id,
-                kind=ExecutionKind.SINGLE_TURN,
+                kind=ExecutionKind.REENTRY,
                 objective=f"reentry: {request.prompt[:200]}",
             )
             await exec_repo.start(execution.id)
@@ -712,9 +712,48 @@ class RuntimeBridge:
                 # up with the same message history and continues.
                 await self._checkpoint_messages(exec_repo, execution_id, messages, round_num)
             else:
-                # Max rounds exhausted — force a final response
-                log.warning("bridge.max_rounds_exhausted", execution_id=execution_id)
-                final_response = await self._force_final_response(messages, execution_id)
+                # Execution budget exhausted. Per spec §14-15, do NOT
+                # force a fake "final answer." Instead: checkpoint state,
+                # tell the user we're pausing, and schedule a continuation
+                # execution that will resume from this checkpoint.
+                log.warning("bridge.execution_budget_exhausted", execution_id=execution_id)
+
+                # Checkpoint the current state
+                await self._checkpoint_messages(exec_repo, execution_id, messages, max_rounds - 1)
+
+                # Schedule a continuation execution that wakes in 1 second
+                # (the work runner will pick it up and resume)
+                try:
+                    from datetime import UTC, datetime, timedelta
+
+                    from wax.runtime.work.repository import WorkRepository
+
+                    work_repo = WorkRepository(session)
+                    await work_repo.schedule(
+                        kind="intelligence",
+                        payload={
+                            "prompt": "Your previous execution ran out of rounds. Continue from your last checkpoint.",
+                            "observation": {
+                                "source": "runtime",
+                                "event": "execution_budget_exhausted",
+                                "originating_execution_id": execution_id,
+                            },
+                        },
+                        wake_at=datetime.now(UTC) + timedelta(seconds=1),
+                        principal_id=principal_id,
+                        execution_id=execution_id,
+                        max_attempts=3,
+                    )
+                except Exception as schedule_err:
+                    log.warning(
+                        "bridge.continuation_schedule_failed", error=str(schedule_err)[:200]
+                    )
+
+                # Tell the user honestly that work is continuing
+                final_response = (
+                    "I'm still working on this — it's taking more steps than "
+                    "usual. I'll continue and send you the result shortly."
+                )
 
             # Automatic memory extraction (LLM-driven, structured)
             await extract_memories(
@@ -1218,8 +1257,13 @@ class RuntimeBridge:
                     # Checkpoint again after each terminal round
                     await self._checkpoint_messages(exec_repo, execution_id, messages, resume_round)
                 else:
-                    log.warning("bridge.resume_max_rounds", execution_id=execution_id)
-                    final_response = await self._force_final_response(messages, execution_id)
+                    # Budget exhausted during resume — checkpoint and
+                    # schedule another continuation
+                    log.warning("bridge.resume_budget_exhausted", execution_id=execution_id)
+                    await self._checkpoint_messages(
+                        exec_repo, execution_id, messages, max_rounds - 1
+                    )
+                    final_response = "I'm still working on this — continuing in the background."
 
                 # Complete the recovered execution
                 await exec_repo.complete(execution_id)

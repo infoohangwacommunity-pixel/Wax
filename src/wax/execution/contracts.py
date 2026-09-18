@@ -26,14 +26,23 @@ class StepStatus(StrEnum):
 
 
 class ExecutionKind(StrEnum):
-    """Universal execution patterns. NOT domain-specific.
+    """Execution lifecycle kinds — NOT domain-specific.
 
-    Only ``SINGLE_TURN`` is currently produced by the runtime. Other
-    kinds (agent loops, long-running tasks, background workflows) are
-    future work and intentionally not present in this enum.
+    An execution is one active period of thinking/acting. A durable Work
+    item can span many executions. The kind describes what triggered
+    this execution, not what the AI is doing.
+
+    CONVERSATION: triggered by a user message
+    REENTRY: triggered by a scheduled wake / signal
+    RECOVERY: triggered by process restart recovering interrupted work
+    CONTINUATION: triggered by execution budget exhaustion (checkpoint +
+    resume)
     """
 
-    SINGLE_TURN = "single_turn"
+    CONVERSATION = "conversation"
+    REENTRY = "reentry"
+    RECOVERY = "recovery"
+    CONTINUATION = "continuation"
 
 
 class Execution(BaseModel):
@@ -74,11 +83,14 @@ class ExecutionStep(BaseModel):
     id: str
     execution_id: str
     step_number: int
-    kind: str
+    kind: str  # model, terminal, terminal_observation, etc.
     inputs: dict[str, Any] | None
     outputs: dict[str, Any] | None
     status: str
     error: str | None
-    capability_name: str | None
+    # Deprecated: capability_name is a fossil from the old capability
+    # architecture. Retained for DB compatibility but no longer used
+    # for dispatch. Will be removed in a future migration baseline.
+    capability_name: str | None = None
     created_at: datetime
     updated_at: datetime
