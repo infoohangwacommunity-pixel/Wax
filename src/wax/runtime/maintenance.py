@@ -179,10 +179,34 @@ async def _run_consolidation(services: Any) -> int:
     This is the 'reflection' pass — like sleep consolidation. Finds
     principals with 20+ active episodic memories and distills clusters
     into stronger semantic memories.
+
+    Memory consolidation is a NON-BLOCKING maintenance task. If it
+    fails, the active conversation is unaffected (it runs in a separate
+    maintenance pass, not in the request path). Failures are logged
+    with enough detail to diagnose, and the next maintenance pass will
+    retry naturally.
+
+    Intelligence is a REQUIRED dependency for consolidation — without
+    it, the LLM cannot distill memories. We use ``require_intelligence()``
+    so a missing dependency raises a clear error at the START of the
+    pass (logged + skipped) rather than crashing mid-pass with
+    ``'NoneType' object has no attribute 'complete'``.
     """
     if services is None:
         return 0
     try:
+        # Resolve intelligence ONCE, explicitly. No hasattr/getattr probing.
+        # If it's missing, log + skip this pass — don't crash the
+        # maintenance loop (other maintenance tasks still need to run).
+        try:
+            intelligence = services.require_intelligence()
+        except RuntimeError as e:
+            log.warning(
+                "maintenance.consolidation_skipped_no_intelligence",
+                error=str(e)[:200],
+            )
+            return 0
+
         from sqlalchemy import select
 
         from wax.state.engine import db_session
@@ -212,18 +236,20 @@ async def _run_consolidation(services: Any) -> int:
                 async with db_session() as session:
                     count = await consolidate_principal_memories(
                         session=session,
-                        intelligence=services._intelligence
-                        if hasattr(services, "_intelligence")
-                        else None,
+                        intelligence=intelligence,
                         principal_id=principal_id,
                     )
                     await session.commit()
                     consolidated += count
             except Exception as e:
+                # Per-principal failure does NOT kill the maintenance pass.
+                # Other principals still get consolidated. The error is
+                # logged with the principal_id so it's diagnosable.
                 log.warning(
                     "maintenance.consolidation_failed",
                     principal_id=principal_id,
                     error=str(e)[:200],
+                    error_type=type(e).__name__,
                 )
 
         return consolidated

@@ -124,12 +124,10 @@ class WaxSettings(BaseSettings):
     # --- Rate limiting (infrastructure protection, NOT authority) ---
     # Simple per-principal, per-hour message cap. Prevents abuse without
     # a complex subsystem. In-memory only (resets on restart).
+    # NOTE: This is purely an infrastructure-protection rate limit
+    # (flood / abuse), NOT a cost/LLM-budget mechanism. Wax has no
+    # internal dollar budget; provider-side quotas handle billing.
     rate_limit_messages_per_hour: int = 30
-
-    # --- Cost protection (Part 25) ---
-    # Per-principal daily spend cap in USD cents (1 = $0.01).
-    # Protects the business, NOT the intelligence. Lightweight.
-    daily_cost_budget_cents: int = 500  # $5.00/day
 
     # --- Work runner ---
     work_poll_interval_seconds: float = 2.0

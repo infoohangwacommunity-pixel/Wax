@@ -66,11 +66,14 @@ async def app(test_settings: Any) -> Any:
     from wax.runtime.bridge.service import RuntimeBridge
     from wax.runtime.services import RuntimeServices
 
-    services = RuntimeServices.build(test_settings)
-    app.state.services = services
-
     intel = IntelligenceService.from_settings(test_settings)
     app.state.intelligence = intel
+    # Wire intelligence into services explicitly — it's a required
+    # dependency for memory consolidation. Without this, maintenance
+    # would skip consolidation with "no intelligence wired" warning.
+    services = RuntimeServices.build(test_settings, intelligence=intel)
+    app.state.services = services
+
     bridge = RuntimeBridge(intelligence=intel, services=services)
     app.state.runtime_bridge = bridge
     services.reentry_callback = bridge.run_reentry

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, Header, Query, Request, Response
@@ -54,17 +54,21 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         init_engine(settings)
         lifecycle.on_shutdown("state.engine", dispose_engine())
 
-        # Intelligence service
+        # Intelligence service — the single authoritative instance.
+        # Every component that needs intelligence (bridge, maintenance,
+        # consolidation) receives THIS instance via RuntimeServices.
+        # No component is allowed to probe for intelligence via
+        # hasattr/getattr — it's a required, explicit dependency.
         from wax.intelligence.service import IntelligenceService
 
         intel = IntelligenceService.from_settings(settings)
         app.state.intelligence = intel
         lifecycle.on_shutdown("intelligence.close", intel.close())
 
-        # RuntimeServices container
+        # RuntimeServices container — intelligence wired in explicitly.
         from wax.runtime.services import RuntimeServices
 
-        services = RuntimeServices.build(settings)
+        services = RuntimeServices.build(settings, intelligence=intel)
         app.state.services = services
 
         # RuntimeBridge
@@ -74,6 +78,13 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         app.state.runtime_bridge = bridge
         services.reentry_callback = bridge.run_reentry
         services.resume_callback = bridge.resume_execution
+        # The inbound processing callback is the worker-side counterpart
+        # to the webhook. The webhook durably accepts the message and
+        # schedules work; the worker picks up the work and calls this
+        # callback, which runs the full intelligence loop and enqueues
+        # a DeliveryRecord for the reply. The webhook NEVER runs
+        # intelligence inline.
+        services.process_inbound_callback = bridge.process_inbound
         log.info("runtime.reentry_callback_registered")
 
         # WhatsApp client (optional)
@@ -110,13 +121,14 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
 
         # Work runner (durable work + reentry)
         from wax.runtime.work import WorkRunner
-        from wax.runtime.work.handlers import intelligence_handler
+        from wax.runtime.work.handlers import inbound_handler, intelligence_handler
 
         work_runner = WorkRunner(
             services,
             poll_interval_seconds=settings.work_poll_interval_seconds,
         )
         work_runner.register_handler("intelligence", intelligence_handler)
+        work_runner.register_handler("inbound", inbound_handler)
         services.work_runner = work_runner
         recovered = await work_runner.recover_orphans()
         if recovered.get("failed_executions") or recovered.get("resumed"):
@@ -323,6 +335,40 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
         request: Request,
         x_hub_signature_256: str = Header(default="", alias="X-Hub-Signature-256"),
     ) -> dict[str, Any]:
+        """WhatsApp webhook — durably accept the message, return 200 immediately.
+
+        ARCHITECTURE (spec §3-7):
+            WhatsApp
+               ↓
+            POST /webhooks/whatsapp
+               ↓
+            verify signature
+               ↓
+            parse event
+               ↓
+            idempotently persist inbound message (INSERT ON CONFLICT DO NOTHING)
+               ↓
+            schedule durable Work
+               ↓
+            HTTP 200 immediately
+               ↓
+            Worker (already running)
+               ↓
+            bridge.process_inbound()
+               ↓
+            LLM ↔ terminal/tools
+               ↓
+            persist result + enqueue DeliveryRecord
+               ↓
+            delivery maintenance → WhatsApp Cloud API
+
+        The webhook does NOT run intelligence. It does NOT call the LLM.
+        It does NOT execute terminal commands. It does NOT send a WhatsApp
+        reply. Those all happen in the worker, asynchronously, durably.
+
+        This fixes the HTTP 499 / 23-second-timeout problem at the root:
+        the webhook now returns within milliseconds of signature verification.
+        """
         request_body = await request.body()
 
         whatsapp_client = getattr(app.state, "whatsapp_client", None)
@@ -333,110 +379,84 @@ def create_app(settings: WaxSettings | None = None) -> FastAPI:
 
         adapter = WhatsAppAdapter(client=whatsapp_client)
 
-        async def _runtime_callback(message):  # type: ignore[no-untyped-def]
-            from datetime import datetime
+        # Verify signature ONCE, at the boundary. If it fails, reject.
+        if not whatsapp_client.verify_webhook_signature(request_body, x_hub_signature_256):
+            log.warning("whatsapp.webhook.invalid_signature")
+            return {"status": "invalid_signature"}
 
-            from wax.runtime.bridge.contracts import InterfaceKind, RuntimeRequest
-            from wax.state.engine import db_session
+        # Parse payload
+        import json as _json
 
-            bridge = getattr(app.state, "runtime_bridge", None)
-            if bridge is None:
-                log.error("whatsapp.bridge_not_configured")
-                return None
+        try:
+            payload = _json.loads(request_body)
+        except _json.JSONDecodeError:
+            log.warning("whatsapp.webhook.invalid_json")
+            return {"status": "invalid_json"}
 
-            runtime_request = RuntimeRequest(
-                interface_message_id=message.message_id,
-                interface_kind=InterfaceKind.WHATSAPP,
-                sender_interface_id=message.from_phone,
-                sender_display_name=message.from_name,
-                text=message.effective_text,
-                received_at=message.timestamp or datetime.now(UTC),
-            )
+        # Process each message: idempotently persist + schedule durable work.
+        # The webhook NEVER calls the bridge inline — that's the worker's job.
+        from wax.runtime.inbound import accept_inbound_message
+        from wax.state.engine import db_session
 
-            async with db_session() as session:
-                response = await bridge.process(session, runtime_request)
-                await session.commit()
-
-            if response.status.value == "success" and response.text:
-                return response.text
-            if response.status.value == "duplicate":
-                log.info(
-                    "whatsapp.duplicate_message.skipped",
-                    message_id=message.message_id,
-                )
-            else:
-                log.warning(
-                    "whatsapp.message.not_replied",
-                    message_id=message.message_id,
-                    status=response.status.value,
-                    error=response.error,
-                )
-            return None
-
-        async def _on_send_failure(message, response_text: str, error: Exception) -> None:
-            from sqlalchemy import select
-
-            from wax.runtime.delivery_queue import DeliveryQueue
-            from wax.state.engine import db_session
-            from wax.state.identity_models import PrincipalCredential
-
-            svc = getattr(app.state, "services", None)
-            try:
-                async with db_session() as session:
-                    credential = (
-                        await session.execute(
-                            select(PrincipalCredential).where(
-                                PrincipalCredential.kind == "whatsapp_phone",
-                                PrincipalCredential.value == message.from_phone,
+        events_processed = 0
+        accepted_count = 0
+        duplicate_count = 0
+        for entry in payload.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                for msg_data in value.get("messages", []):
+                    incoming = adapter._normalize_message(msg_data, value)
+                    if incoming is None:
+                        continue
+                    try:
+                        async with db_session() as session:
+                            result = await accept_inbound_message(
+                                session,
+                                interface_kind="whatsapp",
+                                interface_message_id=incoming.message_id,
+                                sender_interface_id=incoming.from_phone,
+                                sender_display_name=incoming.from_name,
+                                text=incoming.effective_text,
+                                received_at=incoming.timestamp or datetime.now(UTC),
                             )
+                            await session.commit()
+                        if result.accepted:
+                            accepted_count += 1
+                        else:
+                            duplicate_count += 1
+                    except Exception as e:
+                        # Per-message failure does NOT fail the webhook.
+                        # Meta retries on non-2xx, and we don't want a
+                        # single bad message to block the whole batch.
+                        log.error(
+                            "whatsapp.inbound.accept_failed",
+                            message_id=incoming.message_id,
+                            error=str(e)[:500],
+                            error_type=type(e).__name__,
                         )
-                    ).scalar_one_or_none()
-                    if credential is None:
-                        log.critical(
-                            "whatsapp.send_failure.unresolvable_principal",
-                            message_id=message.message_id,
-                            to=message.from_phone,
-                        )
-                        return
+                    events_processed += 1
 
-                    queue = DeliveryQueue(
-                        session,
-                        svc,
-                        retry_backoff_seconds=float(settings.delivery_retry_backoff_seconds),
-                        max_age_seconds=float(settings.delivery_max_age_seconds),
-                    )
-                    record = await queue.enqueue(
-                        principal_id=credential.principal_id,
-                        interface_kind="whatsapp",
-                        recipient_id=message.from_phone,
-                        text=response_text,
-                        source="bridge_reply",
-                        max_attempts=int(settings.delivery_max_attempts),
-                    )
-                    record.attempts = 1
-                    record.last_error = f"{type(error).__name__}: {error}"[:2000]
-                    if record.attempts >= record.max_attempts:
-                        record.status = "failed"
-                    else:
-                        from datetime import UTC, datetime, timedelta
+                # Process status events (sent/delivered/read) — no
+                # intelligence work needed; just log for observability.
+                for _status_data in value.get("statuses", []):
+                    adapter._process_status(_status_data)
+                    events_processed += 1
 
-                        record.next_attempt_at = datetime.now(UTC) + timedelta(
-                            seconds=float(settings.delivery_retry_backoff_seconds)
-                        )
-                    await session.commit()
-            except Exception as delivery_error:
-                log.critical(
-                    "whatsapp.delivery_record_write_failed",
-                    error=str(delivery_error),
-                    message_id=message.message_id,
-                )
-
-        return await adapter.handle_webhook(
-            raw_body=request_body,
-            signature_header=x_hub_signature_256,
-            runtime_callback=_runtime_callback,
-            on_send_failure=_on_send_failure,
+        log.info(
+            "whatsapp.webhook.acknowledged",
+            events_processed=events_processed,
+            accepted=accepted_count,
+            duplicates=duplicate_count,
         )
+        # HTTP 200 — Meta is satisfied. The worker processes the accepted
+        # messages asynchronously. If the worker is slow or down, the
+        # work items wait in the DB; nothing is lost.
+        return {
+            "status": "ok",
+            "events_processed": events_processed,
+            "accepted": accepted_count,
+            "duplicates": duplicate_count,
+        }
 
     # -------------------------------------------------------------------
     # Phase G: Interaction sessions — DB-backed (Bug 3 fix)

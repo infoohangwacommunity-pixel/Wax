@@ -48,14 +48,22 @@ async def fresh_db(test_settings: Any):
 
 @pytest.fixture
 def services(test_settings: Any):
-    return RuntimeServices.build(test_settings)
+    """Build services with a mock intelligence wired in.
+
+    Tests that need a specific mock script should build their own
+    services+bridge pair (see TestBridgeTerminalLoop). This fixture
+    provides the default wired pair for identity/idempotency tests.
+    """
+    mock = MockLLMProvider()
+    intel = IntelligenceService(mock)
+    return RuntimeServices.build(test_settings, intelligence=intel)
 
 
 @pytest.fixture
 def bridge(services: Any):
-    mock = MockLLMProvider()
-    intel = IntelligenceService(mock)
-    return RuntimeBridge(intelligence=intel, services=services)
+    """A bridge backed by the services fixture's wired intelligence."""
+    # services.intelligence is the mock wired in `services` fixture above.
+    return RuntimeBridge(intelligence=services.require_intelligence(), services=services)
 
 
 def _request(*, message_id: str = "msg-1", text: str = "Hello WAX", phone: str = "+1234567890"):

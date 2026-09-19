@@ -48,12 +48,12 @@ from wax.intelligence.service import IntelligenceService
 from wax.memory.extraction import extract_memories
 from wax.memory.repository import MemoryRepository
 from wax.runtime.bridge.contracts import (
+    InboundResult,
     InterfaceKind,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeResponseStatus,
 )
-from wax.runtime.cost_protection import CostProtector
 from wax.runtime.executor import (
     TerminalExecutor,
     execution_workspace,
@@ -189,9 +189,6 @@ class RuntimeBridge:
         self._rate_limiter = RateLimiter(
             max_messages_per_hour=getattr(services.settings, "rate_limit_messages_per_hour", 30),
         )
-        self._cost_protector = CostProtector(
-            daily_budget_cents=getattr(services.settings, "daily_cost_budget_cents", 500),
-        )
 
     async def process(self, session: AsyncSession, request: RuntimeRequest) -> RuntimeResponse:
         """Process one inbound message end-to-end."""
@@ -233,16 +230,6 @@ class RuntimeBridge:
             return RuntimeResponse(
                 status=RuntimeResponseStatus.RATE_LIMITED,
                 text="You're sending messages too quickly. Please wait a moment and try again.",
-                principal_id=principal.id,
-                processed_at=now,
-            )
-
-        # 2b. Cost protection (Part 25) — lightweight global spending cap
-        if not self._cost_protector.can_spend(principal.id):
-            log.warning("bridge.cost_exceeded", principal_id=principal.id)
-            return RuntimeResponse(
-                status=RuntimeResponseStatus.RATE_LIMITED,
-                text="Daily message limit reached. Please try again tomorrow.",
                 principal_id=principal.id,
                 processed_at=now,
             )
@@ -367,6 +354,20 @@ class RuntimeBridge:
             )
             await exec_repo.fail(execution.id, f"{type(e).__name__}: {e}"[:1000])
 
+            # Update the processed_messages record to reflect the failure
+            # (it was set to "processing" before the intelligence loop started).
+            # This is the durable failure state — the message is NOT lost,
+            # it's recorded as failed with a clear outcome.
+            pm_fail = (
+                await session.execute(
+                    select(ProcessedMessageRecord).where(ProcessedMessageRecord.id == execution.id)
+                )
+            ).scalar_one_or_none()
+            if pm_fail is not None:
+                pm_fail.outcome = "internal_error"
+                pm_fail.processed_at = datetime.now(UTC)
+                await session.flush()
+
             # Store a failure notice in the conversation ledger so the AI
             # knows what happened in the next interaction (not silence).
             failure_msg = (
@@ -478,6 +479,146 @@ class RuntimeBridge:
     # ===================================================================
     # Durable re-entry — the REAL implementation (directive §7, Upgrade 1)
     # ===================================================================
+
+    async def process_inbound(
+        self,
+        *,
+        work_id: str,
+        principal_id: str,
+        interface_kind: str,
+        interface_message_id: str,
+        sender_interface_id: str,
+        sender_display_name: str | None,
+        text: str,
+        received_at_iso: str | None,
+    ) -> InboundResult:
+        """Process a freshly-accepted inbound message end-to-end.
+
+        Called by the work runner's ``inbound_handler`` (which is scheduled
+        by the webhook via ``wax.runtime.inbound.accept_inbound_message``).
+
+        This is the WORKER side of the webhook/worker split:
+          - Webhook: verify + persist + schedule work + HTTP 200
+          - Worker (this method): identity + execution + intelligence +
+            memory + delivery enqueue
+
+        The reply text is enqueued as a DeliveryRecord (durable). The
+        delivery maintenance loop sends it via the WhatsApp client. If
+        WhatsApp is down, the delivery record retries with backoff.
+
+        This method NEVER holds the DB transaction open while calling
+        the LLM or terminal — each phase commits before the next begins.
+        """
+        from datetime import datetime as _dt
+
+        from wax.runtime.bridge.contracts import InterfaceKind, RuntimeRequest
+
+        # Reconstruct the RuntimeRequest
+        try:
+            interface_enum = InterfaceKind(interface_kind)
+        except ValueError:
+            interface_enum = InterfaceKind.WHATSAPP
+
+        received_at = _dt.fromisoformat(received_at_iso) if received_at_iso else _dt.now(UTC)
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=UTC)
+
+        runtime_request = RuntimeRequest(
+            interface_message_id=interface_message_id,
+            interface_kind=interface_enum,
+            sender_interface_id=sender_interface_id,
+            sender_display_name=sender_display_name,
+            text=text,
+            received_at=received_at,
+        )
+
+        # Process the message end-to-end. The bridge's process() handles
+        # identity, idempotency, execution, intelligence loop, memory.
+        # We use a single session for the whole processing — the bridge
+        # commits internally at safe points.
+        from wax.state.engine import db_session
+
+        log.info(
+            "bridge.inbound.process.start",
+            work_id=work_id,
+            principal_id=principal_id,
+            message_id=interface_message_id,
+        )
+
+        async with db_session() as session:
+            response = await self.process(session, runtime_request)
+            await session.commit()
+
+        # Enqueue the reply as a DURABLE delivery record. The delivery
+        # maintenance loop sends it via the WhatsApp client. If WhatsApp
+        # is down, the record retries with backoff — the reply is never
+        # lost just because the outbound HTTP call failed.
+        delivery_id: str | None = None
+        if response.status.value == "success" and response.text:
+            from wax.runtime.delivery_queue import DeliveryQueue
+
+            async with db_session() as session:
+                queue = DeliveryQueue(
+                    session,
+                    self._services,
+                    retry_backoff_seconds=float(
+                        self._services.settings.delivery_retry_backoff_seconds
+                    ),
+                    max_age_seconds=float(self._services.settings.delivery_max_age_seconds),
+                )
+                record = await queue.enqueue(
+                    principal_id=principal_id,
+                    interface_kind=interface_kind,
+                    recipient_id=sender_interface_id,
+                    text=response.text,
+                    source="bridge_reply",
+                    execution_id=response.execution_id,
+                    max_attempts=int(self._services.settings.delivery_max_attempts),
+                )
+                # Attempt immediate delivery (within the same transaction).
+                # If it fails, the record stays pending and the maintenance
+                # loop retries it with backoff.
+                await queue.attempt(record)
+                await session.commit()
+                delivery_id = record.id
+
+                if record.status == "delivered":
+                    log.info(
+                        "bridge.inbound.delivered",
+                        work_id=work_id,
+                        message_id=interface_message_id,
+                        delivery_id=delivery_id,
+                    )
+                else:
+                    log.info(
+                        "bridge.inbound.delivery_pending",
+                        work_id=work_id,
+                        message_id=interface_message_id,
+                        delivery_id=delivery_id,
+                        status=record.status,
+                    )
+        else:
+            log.warning(
+                "bridge.inbound.no_reply",
+                work_id=work_id,
+                message_id=interface_message_id,
+                status=response.status.value,
+                error=response.error,
+            )
+
+        outcome = (
+            "success"
+            if response.status.value == "success"
+            else ("duplicate" if response.status.value == "duplicate" else "failed")
+        )
+
+        return InboundResult(
+            outcome=outcome,
+            execution_id=response.execution_id,
+            delivery_id=delivery_id,
+            response_text=response.text or "",
+            error=response.error,
+        )
 
     async def run_reentry(self, request: ReentryRequest) -> ReentryResult:
         """Re-enter the intelligence loop from durable work.
@@ -689,15 +830,6 @@ class RuntimeBridge:
                         request_id=execution_id,
                     )
                 )
-
-                # Record cost (Part 25) — lightweight global spending protection
-                from wax.runtime.cost_protection import estimate_llm_cost_cents
-
-                cost_cents = estimate_llm_cost_cents(
-                    prompt_tokens=response.usage.get("tokens_prompt", 0),
-                    completion_tokens=response.usage.get("tokens_completion", 0),
-                )
-                self._cost_protector.record_spend(principal_id, cost_cents)
 
                 await exec_repo.record_step(
                     execution_id=execution_id,
@@ -1275,14 +1407,6 @@ class RuntimeBridge:
                             request_id=execution_id,
                         )
                     )
-
-                    from wax.runtime.cost_protection import estimate_llm_cost_cents
-
-                    cost_cents = estimate_llm_cost_cents(
-                        prompt_tokens=response.usage.get("tokens_prompt", 0),
-                        completion_tokens=response.usage.get("tokens_completion", 0),
-                    )
-                    self._cost_protector.record_spend(principal_id, cost_cents)
 
                     if not response.tool_calls:
                         final_response = response.content

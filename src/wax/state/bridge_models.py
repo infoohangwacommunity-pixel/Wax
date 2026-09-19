@@ -49,7 +49,9 @@ class ProcessedMessageRecord(Base, ULIDPrimaryKeyMixin, TimestampMixin):
 
     # objective_id removed — fossil from old architecture
 
-    # Outcome: success | duplicate | principal_unauthorized | rate_limited | internal_error
+    # Outcome: success | duplicate | principal_unauthorized | rate_limited | internal_error | pending
+    # NOTE: rate_limited is purely infrastructure-protection (flood control).
+    # Wax has NO internal dollar/cost budget — provider-side quotas handle billing.
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Original request text (truncated for storage)

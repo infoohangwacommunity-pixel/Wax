@@ -10,6 +10,7 @@ the runtime only knows about RuntimeRequest, never about WhatsApp.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -116,3 +117,26 @@ class RuntimeResponse(BaseModel):
     error: str | None = None
     processed_at: datetime
     duplicate_of_execution_id: str | None = None  # set when status == DUPLICATE
+
+
+@dataclass
+class InboundResult:
+    """The outcome of processing a freshly-accepted inbound message.
+
+    Returned by ``RuntimeBridge.process_inbound`` to the work runner's
+    ``inbound_handler``. The work runner uses ``outcome`` to decide
+    whether the work item succeeded or needs retry.
+
+    Fields:
+    - outcome: "success" | "duplicate" | "failed"
+    - execution_id: the execution that processed this message (if any)
+    - delivery_id: the DeliveryRecord ID for the outbound reply (if any)
+    - response_text: the reply text the AI generated (truncated)
+    - error: error message if outcome == "failed"
+    """
+
+    outcome: str
+    execution_id: str | None = None
+    delivery_id: str | None = None
+    response_text: str = ""
+    error: str | None = None

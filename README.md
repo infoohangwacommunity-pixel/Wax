@@ -105,11 +105,10 @@ All settings are `WAX_`-prefixed environment variables. Key settings:
 - `WAX_LLM_BASE_URL` — provider API URL (Groq, Together, OpenRouter, etc.)
 - `WAX_LLM_MODEL` — model name
 - `WAX_LLM_PROVIDER_FALLBACKS` — comma-separated fallback configs
+- `WAX_RATE_LIMIT_MESSAGES_PER_HOUR` — per-user infrastructure rate limit (default 30; flood control only, NOT a cost budget)
 - `WAX_WHATSAPP_*` — WhatsApp Cloud API credentials
 - `WAX_PUBLIC_URL` — public URL for interaction sessions
 - `WAX_TERMINAL_*` — terminal executor settings
-- `WAX_RATE_LIMIT_MESSAGES_PER_HOUR` — per-user rate limit (default 30)
-- `WAX_DAILY_COST_BUDGET_CENTS` — per-user daily spend cap (default 500)
 
 ## Provider-agnostic
 
